@@ -229,6 +229,7 @@ jobs:
             -DMNN_SUPPORT_BF16=ON \
             -DMNN_BUILD_AUDIO=ON \
             -DMNN_BUILD_DIFFUSION=ON \
+            -DMNN_BUILD_CONVERTER=ON \
             -DLLM_SUPPORT_VISION=ON \
             -DLLM_SUPPORT_AUDIO=ON \
             -DMNN_BUILD_FOR_ANDROID_COMMAND=ON \
@@ -273,6 +274,7 @@ jobs:
             -DMNN_SUPPORT_BF16=ON \
             -DMNN_BUILD_AUDIO=ON \
             -DMNN_BUILD_DIFFUSION=ON \
+            -DMNN_BUILD_CONVERTER=ON \
             -DLLM_SUPPORT_VISION=ON \
             -DLLM_SUPPORT_AUDIO=ON \
             -DMNN_BUILD_FOR_ANDROID_COMMAND=ON \

@@ -21,6 +21,10 @@ humans:
 
 > Do **not** read or reference `schema/private/` or `source/internal/` (internal
 > proprietary code, per the project CLAUDE.md).
+>
+> When editing CI workflow files, verify the exact build command locally with
+> the same CMake flags before relying on the hosted runner. Also parse YAML after
+> editing workflow files when a YAML parser is available.
 
 ## Quick start
 
