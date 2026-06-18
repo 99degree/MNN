@@ -284,9 +284,27 @@ ErrorCode Session::resize() {
     bool firstMalloc = false;
     if (mNeedResize) {
         bool debug = mCallBackMode == Interpreter::Session_Debug;
-        for (auto& iter : mPipelines) {
-            auto error = iter->encode(debug, permitCodegen);
-            if (NO_ERROR != error) {
+        auto tryEncode = [&](bool tryDebug) -> ErrorCode {
+            for (auto& iter : mPipelines) {
+                auto error = iter->encode(tryDebug, permitCodegen);
+                if (NO_ERROR != error) {
+                    return error;
+                }
+            }
+            return NO_ERROR;
+        };
+        auto error = tryEncode(debug);
+        if (NO_ERROR != error) {
+            if (debug) {
+                // Debug-mode encode failed (likely allocator pressure for large models).
+                // Fall back to release mode so aggregate profiling still works.
+                MNN_PRINT("Warning: debug-mode encode failed (code %d), falling back to release mode.\n", error);
+                mCallBackMode = Interpreter::Session_Release;
+                error = tryEncode(false);
+                if (NO_ERROR != error) {
+                    return error;
+                }
+            } else {
                 return error;
             }
         }

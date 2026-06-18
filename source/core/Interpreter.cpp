@@ -428,6 +428,12 @@ ErrorCode Interpreter::runSession(Session* session) const {
 #ifdef MNN_INTERNAL_ENABLED
     Timer timer;
 #endif
+    // Auto-resize if session needs it (handles models with dynamic shapes)
+    ErrorCode resizeError = session->resize();
+    if (NO_ERROR != resizeError) {
+        MNN_PRINT("Auto-resize failed with code %d\n", resizeError);
+        return resizeError;
+    }
     _runSessionBegin(session);
     ErrorCode errorcode = session->run();
     _runSessionEnd(session);
@@ -523,6 +529,15 @@ ErrorCode Interpreter::runSessionWithCallBackInfo(const Session* session, const 
 #ifdef MNN_INTERNAL_ENABLED
     Timer timer;
 #endif
+    // Auto-resize if session needs it
+    {
+        Session* mutableSession = const_cast<Session*>(session);
+        ErrorCode resizeError = mutableSession->resize();
+        if (NO_ERROR != resizeError) {
+            MNN_PRINT("Auto-resize failed with code %d\n", resizeError);
+            return resizeError;
+        }
+    }
     _runSessionBegin(session);
     ErrorCode errorcode = session->runWithCallBack(before, callBack, sync);
     _runSessionEnd(session);

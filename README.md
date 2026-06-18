@@ -161,6 +161,39 @@ Base on MNN (Tensor compute engine), we provided a series of tools for inference
 - MNN-CV: An OpenCV-like library, but based on MNN and then much more lightweight.
 - MNN-Train: Support train MNN model.
 
+## Per‑Node Profiling Status
+
+| Capability | Status | Notes |
+|------------|--------|-------|
+| Aggregate info (MEMORY, FLOPS, THREADS) | ✅ Works (all models) | Via `getSessionInfo` / C‑API `MNN_GetSessionInfo` |
+| Per‑node callbacks – small model (1 op) | ✅ Works | Tested with `CallBackTest` (Identity) |
+| Per‑node callbacks – complex model | ❌ `COMPUTE_SIZE_ERROR` (3 / -103) | Returns after `Pipeline::encode(debug=true, …)` allocator failure |
+
+**Root cause**: `Pipeline::encode(debug=true, …)` creates a `UnitInfo` record for every operator, exhausting the dynamic memory allocator on large ONNX-converted models. The profiling CMake flags (`-DMNN_PIPELINE_PROFILE`, `-DMNN_EXPR_ENABLE_PROFILER`) do **not** control this behavior – it is a hard limitation of MNN's core debug‑encoding path.
+
+`runSession()` (non‑debug) does **not** enter the debug encoding path, so aggregate profiling works without issues on any model size.
+
+### Workarounds
+
+1. **Use aggregate profiling** – `getSessionInfo` returns total FLOPs, memory, thread count, and backend info. This is the recommended path. See `example_profiling.cpp`.
+2. **For small models** – `runSessionWithCallBackInfo` works when the operator count is low (< ~100 ops).
+3. **Source patch** – To fix for large models, modify MNN's core `Pipeline::encode` or adjust the allocator limits in the debug path, then rebuild from source.
+
+### 📦 Preparing for a Future Compatible MNN Build
+If you later obtain a version of `libMNN.so` that supports `runSessionWithCallBackInfo` in `Session_Debug` mode, you can easily replace the bundled library without rebuilding the entire project:
+
+1. Place the new `libMNN.so` anywhere on your filesystem.
+2. Run the helper script:
+   ```bash
+   ./replace_libMNN.sh /path/to/your/compatible/libMNN.so
+   ```
+   This copies the supplied library to `build_nodeprof/OFF/libMNN.so`, which is the location used by the profiling examples and the test suite.
+3. Re‑run any example or test; the new binary will be loaded via `LD_LIBRARY_PATH=build_nodeprof/OFF`.
+
+The script checks that the file exists and makes it executable. It provides a quick way to swap in a future compatible build while keeping the rest of the source unchanged.
+
+---
+
 ## How to Discuss and Get Help From the MNN Community
 
 The group discussions are predominantly Chinese. But we welcome and will help English speakers.
