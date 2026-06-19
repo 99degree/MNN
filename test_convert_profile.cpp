@@ -10,6 +10,7 @@
 #include <vector>
 #include <string>
 #include <stack>
+#include <map>
 #include <MNN/Interpreter.hpp>
 #include <MNN/ErrorCode.hpp>
 
@@ -98,7 +99,7 @@ static int profile_model(MNN::Interpreter* interpreter, int iterations, int inpu
     interpreter->getSessionInfo(session, MNN::Interpreter::FLOPS, &flops);
     printf("  MEMORY: %.2f MB   FLOPS: %.2f M\n", mem, flops);
 
-    // ── Per‑op profiling ──
+    // ── Per‑op profiling —
     printf("\n  --- %s Per-Op ---\n", backendName);
     std::vector<OpTiming> opTimings;
 
@@ -146,7 +147,7 @@ static int profile_model(MNN::Interpreter* interpreter, int iterations, int inpu
         }
     }
 
-    // Print results
+    // Print per-op detail
     printf("  %-40s %-18s %8s %10s %6s\n", "Op Name", "Type", "FLOPS(M)", "Time(ms)", "%");
     printf("  %s\n", std::string(80, '-').c_str());
     double sumMs = 0;
@@ -160,6 +161,35 @@ static int profile_model(MNN::Interpreter* interpreter, int iterations, int inpu
     }
     printf("  %s\n", std::string(80, '-').c_str());
     printf("  %-40s %-18s %8s %10.3f\n", "TOTAL", "", "", sumMs);
+    // If Vulkan, note that times are CPU-side submit only
+    if (backend == MNN_FORWARD_VULKAN) {
+        printf("  * Vulkan times are CPU submit cost, not GPU execution.\n");
+        printf("  * For real GPU timing, enable MNN_GPU_TIME_PROFILE=ON at build.\n");
+    }
+    printf("\n");
+
+    // Print opset summary (group by op type)
+    printf("  --- %s Opset Summary (grouped by type) ---\n", backendName);
+    std::map<std::string, std::pair<double,double>> typeSum; // type -> (total_ms, total_flops, count)
+    std::map<std::string,int> typeCount;
+    for (auto& op : opTimings) {
+        double avgOpMs = op.count > 0 ? op.ms / op.count : 0;
+        typeSum[op.type].first += avgOpMs;
+        typeSum[op.type].second += op.flops;
+        typeCount[op.type]++;
+    }
+    printf("  %-20s %8s %10s %10s %6s\n", "Op Type", "Count", "FLOPS(M)", "Time(ms)", "%");
+    printf("  %s\n", std::string(58, '-').c_str());
+    for (auto& kv : typeSum) {
+        const std::string& type = kv.first;
+        double typeMs = kv.second.first;
+        double typeFlops = kv.second.second;
+        double pct = sumMs > 0 ? 100.0 * typeMs / sumMs : 0;
+        printf("  %-20s %8d %10.2f %10.3f %5.1f%%\n",
+               type.c_str(), typeCount[type], typeFlops, typeMs, pct);
+    }
+    printf("  %s\n", std::string(58, '-').c_str());
+    printf("  %-20s %8d %10.2f %10.3f\n", "TOTAL", (int)opTimings.size(), flops, sumMs);
 
     interpreter->releaseSession(session);
     return 0;
