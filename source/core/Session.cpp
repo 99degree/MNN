@@ -243,6 +243,7 @@ std::pair<const void*, size_t> Session::getCache() {
 ErrorCode Session::run() const {
     if (mNeedResize) {
         MNN_ERROR("Can't run session because not resized\n");
+        fprintf(stderr, "[TRACE] COMPUTE_SIZE_ERROR @ Session::run (mNeedResize)\n");
         return COMPUTE_SIZE_ERROR;
     }
     for (auto& iter : mPipelines) {
@@ -258,6 +259,7 @@ ErrorCode Session::runWithCallBack(const TensorCallBackWithInfo& before, const T
                                    bool sync) const {
     if (mNeedResize) {
         MNN_ERROR("Can't run session because not resized\n");
+        fprintf(stderr, "[TRACE] COMPUTE_SIZE_ERROR @ Session::runWithCallBack (mNeedResize)\n");
         return COMPUTE_SIZE_ERROR;
     }
     for (auto& iter : mPipelines) {
@@ -302,9 +304,11 @@ ErrorCode Session::resize() {
                 mCallBackMode = Interpreter::Session_Release;
                 error = tryEncode(false);
                 if (NO_ERROR != error) {
+                    fprintf(stderr, "[TRACE] COMPUTE_SIZE_ERROR @ Session::resize tryEncode(release) failed: %d\n", error);
                     return error;
                 }
             } else {
+                fprintf(stderr, "[TRACE] COMPUTE_SIZE_ERROR @ Session::resize tryEncode(debug) failed (not debug mode): %d\n", error);
                 return error;
             }
         }
@@ -324,6 +328,11 @@ ErrorCode Session::resize() {
         for (auto& iter : mPipelines) {
             auto error = iter->allocMemory(firstMalloc, forbidReplace);
             if (NO_ERROR != error) {
+                fprintf(stderr, "[TRACE] COMPUTE_SIZE_ERROR @ Session::resize allocMemory failed: %d\n", error);
+                // Avoid leaving mNeedResize = true permanently;
+                // reset so the session can be retried.
+                mNeedResize = false;
+                mNeedMalloc = false;
                 return error;
             }
         }
