@@ -52,6 +52,8 @@ public:
     virtual MNN::OpParameter type()                                      = 0;
     virtual MNN::OpType opType()                                         = 0;
     static MNN::DataType convertDataType(int32_t type);
+    static void setPreserveInputType(bool v);
+    static bool getPreserveInputType();
     static MNN::BlobT* convertTensorToBlob(const onnx::TensorProto* tensor, const std::string& modelDir, MNN::OpT* op);
     // static std::unique_ptr<MNN::SubGraphProtoT> buildSubGraph(const onnx::GraphProto* graph, std::string& name);
 };

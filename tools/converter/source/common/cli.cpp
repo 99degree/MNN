@@ -26,6 +26,7 @@
 #include "caffeConverter.hpp"
 #include "liteConverter.hpp"
 #include "onnxConverter.hpp"
+#include "onnxOpConverter.hpp"
 #include "tensorflowConverter.hpp"
 #include "torchConverter.hpp"
 #include "writeFb.hpp"
@@ -164,6 +165,8 @@ bool Cli::initializeMNNConvertArgs(modelConfig &modelPath, int argc, char **argv
                                                       cxxopts::value<std::string>())("MNNModel", "MNN model, ex: *.mnn",
                                                                                      cxxopts::value<std::string>())(
         "fp16", "save Conv's weight/bias in half_float data type")(
+        "preserveInputType",
+        "keep int16/uint16/float16 input types instead of widening to 32-bit (default: widen to int32)")(
         "benchmarkModel",
         "Do NOT save big size data, such as Conv's weight,BN's gamma,beta,mean and variance etc. Only used to test the "
         "cost of the model")("bizCode", "MNN Model Flag, ex: MNN",
@@ -357,6 +360,10 @@ bool Cli::initializeMNNConvertArgs(modelConfig &modelPath, int argc, char **argv
     // half float
     if (result.count("fp16")) {
         modelPath.saveHalfFloat = true;
+    }
+    // preserve input types (int16, uint16, float16) instead of widening to 32-bit
+    if (result.count("preserveInputType")) {
+        modelPath.preserveInputType = true;
     }
     if (result.count("weightQuantAsymmetric")) {
         modelPath.weightQuantAsymmetric = result["weightQuantAsymmetric"].as<bool>();
@@ -589,6 +596,10 @@ bool Cli::convertModel(modelConfig& modelPath) {
             parseRes = addBizCode(modelPath.modelFile, modelPath.bizCode, netT);
         }
     } else if (modelPath.model == modelConfig::ONNX) {
+        // Apply preserveInputType flag before ONNX conversion
+        if (modelPath.preserveInputType) {
+            onnxOpConverter::setPreserveInputType(true);
+        }
         parseRes = onnx2MNNNet(modelPath.modelFile, modelPath.bizCode, netT, metaOp.get(), inputNames);
     } else if (modelPath.model == modelConfig::TFLITE) {
         if (modelPath.mnn2json) {

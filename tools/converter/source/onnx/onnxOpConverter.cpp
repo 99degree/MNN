@@ -199,6 +199,11 @@ static int _getDataSizeForRead(int32_t itype) {
     return 8;
 }
 
+static bool gPreserveInputType = false;
+
+void onnxOpConverter::setPreserveInputType(bool v) { gPreserveInputType = v; }
+bool onnxOpConverter::getPreserveInputType() { return gPreserveInputType; }
+
 MNN::DataType onnxOpConverter::convertDataType(int32_t itype) {
     static std::map<::onnx::TensorProto_DataType, MNN::DataType> dataTypeMap{
         {onnx::TensorProto_DataType_FLOAT, MNN::DataType_DT_FLOAT},
@@ -217,6 +222,23 @@ MNN::DataType onnxOpConverter::convertDataType(int32_t itype) {
         {onnx::TensorProto_DataType_UINT64, MNN::DataType_DT_INT32}, // For compability, use int32 instead of uint64
     };
     auto type = static_cast<::onnx::TensorProto_DataType>(itype);
+
+    // When preserveInputType is enabled, keep int16/uint16 types instead of widening
+    if (gPreserveInputType) {
+        switch (type) {
+            case onnx::TensorProto_DataType_INT16:
+                return MNN::DataType_DT_INT16;
+            case onnx::TensorProto_DataType_UINT16:
+                return MNN::DataType_DT_UINT16;
+            case onnx::TensorProto_DataType_FLOAT16:
+                return MNN::DataType_DT_HALF;
+            case onnx::TensorProto_DataType_BFLOAT16:
+                return MNN::DataType_DT_BFLOAT16;
+            default:
+                break;
+        }
+    }
+
     if (dataTypeMap.find(type) != dataTypeMap.end()) {
         return dataTypeMap[type];
     }
