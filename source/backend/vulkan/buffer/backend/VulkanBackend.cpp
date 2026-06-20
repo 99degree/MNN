@@ -74,7 +74,12 @@ void _VKHalfToFloat(const int16_t* src, float* dst, size_t size) {
 
 static void _copyBufferToTensor(const Tensor* dest, const VulkanBuffer* source, size_t offset, bool half2float = false) {
     auto sourcePtr   = (const float*)source->map(offset);
-    if (half2float) {
+    auto typeBits = dest->getType().bits;
+    if (typeBits == 16) {
+        // Direct copy for fp16/int16 host tensors (no conversion)
+        auto elementCount = static_cast<size_t>(dest->elementSize());
+        ::memcpy(dest->host<uint16_t>(), sourcePtr, elementCount * sizeof(uint16_t));
+    } else if (half2float) {
         auto dstPtr = dest->host<float>();
         auto elementCount = static_cast<size_t>(dest->elementSize());
         HALF_TO_FLOAT(reinterpret_cast<const int16_t*>(sourcePtr), dstPtr, elementCount);
@@ -86,7 +91,12 @@ static void _copyBufferToTensor(const Tensor* dest, const VulkanBuffer* source, 
 
 static void _copyTensorToBuffer(const Tensor* source, const VulkanBuffer* dest, size_t offset, bool float2half = false) {
     auto destPtr = reinterpret_cast<uint8_t*>(dest->map(offset));
-    if (float2half) {
+    auto typeBits = source->getType().bits;
+    if (typeBits == 16) {
+        // Direct copy for fp16/int16 host tensors (no conversion)
+        auto elementCount = static_cast<size_t>(source->elementSize());
+        ::memcpy(destPtr, source->host<uint16_t>(), elementCount * sizeof(uint16_t));
+    } else if (float2half) {
         auto srcPtr = source->host<float>();
         auto elementCount = static_cast<size_t>(source->elementSize());
         FLOAT_TO_HALF(srcPtr, reinterpret_cast<int16_t*>(destPtr), elementCount);
@@ -210,13 +220,21 @@ std::pair<const VulkanBuffer*, size_t> VulkanBackend::getTensorBuffer(const Tens
 
 size_t VulkanBackend::getTensorSize(const Tensor* tensor) const {
     size_t alignElementSize = (size_t) UP_DIV(tensor->elementSize(), 4) * 4;
-    size_t bytes = ((tensor->getType().code == halide_type_float) && mUseFP16) ? sizeof(uint16_t) : sizeof(float);
+    size_t bytes;
+    auto typeBits = tensor->getType().bits;
+    if (typeBits == 16) {
+        bytes = sizeof(uint16_t);
+    } else if ((tensor->getType().code == halide_type_float) && mUseFP16) {
+        bytes = sizeof(uint16_t);
+    } else {
+        bytes = sizeof(float);
+    }
     size_t size = alignElementSize * bytes;
     return size;
 }
 
 Backend::MemObj* VulkanBackend::onAcquire(const Tensor* tensor, StorageType storageType) {
-    MNN_ASSERT(tensor->getType().code == halide_type_float || tensor->getType().code == halide_type_int);
+    MNN_ASSERT(tensor->getType().code == halide_type_float || tensor->getType().code == halide_type_int || tensor->getType().bits == 16);
     //FUNC_PRINT_ALL(tensor, p);
     auto alignSize = getTensorSize(tensor);
     auto MTensor     = const_cast<Tensor*>(tensor);
@@ -455,6 +473,10 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
 
     auto calculateCpSize = [this] (const Tensor* tensor) -> size_t {
             size_t eleSize = (size_t) tensor->elementSize();
+            auto typeBits = tensor->getType().bits;
+            if (typeBits == 16) {
+                return eleSize * sizeof(uint16_t);
+            }
             return (tensor->getType().code == halide_type_float && this->mUseFP16) ?
                 (eleSize * sizeof(uint16_t)) :
                 (eleSize * sizeof(float));
