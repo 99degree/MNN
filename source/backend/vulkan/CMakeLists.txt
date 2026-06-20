@@ -4,15 +4,6 @@ if (MNN_VULKAN_IMAGE)
 else()
     FILE(GLOB_RECURSE MNN_Vulkan_SRC ${CMAKE_CURRENT_LIST_DIR}/buffer/* ${CMAKE_CURRENT_LIST_DIR}/component/* ${CMAKE_CURRENT_LIST_DIR}/runtime/* ${CMAKE_CURRENT_LIST_DIR}/vulkan/*)
 endif()
-
-if(MNN_GPU_TIME_PROFILE)
-    target_compile_definitions(MNN_Vulkan PRIVATE ENABLE_VULKAN_TIME_PROFILE=1)
-    IF (MNN_GPU_PROFILE_SILENT)
-        target_compile_definitions(MNN_Vulkan PRIVATE MNN_GPU_PROFILE_SILENT=1)
-    ENDIF()
-ENDIF()
-
-
 include_directories("./")
 if(MNN_USE_SYSTEM_LIB)
     find_package(Vulkan REQUIRED)
@@ -28,29 +19,42 @@ IF(MNN_SEP_BUILD)
         MNN_Vulkan
         SHARED
         ${MNN_Vulkan_SRC}
-        )
+    )
     target_link_libraries(MNN_Vulkan MNN)
     if (MNN_USE_SYSTEM_LIB)
         target_link_libraries(MNN_Vulkan ${Vulkan_LIBRARY})
     else()
         target_link_libraries(MNN_Vulkan ${CMAKE_DL_LIBS})
     endif()
+    # Apply Vulkan-specific flags
+    if(MNN_GPU_TIME_PROFILE)
+        target_compile_definitions(MNN_Vulkan PRIVATE ENABLE_VULKAN_TIME_PROFILE=1)
+        IF (MNN_GPU_PROFILE_SILENT)
+            target_compile_definitions(MNN_Vulkan PRIVATE MNN_GPU_PROFILE_SILENT=1)
+        ENDIF()
+    ENDIF()
+    mnn_apply_build_flags(MNN_Vulkan)
 ELSE()
     add_library(
         MNN_Vulkan
         STATIC
         ${MNN_Vulkan_SRC}
-        )
+    )
     mnn_apply_build_flags(MNN_Vulkan)
+    # Apply Vulkan-specific flags
+    if(MNN_GPU_TIME_PROFILE)
+        target_compile_definitions(MNN_Vulkan PRIVATE ENABLE_VULKAN_TIME_PROFILE=1)
+        IF (MNN_GPU_PROFILE_SILENT)
+            target_compile_definitions(MNN_Vulkan PRIVATE MNN_GPU_PROFILE_SILENT=1)
+        ENDIF()
+    ENDIF()
 ENDIF()
-
 include_directories("${CMAKE_CURRENT_LIST_DIR}/include/" "${CMAKE_CURRENT_LIST_DIR}/component/" "${CMAKE_CURRENT_LIST_DIR}/runtime" "${CMAKE_CURRENT_LIST_DIR}/schema/current")
 if (MNN_VULKAN_IMAGE)
     include_directories("${CMAKE_CURRENT_LIST_DIR}/image/execution" "${CMAKE_CURRENT_LIST_DIR}/image/backend" "${CMAKE_CURRENT_LIST_DIR}/image" "${CMAKE_CURRENT_LIST_DIR}/image/shaders")
 else()
     include_directories("${CMAKE_CURRENT_LIST_DIR}/buffer/execution" "${CMAKE_CURRENT_LIST_DIR}/buffer/backend" "${CMAKE_CURRENT_LIST_DIR}/buffer" "${CMAKE_CURRENT_LIST_DIR}/buffer/shaders")
 endif()
-
 if (CMAKE_SYSTEM_NAME MATCHES "^Android")
     add_definitions(-DVK_USE_PLATFORM_ANDROID_KHR)
 endif()
