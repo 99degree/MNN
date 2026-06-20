@@ -32,7 +32,8 @@ IF(MNN_SEP_BUILD)
         ARCHIVE DESTINATION lib
         )
 ELSE()
-    add_library(MNN_Express OBJECT ${MNN_EXPR_SRCS})
+    add_library(MNN_Express STATIC ${MNN_EXPR_SRCS})
+    mnn_apply_build_flags(MNN_Express)
 ENDIF()
 
 

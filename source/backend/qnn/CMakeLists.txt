@@ -23,7 +23,7 @@ if (MNN_QNN_CONVERT_MODE)
     list(APPEND MNN_QNN_SRCS ${CONVERTOR_SRCS})
 endif()
 
-add_library(MNN_QNN OBJECT ${MNN_QNN_SRCS})
+add_library(MNN_QNN STATIC ${MNN_QNN_SRCS})
 
 if (MNN_ARM82)
     target_compile_options(MNN_QNN PRIVATE -DENABLE_ARMV82)

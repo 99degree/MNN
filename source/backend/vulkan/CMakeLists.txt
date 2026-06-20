@@ -6,9 +6,9 @@ else()
 endif()
 
 if(MNN_GPU_TIME_PROFILE)
-    add_definitions(-DENABLE_VULKAN_TIME_PROFILE)
+    target_compile_definitions(MNN_Vulkan PRIVATE ENABLE_VULKAN_TIME_PROFILE=1)
     IF (MNN_GPU_PROFILE_SILENT)
-        add_definitions(-DMNN_GPU_PROFILE_SILENT)
+        target_compile_definitions(MNN_Vulkan PRIVATE MNN_GPU_PROFILE_SILENT=1)
     ENDIF()
 ENDIF()
 
@@ -38,9 +38,10 @@ IF(MNN_SEP_BUILD)
 ELSE()
     add_library(
         MNN_Vulkan
-        OBJECT
+        STATIC
         ${MNN_Vulkan_SRC}
         )
+    mnn_apply_build_flags(MNN_Vulkan)
 ENDIF()
 
 include_directories("${CMAKE_CURRENT_LIST_DIR}/include/" "${CMAKE_CURRENT_LIST_DIR}/component/" "${CMAKE_CURRENT_LIST_DIR}/runtime" "${CMAKE_CURRENT_LIST_DIR}/schema/current")

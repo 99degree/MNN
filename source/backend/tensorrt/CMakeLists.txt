@@ -5,7 +5,7 @@ file(GLOB CUDA_SRCS ${CMAKE_CURRENT_LIST_DIR}/execution/plugin/*)
 
 FIND_PACKAGE(CUDA REQUIRED)
 
-add_library( MNN_TRT OBJECT ${MNN_TRT_SRCS})
+add_library( MNN_TRT STATIC ${MNN_TRT_SRCS})
 
 include_directories(/usr/local/cuda/include/)
 include_directories(${CMAKE_CURRENT_LIST_DIR}/backend/)
