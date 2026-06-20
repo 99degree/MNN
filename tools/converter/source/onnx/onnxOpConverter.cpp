@@ -216,8 +216,8 @@ MNN::DataType onnxOpConverter::convertDataType(int32_t itype) {
         {onnx::TensorProto_DataType_UINT8, MNN::DataType_DT_UINT8},
         {onnx::TensorProto_DataType_INT8, MNN::DataType_DT_INT8},
         {onnx::TensorProto_DataType_BOOL, MNN::DataType_DT_INT32},   // For compability, use int32 instead of bool
-        {onnx::TensorProto_DataType_INT16, MNN::DataType_DT_INT32},  // For compability, use int32 instead of int16
-        {onnx::TensorProto_DataType_UINT16, MNN::DataType_DT_INT32}, // For compability, use int32 instead of uint16
+        {onnx::TensorProto_DataType_INT16, MNN::DataType_DT_INT16},  // Keep int16 (was DT_INT32)
+        {onnx::TensorProto_DataType_UINT16, MNN::DataType_DT_UINT16}, // Keep uint16 (was DT_INT32)
         {onnx::TensorProto_DataType_UINT32, MNN::DataType_DT_INT32}, // For compability, use int32 instead of uint32
         {onnx::TensorProto_DataType_UINT64, MNN::DataType_DT_INT32}, // For compability, use int32 instead of uint64
     };
