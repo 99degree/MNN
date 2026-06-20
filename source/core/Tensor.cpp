@@ -169,27 +169,25 @@ Tensor* Tensor::clone(const Tensor* src, bool deepCopy) {
 
 
 bool Tensor::copyFromHostTensor(const Tensor* hostTensor) {
-    auto bn = mDescribe->getBackend();
-    if (nullptr == bn) {
-        return false;
-    }
-    auto hostbn = hostTensor->mDescribe->getBackend();
-    std::shared_ptr<Tensor> tmpTensor;
-    if (nullptr != hostbn && hostbn->type() != bn->type() && hostbn->type() != MNN_FORWARD_CPU) {
-        tmpTensor.reset(new Tensor(hostTensor, hostTensor->getDimensionType()));
-        hostTensor->copyToHostTensor(tmpTensor.get());
-        hostTensor = tmpTensor.get();
-    }
-    bn->onCopyBuffer(hostTensor, this);
+    // DEPRECATED: All tensors should use host buffers directly via buffer().host.
+    // Use mnn_run_true_zero_copy which sets host pointers before runSession.
+    MNN_PRINT("[WARN] copyFromHostTensor called — deprecated. Use direct buffer().host instead.\n");
+    auto* dst = buffer().host;
+    auto* src = hostTensor->buffer().host;
+    if (!dst || !src) return false;
+    ::memcpy(dst, src, size());
+    MNN_PRINT("[WARN] copyFromHostTensor: memcpy %zu bytes (host→host fallback)\n", size());
     return true;
 }
 
 bool Tensor::copyToHostTensor(Tensor* hostTensor) const {
-    auto bn = mDescribe->getBackend();
-    if (nullptr == bn) {
-        return false;
-    }
-    bn->onCopyBuffer(this, hostTensor);
+    // DEPRECATED: Same as above — direct memcpy for host→host.
+    MNN_PRINT("[WARN] copyToHostTensor called — deprecated. Use direct buffer().host instead.\n");
+    auto* dst = hostTensor->buffer().host;
+    auto* src = buffer().host;
+    if (!dst || !src) return false;
+    ::memcpy(dst, src, size());
+    MNN_PRINT("[WARN] copyToHostTensor: memcpy %zu bytes (host→host fallback)\n", size());
     return true;
 }
 
