@@ -61,5 +61,6 @@ ErrorCode GLConverter::onExecute(const std::vector<Tensor *> &inputs, const std:
 
 
 GLCreatorRegister<TypedCreator<GLConverter>> __converter_op(OpType_ConvertTensor);
+GLCreatorRegister<TypedCreator<GLConverter>> __identity_op(OpType_Identity);
 } // namespace OpenGL
 } // namespace MNN
