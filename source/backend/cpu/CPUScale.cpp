@@ -7,7 +7,9 @@
 //
 
 #include "CPUScale.hpp"
+#ifndef MNN_MINIMAL_CPU
 #include "CPUScaleInt8.hpp"
+#endif
 #include "CPUBackend.hpp"
 #include "core/Macro.h"
 #include "core/TensorUtils.hpp"
@@ -90,9 +92,11 @@ public:
     virtual Execution* onCreate(const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs,
                                 const MNN::Op* op, Backend* backend) const override {
 #ifdef MNN_SUPPORT_QUANT_EXTEND
+#ifndef MNN_MINIMAL_CPU
         if (CPUBackend::getDataType(inputs[0]) == DataType_DT_INT8 || inputs[0]->getType().bytes() == 1) {
             return new CPUScaleInt8(op, backend);
         }
+#endif
 #endif
         return new CPUScale(op, backend);
     }

@@ -7,7 +7,9 @@
 //
 
 #include "CPUBinary.hpp"
+#ifndef MNN_MINIMAL_CPU
 #include "CPUBinaryInt8.hpp"
+#endif
 #include "CPUBackend.hpp"
 #include "compute/CommonOptFunction.h"
 #include "compute/ConvOpt.h"
@@ -196,6 +198,7 @@ public:
         int32_t type = op->main_as_BinaryOp()->opType();
         auto dataType = inputs[0]->getType();
         auto core = static_cast<CPUBackend*>(backend)->functions();
+#ifndef MNN_MINIMAL_CPU
 #ifdef MNN_SUPPORT_QUANT_EXTEND
         if (CPUBackend::getDataType(inputs[0]) == DataType_DT_INT8 || inputs[0]->getType().bytes() == 1) {
             if (CPUBackend::getDataType(inputs[1]) == DataType_DT_INT8 || inputs[1]->getType().bytes() == 1) {
@@ -208,6 +211,7 @@ public:
                 }
             }
         }
+#endif
 #endif
         if (dataType.bits == 32) {
             if (dataType.code == halide_type_int) {

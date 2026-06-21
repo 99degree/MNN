@@ -512,7 +512,11 @@ CPUBackend::CPUBackend(const CPURuntime* runtime, BackendConfig::PrecisionMode p
     }
     mPrecisionMode = precision;
     mCoreFunctions = MNNGetCoreFunctions();
+#ifdef MNN_MINIMAL_CPU
+    mInt8CoreFunctions = nullptr;
+#else
     mInt8CoreFunctions = MNNGetInt8CoreFunctions();
+#endif
     mCache = mDmaInfo->mCacheGroup[0].get();
 }
 

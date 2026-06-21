@@ -4668,7 +4668,9 @@ void MNNCoreFunctionInit() {
     gCoreFunction->MNNUnpackCUnitTransposeInt16 = MNNPackTransposeInt16;
 
     gCoreFunction->MNNAxByClampBroadcastUnit = MNNAxByClampBroadcastUnit;
+#ifndef MNN_MINIMAL_CPU
     gCoreFunction->MNNConvRunForLineDepthwise = MNNConvRunForLineDepthwise;
+#endif
     gCoreFunction->MNNMatrixAdd = MNNMatrixAdd;
     gCoreFunction->MNNMatrixSub = MNNMatrixSub;
     gCoreFunction->MNNStrassenMergeCFunction = MNNStrassenMergeCFunction;
@@ -4687,11 +4689,15 @@ void MNNCoreFunctionInit() {
     gCoreFunction->MNNAddC4WithStride = MNNAddC4WithStride;
     gCoreFunction->MNNCopyC4WithStride = MNNCopyC4WithStride;
 
+#ifndef MNN_MINIMAL_CPU
     gCoreFunction->chooseWinoSourceTransformPack = WinogradFunction::chooseWinoSourceTransformPack;
     gCoreFunction->chooseWinoSourceUnrollTransform = WinogradFunction::chooseSourceUnrollTransform;
     gCoreFunction->chooseWinoDestUnrollTransform = WinogradFunction::chooseWinoDestUnrollTransform;
+#endif
+#ifndef MNN_MINIMAL_CPU
     gCoreFunction->MNNDeconvRunForLineDepthwise = MNNDeconvRunForLineDepthwise;
     gCoreFunction->MNNDeconvRunForUnitDepthWise = MNNDeconvRunForUnitDepthWise;
+#endif
     gCoreFunction->MNNSoftmax = MNNSoftmax;
 #ifdef MNN_USE_NEON
     gCoreFunction->MNNDepthwiseConvFastKernel = MNNDepthwiseConvFastKernel;
@@ -4842,7 +4848,9 @@ void MNNCoreFunctionInit() {
         gCoreFunction->int8MatmulRelatedFunctions.MNNSumWeightInt8 = gCoreFunction->MNNSumWeightInt8;
         gCoreFunction->int8MatmulRelatedFunctions.MNNGeneralIm2Col = gCoreFunction->MNNGeneralIm2Col;
     }
+#ifndef MNN_MINIMAL_CPU
     MNNCoreInt8FunctionInit();
+#endif
     MNNFunctionInit();
 }
 CoreFunctions* MNNGetCoreFunctions() {

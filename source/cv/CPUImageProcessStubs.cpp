@@ -1,34 +1,21 @@
 /**
- * CPU Backend Stubs (when MNN_CPU=OFF)
+ * CPU Image Process Stubs — CV function stubs for MNN_CPU=OFF builds.
  *
- * Provides minimal implementations for CPU symbols referenced by the
- * CV and core modules when the CPU backend is disabled.
+ * When MNN_CPU=OFF, the CPU compute directory (with functions like
+ * MNNC1blitH, MNNRGBToBGR, etc.) is excluded. These stubs satisfy
+ * the linker for the MNNCV module's dependency on those symbols.
+ *
+ * When MNN_MINIMAL_CPU=ON (CPU=ON but compute/ excluded), these stubs
+ * are still needed for the same reason.
  */
 
 #include <cstddef>
 #include <cstdint>
 
 namespace MNN {
-
-struct CoreFunctions;
-CoreFunctions* MNNGetCoreFunctions() { return nullptr; }
-void registerCPURuntimeCreator() {}
-
-struct Tensor;
-enum class ErrorCode : int { NO_ERROR = 0 };
-class CPUTensorConverter {
-public:
-    static ErrorCode convert(const Tensor*, const Tensor*, const CoreFunctions*, int, int);
-};
-// Out-of-line to force symbol emission (inline in-class may be elided)
-ErrorCode CPUTensorConverter::convert(const Tensor*, const Tensor*, const CoreFunctions*, int, int) {
-    return ErrorCode::NO_ERROR;
-}
-
 namespace CV {
 struct Point { int x; int y; };
 }
-
 } // namespace MNN
 
 extern "C" {
@@ -121,7 +108,7 @@ void MNNC3ToC4(const unsigned char* s, unsigned char* d, size_t c) {
     }
 }
 
-// ── Samplers (must match CPU backend signatures exactly) ──────────────
+// ── Samplers ──────────────────────────────────────────────────────────
 
 void MNNSamplerC1Bilinear(const unsigned char* src, unsigned char* dst,
                            MNN::CV::Point* pts, size_t sta, size_t count,
