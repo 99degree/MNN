@@ -124,6 +124,7 @@ extern void ___FmhcaSizeComputer__OpType_Fmhca__();
 extern void ___AttentionSizeComputer__OpType_Attention__();
 extern void ___LinearAttentionSizeComputer__OpType_LinearAttention__();
 #endif
+extern void ___ShapeExtra__OpType_Extra__();
 void registerShapeOps() {
 ___ShapeSizeComputer__OpType_Shape__();
 ___ShapeRasterComputer__OpType_Raster__();
@@ -248,5 +249,6 @@ ___FmhcaSizeComputer__OpType_Fmhca__();
 ___AttentionSizeComputer__OpType_Attention__();
 ___LinearAttentionSizeComputer__OpType_LinearAttention__();
 #endif
+___ShapeExtra__OpType_Extra__();
 }
 }

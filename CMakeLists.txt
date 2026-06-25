@@ -497,6 +497,13 @@ endif()
 
 # CV
 FILE(GLOB MNN_CV_SRC ${CMAKE_CURRENT_LIST_DIR}/source/cv/*)
+# CPUImageProcessStubs.cpp provides stubs for MNN_CPU=OFF or MNN_MINIMAL_CPU builds.
+# When the full CPU backend is built, the real implementations in
+# source/backend/cpu/compute/ImageProcessFunction.cpp are used instead.
+# Exclude the stub file to avoid duplicate symbols.
+if(MNN_CPU AND NOT MNN_MINIMAL_CPU)
+    list(REMOVE_ITEM MNN_CV_SRC ${CMAKE_CURRENT_LIST_DIR}/source/cv/CPUImageProcessStubs.cpp)
+endif()
 add_library(MNNCV STATIC ${MNN_CV_SRC})
 list(APPEND MNN_STATIC_LIBS MNNCV)
 list(APPEND MNN_TARGETS MNNCV)

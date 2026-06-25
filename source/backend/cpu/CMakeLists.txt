@@ -32,6 +32,8 @@ IF(MNN_CPU)
         )
     else()
         FILE(GLOB MNN_CPU_SRC ${CMAKE_CURRENT_LIST_DIR}/*.cpp ${CMAKE_CURRENT_LIST_DIR}/*.h ${CMAKE_CURRENT_LIST_DIR}/*.hpp ${CMAKE_CURRENT_LIST_DIR}/compute/*)
+        # Exclude CPUOPRegisterMinimal.cpp when building full CPU backend to avoid duplicate registerCPUOps()
+        list(REMOVE_ITEM MNN_CPU_SRC ${CMAKE_CURRENT_LIST_DIR}/CPUOPRegisterMinimal.cpp)
     endif()
     
     add_library(MNNCPU STATIC ${MNN_CPU_SRC})
