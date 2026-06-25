@@ -1,8 +1,7 @@
 // ShapeExtra.cpp — SizeComputer for OpType_Extra
-// Handles SpaceToDepthEx custom Extra op for ISP pipeline
 #include "shape/SizeComputer.hpp"
 #include "core/OpCommonUtils.hpp"
-using namespace MNN;
+namespace MNN {
 
 class ShapeExtra : public SizeComputer {
 public:
@@ -12,7 +11,6 @@ public:
         if (nullptr == extra || nullptr == extra->attr()) {
             return false;
         }
-        // Find global_size or blocksize attribute
         for (int i = 0; i < extra->attr()->size(); ++i) {
             auto attr = extra->attr()->GetAs<Attribute>(i);
             if (attr->key()->str() == "global_size") {
@@ -25,14 +23,11 @@ public:
                     outputs[0]->buffer().dim[1].extent = h;
                     outputs[0]->buffer().dim[2].extent = w;
                     outputs[0]->buffer().dimensions = 3;
-                    TensorUtils::getDescribe(outputs[0])->dimensionFormat = 
-                        TensorUtils::getDescribe(inputs[0])->dimensionFormat;
                     return true;
                 }
             }
         }
-        // Fallback: match input dims
-        if (inputs[0]->buffer().dimensions >= 2) {
+        if (inputs.size() > 0 && inputs[0]->buffer().dimensions >= 2) {
             outputs[0]->buffer().dimensions = inputs[0]->buffer().dimensions;
             for (int d = 0; d < inputs[0]->buffer().dimensions; d++) {
                 outputs[0]->buffer().dim[d].extent = inputs[0]->buffer().dim[d].extent;
@@ -43,3 +38,5 @@ public:
     }
 };
 REGISTER_SHAPE(ShapeExtra, OpType_Extra);
+
+} // namespace MNN

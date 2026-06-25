@@ -1,6 +1,6 @@
 // GeometryExtra.cpp — GeometryComputer for OpType_Extra (pass-through)
 #include "GeometryComputer.hpp"
-using namespace MNN;
+namespace MNN {
 
 class GeometryExtra : public GeometryComputer {
 public:
@@ -15,3 +15,5 @@ static void _create() {
     GeometryComputer::registerGeometryComputer(comp, {OpType_Extra});
 }
 REGISTER_GEOMETRY(GeometryExtra, _create);
+
+} // namespace MNN
