@@ -169,25 +169,59 @@ Tensor* Tensor::clone(const Tensor* src, bool deepCopy) {
 
 
 bool Tensor::copyFromHostTensor(const Tensor* hostTensor) {
-    // DEPRECATED: All tensors should use host buffers directly via buffer().host.
-    // Use mnn_run_true_zero_copy which sets host pointers before runSession.
-    MNN_PRINT("[WARN] copyFromHostTensor called — deprecated. Use direct buffer().host instead.\n");
-    auto* dst = buffer().host;
     auto* src = hostTensor->buffer().host;
-    if (!dst || !src) return false;
+    auto* dst = buffer().host;
+    if (dst && src) {
+        // Both have host memory, do direct copy
+        ::memcpy(dst, src, size());
+        return true;
+    }
+    if (!src) return false;
+    if (!dst) {
+        // GPU tensor - copy via backend
+        auto des = TensorUtils::getDescribeOrigin(this);
+        if (des && des->getBackend()) {
+            des->getBackend()->onCopyBuffer(hostTensor, this);
+            return true;
+        }
+        return false;
+    }
     ::memcpy(dst, src, size());
-    MNN_PRINT("[WARN] copyFromHostTensor: memcpy %zu bytes (host→host fallback)\n", size());
     return true;
 }
 
 bool Tensor::copyToHostTensor(Tensor* hostTensor) const {
-    // DEPRECATED: Same as above — direct memcpy for host→host.
-    MNN_PRINT("[WARN] copyToHostTensor called — deprecated. Use direct buffer().host instead.\n");
-    auto* dst = hostTensor->buffer().host;
     auto* src = buffer().host;
-    if (!dst || !src) return false;
+    auto* dst = hostTensor->buffer().host;
+    if (dst && src) {
+        // Both have host memory, do direct copy
+        ::memcpy(dst, src, size());
+        return true;
+    }
+    // Allocate host memory if dst is null
+    if (!dst) {
+        size_t sizeBytes = hostTensor->size();
+        dst = (uint8_t*)MNNMemoryAllocAlign(sizeBytes, MNN_MEMORY_ALIGN_DEFAULT);
+        if (!dst) return false;
+        hostTensor->buffer().host = dst;
+        // Mark as own memory with a custom flag (bit 2)
+        hostTensor->buffer().flags |= 4;
+    }
+    if (!src) {
+        // GPU tensor - copy via backend
+        auto des = TensorUtils::getDescribeOrigin(this);
+        if (des && des->getBackend()) {
+            auto* be = des->getBackend();
+            // Check actual backend type
+            int bt = be->type();
+            fprintf(stderr, "[copyToHostTensor] Calling backend %p type=%d\n", (void*)be, bt);
+            be->onCopyBuffer(this, hostTensor);
+            return true;
+        }
+        // No backend - can't copy
+        return false;
+    }
     ::memcpy(dst, src, size());
-    MNN_PRINT("[WARN] copyToHostTensor: memcpy %zu bytes (host→host fallback)\n", size());
     return true;
 }
 

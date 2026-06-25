@@ -15,7 +15,13 @@
 #include "component/VulkanDevice.hpp"
 #include "component/VulkanInstance.hpp"
 #include "execution/VulkanBasicExecution.hpp"
+#include "execution/VulkanFuse.hpp"
 //#define MNN_OPEN_TIME_TRACE
+
+// Forward declaration for VulkanFuse (defined in buffer/execution/VulkanFuse.cpp)
+namespace MNN {
+class VulkanFuse;
+}
 #include <MNN/AutoTime.hpp>
 // #define MNN_OP_SUPPORT_LOG
 
@@ -287,14 +293,19 @@ Execution* VulkanBackend::onCreate(const std::vector<Tensor*>& inputs, const std
     if (nullptr != op->name()) {
         name = op->name()->str();
     }
-    if (iter == creator->end()) {
+    // For OpType_Extra, use VulkanFuse directly (handles custom SPIR-V shaders)
+    std::shared_ptr<VulkanBasicExecution> originExecution;
+    if (op->type() == OpType_Extra) {
+        originExecution.reset((VulkanBasicExecution*)new VulkanFuse(op->main_as_Extra(), this, (int)inputs.size(), (int)outputs.size()));
+    } else if (iter == creator->end()) {
 #ifdef MNN_OP_SUPPORT_LOG
         MNN_PRINT("Vulkan don't support %d, %s: %s\n", op->type(), EnumNameOpType(op->type()),
                 name.c_str());
 #endif
         return nullptr;
+    } else {
+        originExecution.reset((VulkanBasicExecution*)iter->second->onCreate(inputs, outputs, op, this));
     }
-    std::shared_ptr<VulkanBasicExecution> originExecution ((VulkanBasicExecution*)iter->second->onCreate(inputs, outputs, op, this));
     if (nullptr == originExecution) {
 #ifdef MNN_OP_SUPPORT_LOG
         MNN_ERROR("Vulkan don't support for %s, type=%s, Special case\n", name.c_str(), EnumNameOpType(op->type()));
@@ -457,6 +468,9 @@ void VulkanBackend::_requireHostBuffer(size_t size) const {
 }
 
 void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTensor) const {
+    fprintf(stderr, "[VkBn::onCopyBuffer] ENTERED srcHost=%p dstHost=%p\n",
+        (void*)srcTensor->host<float>(), (void*)dstTensor->host<float>());
+    fflush(stderr);
 #ifdef MNN_VULKAN_DEBUG
     AUTOTIME;
     MNN_PRINT("Src: ");
@@ -511,6 +525,9 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
     } else if (dstTensor->host<float>() != nullptr) {
         // gpu->host
         _finish();
+        // DEBUG
+        fprintf(stderr, "[VulkanBackend::onCopyBuffer] GPU->HOST: srcDeviceId=%p dstHost=%p\n",
+            (void*)srcTensor->deviceId(), (void*)dstTensor->host<float>());
         auto format = TensorUtils::getDescribe(dstTensor)->dimensionFormat;
         if (format != TensorUtils::getDescribe(srcTensor)->dimensionFormat) {
             tempTensor.reset(Tensor::create(srcTensor->shape(), dstTensor->getType(), nullptr, _convert(TensorUtils::getDescribe(srcTensor)->dimensionFormat)), [dstTensor](void* t) {

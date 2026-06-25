@@ -8,6 +8,7 @@
 
 #include "VulkanRuntime.hpp"
 #include "VulkanBackend.hpp"
+#include <unistd.h>
 namespace MNN {
 class VulkanBufferAllocator : public BufferAllocator::Allocator {
 public:
@@ -263,6 +264,9 @@ std::pair<const void*, size_t> VulkanRuntime::onGetCache() {
     return std::make_pair(mTuneBuffer.data(), size);
 }
 
+// Forward declaration for VulkanFuse registration
+extern "C" void MNNVulkanFuseRegister();
+
 class VulkanRuntimeCreator : public RuntimeCreator {
 public:
     virtual Runtime* onCreate(const Backend::Info& info) const {
@@ -276,8 +280,22 @@ public:
     }
 };
 
-static bool gResistor = []() {
+// Explicit registration entry point callable via dlsym after dlopen.
+// This avoids --gc-sections stripping the static constructor.
+extern "C" __attribute__((visibility("default"))) void MNNVulkanRegisterAll() {
     MNNInsertExtraRuntimeCreator(MNN_FORWARD_VULKAN, new VulkanRuntimeCreator, true);
-    return false;
-}();
+    MNNVulkanFuseRegister();
+}
+
+// Use __attribute__((constructor)) instead of static lambda to ensure
+// the init function survives --gc-sections (--gc-sections strips static
+// initializers that are not directly referenced by live code).
+__attribute__((constructor)) static void _vulkan_runtime_init() {
+    write(2, "[VulkanRuntime] _vulkan_runtime_init entered\n", 43);
+    MNNInsertExtraRuntimeCreator(MNN_FORWARD_VULKAN, new VulkanRuntimeCreator, true);
+    // Register VulkanFuse creator for OpType_Extra
+    // (Static constructors in other files may be stripped by --gc-sections)
+    MNNVulkanFuseRegister();
+    write(2, "[VulkanRuntime] _vulkan_runtime_init done\n", 40);
+}
 }

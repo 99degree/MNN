@@ -1,0 +1,38 @@
+#version 450
+#extension GL_EXT_shader_16bit_storage: require
+#extension GL_EXT_shader_explicit_arithmetic_types: require
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+// Input: INT16 buffer [1, 1, H, W]
+// Output: F32 buffer [1, 4, H/2, W/2]
+layout(set = 0, binding = 0) readonly buffer InputBuffer { int16_t in_data[]; };
+layout(set = 0, binding = 1) writeonly buffer OutputBuffer { float out_data[]; };
+
+layout(push_constant) uniform PushConstants {
+    int width;
+    int height;
+    float divisor;
+} pc;
+
+void main() {
+    uint ox = gl_GlobalInvocationID.x;
+    uint oy = gl_GlobalInvocationID.y;
+    uint oc = gl_GlobalInvocationID.z; // channel 0..3
+    
+    uint hw = uint(pc.width) / 2u;
+    uint hh = uint(pc.height) / 2u;
+    if (ox >= hw || oy >= hh || oc >= 4u) return;
+    
+    // Bayer positions within each 2x2 block
+    uint bx = oc & 1u;
+    uint by = (oc >> 1u) & 1u;
+    uint ix = 2u * ox + bx;
+    uint iy = 2u * oy + by;
+    
+    uint idx = iy * uint(pc.width) + ix;
+    float fval = float(in_data[idx]) / pc.divisor;
+    
+    uint oidx = oc * hh * hw + oy * hw + ox;
+    out_data[oidx] = fval;
+}
