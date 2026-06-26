@@ -468,9 +468,6 @@ void VulkanBackend::_requireHostBuffer(size_t size) const {
 }
 
 void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTensor) const {
-    fprintf(stderr, "[VkBn::onCopyBuffer] ENTERED srcHost=%p dstHost=%p\n",
-        (void*)srcTensor->host<float>(), (void*)dstTensor->host<float>());
-    fflush(stderr);
 #ifdef MNN_VULKAN_DEBUG
     AUTOTIME;
     MNN_PRINT("Src: ");

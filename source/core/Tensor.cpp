@@ -212,9 +212,6 @@ bool Tensor::copyToHostTensor(Tensor* hostTensor) const {
         auto des = TensorUtils::getDescribeOrigin(this);
         if (des && des->getBackend()) {
             auto* be = des->getBackend();
-            // Check actual backend type
-            int bt = be->type();
-            fprintf(stderr, "[copyToHostTensor] Calling backend %p type=%d\n", (void*)be, bt);
             be->onCopyBuffer(this, hostTensor);
             return true;
         }

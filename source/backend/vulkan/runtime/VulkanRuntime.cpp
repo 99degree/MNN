@@ -294,11 +294,9 @@ extern "C" __attribute__((visibility("default"))) void MNNVulkanRegisterAll() {
 // the init function survives --gc-sections (--gc-sections strips static
 // initializers that are not directly referenced by live code).
 __attribute__((constructor)) static void _vulkan_runtime_init() {
-    write(2, "[VulkanRuntime] _vulkan_runtime_init entered\n", 43);
     MNNInsertExtraRuntimeCreator(MNN_FORWARD_VULKAN, new VulkanRuntimeCreator, true);
     // Register VulkanFuse creator for OpType_Extra
     // (Static constructors in other files may be stripped by --gc-sections)
     MNNVulkanFuseRegister();
-    write(2, "[VulkanRuntime] _vulkan_runtime_init done\n", 40);
 }
 }

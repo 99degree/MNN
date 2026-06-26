@@ -86,11 +86,11 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
         auto attr = extra->attr()->GetAs<Attribute>(i);
         if (attr->key()->str() == "optimized_dispatch") {
             mOptimizedDispatch = attr->b();
-            printf("[VulkanFuse] optimized_dispatch attr found: %d\n", mOptimizedDispatch);
+            // [VulkanFuse] optimized_dispatch attr found
             break;
         }
     }
-    printf("[VulkanFuse] mOptimizedDispatch = %d, mNeedAutoTuning = %d\n", mOptimizedDispatch, mNeedAutoTuning);
+    // [VulkanFuse] mOptimizedDispatch set
     // ... rest of constructor ...
     std::vector<VkDescriptorType> types;
     int maxIndex = -1;
