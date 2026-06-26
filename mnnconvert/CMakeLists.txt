@@ -118,7 +118,7 @@ set(MNN_CONVERT_INCLUDES
 )
 
 # Common compile definitions
-set(MNN_CONVERT_DEFS GOOGLE_PROTOBUF_NO_RTTI)
+set(MNN_CONVERT_DEFS GOOGLE_PROTOBUF_NO_RTTI MNN_ISP_EMBED_SPIRV)
 
 # ============================================================
 # Build executable (CLI tool)
