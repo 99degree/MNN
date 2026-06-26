@@ -173,6 +173,20 @@ static bool isExtraOfType(const OpT* op, const char* type) {
     return e && e->type == type;
 }
 
+// Helper: extract the "const" attribute's float data from an Extra op
+static std::vector<float> getExtraConst(const std::unique_ptr<OpT>& op) {
+    if (!op || op->type != MNN::OpType_Extra) return {};
+    auto* ex = op->main.AsExtra();
+    if (!ex) return {};
+    for (auto& attr : ex->attr) {
+        if (attr && attr->key == "const" && attr->tensor &&
+            !attr->tensor->float32s.empty()) {
+            return attr->tensor->float32s;
+        }
+    }
+    return {};
+}
+
 static bool isAvgPool3x3(const PoolT* p) {
     return p && p->type == MNN::PoolType_AVEPOOL
            && p->kernelX == 3 && p->kernelY == 3
@@ -332,13 +346,32 @@ private:
     }
 
     // R2: Conv(1×1,4→3ch) → isp.demosaic_ccm
+    // Extracts the 3×4 Conv weights and converts to 3×3 CCM for the fused shader.
+    // The 3×4 matrix maps [R, Gr, Gb, B] → [R', G', B'].
+    // The demosaic shader computes G=(Gr+Gb)/2, then applies 3×3 CCM:
+    //   ccm[i][R] = w[i][R], ccm[i][G] = 2*w[i][Gr], ccm[i][B] = w[i][B]
+    // Assumes w[i][Gr] == w[i][Gb] (equal Gr/Gb contribution per output channel).
     bool tryDemosaic(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         if (ops[i]->type != MNN::OpType_Convolution) return false;
         auto* c = ops[i]->main.AsConvolution2D();
         if (!isCcmConv(c)) return false;
 
+        // Extract 3×4 Conv weights → 3×3 CCM
+        // Weights layout: [OC=3, IC=4, KY=1, KX=1] = 12 floats contiguous
+        std::vector<float> ccm = {1,0,0, 0,1,0, 0,0,1};  // identity fallback
+        if (c && c->weight.size() >= 12) {
+            const auto& w = c->weight;
+            for (int oc = 0; oc < 3; oc++) {
+                ccm[oc*3 + 0] = w[oc*4 + 0];            // R coefficient
+                ccm[oc*3 + 1] = 2.0f * w[oc*4 + 1];     // G coefficient (assumes Gr=Gb)
+                ccm[oc*3 + 2] = w[oc*4 + 3];             // B coefficient
+            }
+        }
+
         std::vector<float> u = {float(mW),float(mH),float(mInW),float(mInH),
-                                1023.0f, 1,0,0, 0,1,0, 0,0,1, 0,0,0,0};
+                                1023.0f,
+                                ccm[0],ccm[1],ccm[2],ccm[3],ccm[4],ccm[5],ccm[6],ccm[7],ccm[8],
+                                0,0,0,0};
 
         ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
         auto* ex = new MNN::ExtraT(); ex->type = "isp.demosaic_ccm";
@@ -701,12 +734,33 @@ private:
 
             VLOG(1) << "[P2] R10: UnpackDemosaic at " << i << "+" << j;
             int W, H;
-            getExtraDims(ops[i+1], W, H);  // demosaic dims (output=FHD)
+            getExtraDims(ops[j], W, H);   // demosaic dims (output=FHD)
             int inpW = W*2, inpH = H*2;    // input dims (Bayer=4K)
+
+            // Build const buffer for unpack_demosaic: [dims4, smax, blc4, wb4, ccm9, pad4]
+            // Start with defaults, then overlay actual values from constituent ops
             std::vector<float> u = {float(W),float(H), float(inpW),float(inpH), 1023,
                                     0,0,0,0, 1,1,1,1,
                                     1,0,0, 0,1,0, 0,0,1,
                                     0,0,0,0};
+
+            // Read blc/wb from unpack_blc's const buffer (positions [5..12])
+            auto unpackConst = getExtraConst(ops[i]);
+            if (unpackConst.size() >= 13) {
+                u[5] = unpackConst[5];  u[6] = unpackConst[6];
+                u[7] = unpackConst[7];  u[8] = unpackConst[8];
+                u[9] = unpackConst[9];  u[10] = unpackConst[10];
+                u[11] = unpackConst[11]; u[12] = unpackConst[12];
+            }
+
+            // Read CCM from demosaic_ccm's const buffer (positions [5..13])
+            auto ccmConst = getExtraConst(ops[j]);
+            if (ccmConst.size() >= 14) {
+                for (int k = 0; k < 9; k++) {
+                    u[13 + k] = ccmConst[5 + k];
+                }
+            }
+
             ops[i]->main.AsExtra()->type = "isp.unpack_demosaic";
             ops[i]->main.AsExtra()->attr.clear();
             buildCommonAttrs(ops[i]->main.AsExtra(), W, H, u);
