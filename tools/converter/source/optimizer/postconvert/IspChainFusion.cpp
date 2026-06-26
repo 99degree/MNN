@@ -60,16 +60,16 @@ static void addAttr(MNN::ExtraT* extra, const std::string& key, Fn init) {
 static void addSpirv(MNN::ExtraT* extra, const char* type) {
 #ifdef MNN_ISP_EMBED_SPIRV
     struct { const char* type; const unsigned char* data; int len; } map[] = {
-        {"isp.unpack_blc",      kUnpackBlcSpv,      kUnpackBlcSpvLen},
-        {"isp.demosaic_ccm",    kDemosaicCcmSpv,    kDemosaicCcmSpvLen},
-        {"isp.demosaic_noscale",kDemosaicNoscaleSpv,kDemosaicNoscaleSpvLen},
-        {"isp.fcs",             kFcsSpv,             kFcsSpvLen},
-        {"isp.ee",              kEeSpv,              kEeSpvLen},
-        {"isp.ldci",            kLdciSpv,            kLdciSpvLen},
-        {"isp.display",         kDisplaySpv,         kDisplaySpvLen},
-        {"isp.fcs_display",     kFcsDisplaySpv,      kFcsDisplaySpvLen},
-        {"isp.ee_ldci",         kEeLdciSpv,          kEeLdciSpvLen},
-        {"isp.unpack_demosaic", kUnpackDemosaicSpv,  kUnpackDemosaicSpvLen},
+        {"isp.unpack_blc",      g_unpack_blc_spv,      g_unpack_blc_spv_len},
+        {"isp.demosaic_ccm",    g_demosaic_ccm_spv,    g_demosaic_ccm_spv_len},
+        {"isp.demosaic_noscale",g_demosaic_ccm_spv,    g_demosaic_ccm_spv_len},
+        {"isp.fcs",             g_fcs_spv,             g_fcs_spv_len},
+        {"isp.ee",              g_ee_spv,              g_ee_spv_len},
+        {"isp.ldci",            g_ldci_spv,            g_ldci_spv_len},
+        {"isp.display",         g_display_spv,         g_display_spv_len},
+        {"isp.fcs_display",     g_fcs_display_spv,     g_fcs_display_spv_len},
+        {"isp.ee_ldci",         g_ee_ldci_spv,         g_ee_ldci_spv_len},
+        {"isp.unpack_demosaic", g_unpack_demosaic_spv, g_unpack_demosaic_spv_len},
     };
     for (auto& m : map) {
         if (strcmp(type, m.type) == 0) {
@@ -188,6 +188,24 @@ public:
         auto& ops = net->oplists;
         bool changed = false;
 
+        // Extract input dimensions from the Input op
+        for (auto& op : ops) {
+            if (op && op->type == MNN::OpType_Input) {
+                auto* inp = op->main.AsInput();
+                if (inp && inp->dims.size() >= 4) {
+                    mInH = inp->dims[2];  // NCHW
+                    mInW = inp->dims[3];
+                }
+                break;
+            }
+        }
+        // Output dimensions after stride-2 unpack
+        mH = mInH / 2;
+        mW = mInW / 2;
+
+        VLOG(2) << "[P1] Input dims: " << mInH << "x" << mInW
+                << " → Output dims: " << mH << "x" << mW;
+
         for (int i = 0; i < (int)ops.size(); i++) {
             if (!ops[i]) continue;
 
@@ -216,6 +234,10 @@ public:
     }
 
 private:
+    // Dimensions inferred from model input shape at onExecute time
+    mutable int mW = 1920, mH = 1080;       // output (after stride-2)
+    mutable int mInW = 3840, mInH = 2160;   // input (Bayer raw)
+
     // R1: Cast + Conv(2×2,stride=2,4ch) → isp.unpack_blc
     bool tryUnpack(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         int ci = (ops[i]->type == MNN::OpType_Cast) ? i+1 : i;
@@ -224,8 +246,7 @@ private:
         auto* conv = ops[ci]->main.AsConvolution2D();
         if (!isUnpackConv(conv)) return false;
 
-        int FW = 1920, FH = 1080;
-        std::vector<float> u = {float(FW),float(FH),float(FW*2),float(FH*2),
+        std::vector<float> u = {float(mW),float(mH),float(mInW),float(mInH),
                                 1023.0f, 0,0,0,0, 1,1,1,1};
 
         ops[ci]->type = MNN::OpType_Extra;
@@ -234,12 +255,12 @@ private:
         addAttr(ex, "output_shape", [&](MNN::AttributeT* a) {
             a->tensor.reset(new MNN::BlobT);
             a->tensor->dataType = MNN::DataType_DT_INT32;
-            a->tensor->int32s = {1,4,FH,FW};
+            a->tensor->int32s = {1,4,mH,mW};
         });
         addAttr(ex, "global_size", [&](MNN::AttributeT* a) {
             a->tensor.reset(new MNN::BlobT);
             a->tensor->dataType = MNN::DataType_DT_INT32;
-            a->tensor->int32s = {FW,FH,1};
+            a->tensor->int32s = {mW,mH,1};
         });
         addAttr(ex, "group_size", [&](MNN::AttributeT* a) {
             a->tensor.reset(new MNN::BlobT);
@@ -273,13 +294,12 @@ private:
         auto* c = ops[i]->main.AsConvolution2D();
         if (!isCcmConv(c)) return false;
 
-        int W = 1920, H = 1080;
-        std::vector<float> u = {float(W/2),float(H/2),float(W),float(H),
+        std::vector<float> u = {float(mW),float(mH),float(mInW),float(mInH),
                                 1023.0f, 1,0,0, 0,1,0, 0,0,1, 0,0,0,0};
 
         ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
         auto* ex = new MNN::ExtraT(); ex->type = "isp.demosaic_ccm";
-        buildCommonAttrs(ex, W, H, u);
+        buildCommonAttrs(ex, mW, mH, u);
         setEngine(ex);
         addSpirv(ex, "isp.demosaic_ccm");
         ops[i]->main.value = ex;
@@ -297,11 +317,10 @@ private:
             for (auto v : s->scaleData) str += v;
             str /= std::max(1, (int)s->scaleData.size());
 
-            int W = 1920, H = 1080;
-            std::vector<float> u = {float(W),float(H),str,0, 0,0,0,0};
+            std::vector<float> u = {float(mW),float(mH),str,0, 0,0,0,0};
             ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
             auto* ex = new MNN::ExtraT(); ex->type = "isp.fcs";
-            buildCommonAttrs(ex, W, H, u); setEngine(ex); addSpirv(ex, "isp.fcs");
+            buildCommonAttrs(ex, mW, mH, u); setEngine(ex); addSpirv(ex, "isp.fcs");
             ops[i]->main.value = ex;
             VLOG(2) << "[P1] R3a: fcs (Scale) at " << i;
             return true;
@@ -321,11 +340,10 @@ private:
                 !isBinaryType(ops[j].get(), MNN::BinaryOpOperation_ADD)) return false;
             if (!isChain(ops[i].get(), ops[j].get())) return false;
 
-            int W = 1920, H = 1080;
-            std::vector<float> u = {float(W),float(H),1.0f,0, 0,0,0,0};
+            std::vector<float> u = {float(mW),float(mH),1.0f,0, 0,0,0,0};
             ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
             auto* ex = new MNN::ExtraT(); ex->type = "isp.fcs";
-            buildCommonAttrs(ex, W, H, u); setEngine(ex); addSpirv(ex, "isp.fcs");
+            buildCommonAttrs(ex, mW, mH, u); setEngine(ex); addSpirv(ex, "isp.fcs");
             ops[i]->main.value = ex;
             ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
             ops[j].reset();
@@ -343,12 +361,11 @@ private:
         auto* c = ops[i]->main.AsConvolution2D();
         if (!isEeConv(c)) return false;
 
-        int W = 1920, H = 1080;
-        std::vector<float> u = {float(W),float(H),0.5f,0.01f, 0,0,0,0};
+        std::vector<float> u = {float(mW),float(mH),0.5f,0.01f, 0,0,0,0};
 
         ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
         auto* ex = new MNN::ExtraT(); ex->type = "isp.ee";
-        buildCommonAttrs(ex, W, H, u);
+        buildCommonAttrs(ex, mW, mH, u);
         setEngine(ex);
         addSpirv(ex, "isp.ee");
         ops[i]->main.value = ex;
@@ -370,12 +387,11 @@ private:
             !isChain(ops[i+1].get(), ops[i+2].get()) ||
             !isChain(ops[i+2].get(), ops[i+3].get())) return false;
 
-        int W = 1920, H = 1080;
-        std::vector<float> u = {float(W),float(H),0.5f,1.0f, 0,0,0,0};
+        std::vector<float> u = {float(mW),float(mH),0.5f,1.0f, 0,0,0,0};
 
         ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
         auto* ex = new MNN::ExtraT(); ex->type = "isp.ldci";
-        buildCommonAttrs(ex, W, H, u);
+        buildCommonAttrs(ex, mW, mH, u);
         setEngine(ex);
         addSpirv(ex, "isp.ldci");
         ops[i]->main.value = ex;
@@ -398,12 +414,11 @@ private:
             clip = true;
         }
 
-        int W = 1920, H = 1080;
-        std::vector<float> u = {float(W),float(H),0,1,2.2f,1, 0,0};
+        std::vector<float> u = {float(mW),float(mH),0,1,2.2f,1, 0,0};
 
         ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
         auto* ex = new MNN::ExtraT(); ex->type = "isp.display";
-        buildCommonAttrs(ex, W, H, u);
+        buildCommonAttrs(ex, mW, mH, u);
         setEngine(ex);
         addSpirv(ex, "isp.display");
         ops[i]->main.value = ex;
@@ -432,6 +447,25 @@ public:
         auto& ops = net->oplists;
         bool changed = false;
 
+        // Extract dimensions from the first Extra op's output_shape
+        for (auto& op : ops) {
+            if (op && op->type == MNN::OpType_Extra && op->main.AsExtra()) {
+                auto* ex = op->main.AsExtra();
+                for (auto& attr : ex->attr) {
+                    if (attr && attr->key == "output_shape" && attr->tensor &&
+                        attr->tensor->int32s.size() >= 4) {
+                        mH = attr->tensor->int32s[2];
+                        mW = attr->tensor->int32s[3];
+                        break;
+                    }
+                }
+                if (mW > 0 && mH > 0) break;
+            }
+        }
+        if (mW == 0 || mH == 0) {
+            mW = 1920; mH = 1080;
+        }
+
         // Scan repeatedly until no more fusions. Each fusion reduces
         // operation count, enabling progressively longer chain matches.
         bool any = true;
@@ -458,15 +492,16 @@ public:
     }
 
 private:
+    mutable int mW = 1920, mH = 1080;
+
     bool merge2(MNN::NetT* net, const std::vector<int>& idx,
                 const char* fusedType, const std::vector<float>& uniforms) {
-        int W = 1920, H = 1080;
         auto* first = net->oplists[idx[0]].get();
         auto* last  = net->oplists[idx.back()].get();
 
         first->main.AsExtra()->type = fusedType;
         first->main.AsExtra()->attr.clear();  // drop old attrs
-        buildCommonAttrs(first->main.AsExtra(), W, H, uniforms);
+        buildCommonAttrs(first->main.AsExtra(), mW, mH, uniforms);
         setEngine(first->main.AsExtra());
         addSpirv(first->main.AsExtra(), fusedType);
         first->outputIndexes[0] = last->outputIndexes[0];
@@ -512,10 +547,12 @@ private:
                 !isChain(ops[i].get(), ops[i+1].get())) continue;
 
             VLOG(1) << "[P2] R9: EeLdci at " << i;
-            std::vector<float> u = {1920,1080, 0.5f,0.01f, 0.5f,1.0f, 0,0};
+            int W, H;
+            getExtraDims(ops[i], W, H);
+            std::vector<float> u = {float(W),float(H), 0.5f,0.01f, 0.5f,1.0f, 0,0};
             ops[i]->main.AsExtra()->type = "isp.ee_ldci";
             ops[i]->main.AsExtra()->attr.clear();
-            buildCommonAttrs(ops[i]->main.AsExtra(), 1920, 1080, u);
+            buildCommonAttrs(ops[i]->main.AsExtra(), W, H, u);
             setEngine(ops[i]->main.AsExtra());
             addSpirv(ops[i]->main.AsExtra(), "isp.ee_ldci");
             ops[i]->outputIndexes[0] = ops[i+1]->outputIndexes[0];
@@ -526,6 +563,22 @@ private:
     }
 
     // R10: isp.unpack_blc + isp.demosaic_ccm → isp.unpack_demosaic
+    // Extract W,H from an existing Extra op's output_shape attribute
+    void getExtraDims(const std::unique_ptr<OpT>& op, int& W, int& H) const {
+        W = 1920; H = 1080;
+        if (!op || op->type != MNN::OpType_Extra) return;
+        auto* ex = op->main.AsExtra();
+        if (!ex) return;
+        for (auto& attr : ex->attr) {
+            if (attr && attr->key == "output_shape" && attr->tensor &&
+                attr->tensor->int32s.size() >= 4) {
+                H = attr->tensor->int32s[2];
+                W = attr->tensor->int32s[3];
+                break;
+            }
+        }
+    }
+
     bool matchUnpackDemosaic(std::vector<std::unique_ptr<OpT>>& ops) const {
         for (int i = 0; i+1 < (int)ops.size(); i++) {
             if (!isExtraOfType(ops[i].get(), "isp.unpack_blc") ||
@@ -533,13 +586,16 @@ private:
                 !isChain(ops[i].get(), ops[i+1].get())) continue;
 
             VLOG(1) << "[P2] R10: UnpackDemosaic at " << i;
-            std::vector<float> u = {1920,1080, 3840,2160, 1023,
+            int W, H;
+            getExtraDims(ops[i+1], W, H);  // demosaic dims (output=FHD)
+            int inpW = W*2, inpH = H*2;    // input dims (Bayer=4K)
+            std::vector<float> u = {float(W),float(H), float(inpW),float(inpH), 1023,
                                     0,0,0,0, 1,1,1,1,
                                     1,0,0, 0,1,0, 0,0,1,
                                     0,0,0,0};
             ops[i]->main.AsExtra()->type = "isp.unpack_demosaic";
             ops[i]->main.AsExtra()->attr.clear();
-            buildCommonAttrs(ops[i]->main.AsExtra(), 1920, 1080, u);
+            buildCommonAttrs(ops[i]->main.AsExtra(), W, H, u);
             setEngine(ops[i]->main.AsExtra());
             addSpirv(ops[i]->main.AsExtra(), "isp.unpack_demosaic");
             ops[i]->outputIndexes[0] = ops[i+1]->outputIndexes[0];
@@ -559,7 +615,10 @@ private:
                 !isChain(ops[i+1].get(), ops[i+2].get())) continue;
 
             VLOG(1) << "[P2] R11: Fused6in1 at " << i;
-            std::vector<float> u = {1920,1080, 3840,2160, 1023,
+            int W, H;
+            getExtraDims(ops[i], W, H);
+            int inpW = W*2, inpH = H*2;
+            std::vector<float> u = {float(W),float(H), float(inpW),float(inpH), 1023,
                                     0,0,0,0,  // blc
                                     1,1,1,1,  // wb
                                     1,0,      // fcs
@@ -569,7 +628,7 @@ private:
                                     0,0,0};   // pad
             ops[i]->main.AsExtra()->type = "isp.fused_6in1";
             ops[i]->main.AsExtra()->attr.clear();
-            buildCommonAttrs(ops[i]->main.AsExtra(), 1920, 1080, u);
+            buildCommonAttrs(ops[i]->main.AsExtra(), W, H, u);
             setEngine(ops[i]->main.AsExtra());
             // addSpirv for fused_6in1 if available
             ops[i]->outputIndexes[0] = ops[i+2]->outputIndexes[0];
