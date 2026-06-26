@@ -124,6 +124,11 @@ static void buildCommonAttrs(MNN::ExtraT* extra, int W, int H,
     });
 }
 
+// Set engine="MNN" so converter validation passes for custom Extra ops
+static void setEngine(MNN::ExtraT* extra) {
+    extra->engine = "MNN";
+}
+
 static bool isChain(const OpT* a, const OpT* b) {
     return a && b && !a->outputIndexes.empty() && !b->inputIndexes.empty()
            && a->outputIndexes[0] == b->inputIndexes[0];
@@ -219,13 +224,6 @@ private:
         auto* conv = ops[ci]->main.AsConvolution2D();
         if (!isUnpackConv(conv)) return false;
 
-        // Only if NOT followed by CCM conv (defer to Pass2 for unpack+demosaic)
-        if (ci+1 < (int)ops.size() && ops[ci+1] &&
-            ops[ci+1]->type == MNN::OpType_Convolution) {
-            auto* n = ops[ci+1]->main.AsConvolution2D();
-            if (n && isCcmConv(n)) return false;
-        }
-
         int FW = 1920, FH = 1080;
         std::vector<float> u = {float(FW),float(FH),float(FW*2),float(FH*2),
                                 1023.0f, 0,0,0,0, 1,1,1,1};
@@ -282,51 +280,68 @@ private:
         ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
         auto* ex = new MNN::ExtraT(); ex->type = "isp.demosaic_ccm";
         buildCommonAttrs(ex, W, H, u);
+        setEngine(ex);
         addSpirv(ex, "isp.demosaic_ccm");
         ops[i]->main.value = ex;
         VLOG(2) << "[P1] R2: demosaic_ccm at " << i;
         return true;
     }
 
-    // R3: Scale → isp.fcs  (unless followed by POW — defer to Pass2)
+    // R3: Scale → isp.fcs, or BinaryOp(MUL+ADD) → isp.fcs
     bool tryFcs(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
-        if (ops[i]->type != MNN::OpType_Scale) return false;
-        auto* s = ops[i]->main.AsScale();
-        if (!s) return false;
+        // Pattern A: Scale op (rare — converter may fold Mul+Add into Scale)
+        if (ops[i]->type == MNN::OpType_Scale) {
+            auto* s = ops[i]->main.AsScale();
+            if (!s) return false;
+            float str = 0;
+            for (auto v : s->scaleData) str += v;
+            str /= std::max(1, (int)s->scaleData.size());
 
-        // If next is POW, skip — FcsDisplay fusion handles in Pass2
-        if (i+1 < (int)ops.size() && ops[i+1] &&
-            isBinaryType(ops[i+1].get(), MNN::BinaryOpOperation_POW))
-            return false;
+            int W = 1920, H = 1080;
+            std::vector<float> u = {float(W),float(H),str,0, 0,0,0,0};
+            ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
+            auto* ex = new MNN::ExtraT(); ex->type = "isp.fcs";
+            buildCommonAttrs(ex, W, H, u); setEngine(ex); addSpirv(ex, "isp.fcs");
+            ops[i]->main.value = ex;
+            VLOG(2) << "[P1] R3a: fcs (Scale) at " << i;
+            return true;
+        }
 
-        float str = 0;
-        for (auto v : s->scaleData) str += v;
-        str /= std::max(1, (int)s->scaleData.size());
+        // Pattern B: BinaryOp(MUL) + BinaryOp(ADD) chain
+        // (common — converter keeps Mul+Add as separate BinaryOps)
+        // May have Const ops between MUL and ADD (constant bias tensor)
+        if (ops[i]->type == MNN::OpType_BinaryOp &&
+            isBinaryType(ops[i].get(), MNN::BinaryOpOperation_MUL)) {
+            // Skip Const ops to find the ADD
+            int j = i+1;
+            while (j < (int)ops.size() && ops[j] &&
+                   ops[j]->type == MNN::OpType_Const) j++;
+            if (j >= (int)ops.size() || !ops[j]) return false;
+            if (ops[j]->type != MNN::OpType_BinaryOp ||
+                !isBinaryType(ops[j].get(), MNN::BinaryOpOperation_ADD)) return false;
+            if (!isChain(ops[i].get(), ops[j].get())) return false;
 
-        int W = 1920, H = 1080;
-        std::vector<float> u = {float(W),float(H),str,0, 0,0,0,0};
+            int W = 1920, H = 1080;
+            std::vector<float> u = {float(W),float(H),1.0f,0, 0,0,0,0};
+            ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
+            auto* ex = new MNN::ExtraT(); ex->type = "isp.fcs";
+            buildCommonAttrs(ex, W, H, u); setEngine(ex); addSpirv(ex, "isp.fcs");
+            ops[i]->main.value = ex;
+            ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
+            ops[j].reset();
+            VLOG(2) << "[P1] R3b: fcs (Mul+Add) at " << i << " add at " << j;
+            i = j;
+            return true;
+        }
 
-        ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
-        auto* ex = new MNN::ExtraT(); ex->type = "isp.fcs";
-        buildCommonAttrs(ex, W, H, u);
-        addSpirv(ex, "isp.fcs");
-        ops[i]->main.value = ex;
-        VLOG(2) << "[P1] R3: fcs at " << i;
-        return true;
+        return false;
     }
 
-    // R4: Conv(3×3,unsharp) → isp.ee  (unless followed by Pool — defer to Pass2)
+    // R4: Conv(3×3,unsharp) → isp.ee
     bool tryEe(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         if (ops[i]->type != MNN::OpType_Convolution) return false;
         auto* c = ops[i]->main.AsConvolution2D();
         if (!isEeConv(c)) return false;
-
-        // If next is Pool(AVG,3×3), skip — EeLdci fusion in Pass2
-        if (i+1 < (int)ops.size() && ops[i+1] &&
-            ops[i+1]->type == MNN::OpType_Pooling) {
-            auto* p = ops[i+1]->main.AsPool();
-            if (p && isAvgPool3x3(p)) return false;
-        }
 
         int W = 1920, H = 1080;
         std::vector<float> u = {float(W),float(H),0.5f,0.01f, 0,0,0,0};
@@ -334,6 +349,7 @@ private:
         ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
         auto* ex = new MNN::ExtraT(); ex->type = "isp.ee";
         buildCommonAttrs(ex, W, H, u);
+        setEngine(ex);
         addSpirv(ex, "isp.ee");
         ops[i]->main.value = ex;
         VLOG(2) << "[P1] R4: ee at " << i;
@@ -360,6 +376,7 @@ private:
         ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
         auto* ex = new MNN::ExtraT(); ex->type = "isp.ldci";
         buildCommonAttrs(ex, W, H, u);
+        setEngine(ex);
         addSpirv(ex, "isp.ldci");
         ops[i]->main.value = ex;
         ops[i]->outputIndexes[0] = ops[i+3]->outputIndexes[0];
@@ -374,9 +391,6 @@ private:
     bool tryDisplay(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         if (!isBinaryType(ops[i].get(), MNN::BinaryOpOperation_POW)) return false;
 
-        // If preceded by Scale, skip (FcsDisplay in Pass2)
-        if (i > 0 && ops[i-1] && ops[i-1]->type == MNN::OpType_Scale) return false;
-
         bool clip = false;
         if (i+1 < (int)ops.size() && ops[i+1] &&
             (ops[i+1]->type == MNN::OpType_ReLU || ops[i+1]->type == MNN::OpType_ReLU6) &&
@@ -390,6 +404,7 @@ private:
         ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
         auto* ex = new MNN::ExtraT(); ex->type = "isp.display";
         buildCommonAttrs(ex, W, H, u);
+        setEngine(ex);
         addSpirv(ex, "isp.display");
         ops[i]->main.value = ex;
 
@@ -452,6 +467,7 @@ private:
         first->main.AsExtra()->type = fusedType;
         first->main.AsExtra()->attr.clear();  // drop old attrs
         buildCommonAttrs(first->main.AsExtra(), W, H, uniforms);
+        setEngine(first->main.AsExtra());
         addSpirv(first->main.AsExtra(), fusedType);
         first->outputIndexes[0] = last->outputIndexes[0];
 
@@ -479,6 +495,7 @@ private:
             ops[i]->main.AsExtra()->type = "isp.fcs_display";
             ops[i]->main.AsExtra()->attr.clear();
             buildCommonAttrs(ops[i]->main.AsExtra(), 1920, 1080, u);
+            setEngine(ops[i]->main.AsExtra());
             addSpirv(ops[i]->main.AsExtra(), "isp.fcs_display");
             ops[i]->outputIndexes[0] = ops[i+1]->outputIndexes[0];
             ops[i+1].reset(); i++;
@@ -499,6 +516,7 @@ private:
             ops[i]->main.AsExtra()->type = "isp.ee_ldci";
             ops[i]->main.AsExtra()->attr.clear();
             buildCommonAttrs(ops[i]->main.AsExtra(), 1920, 1080, u);
+            setEngine(ops[i]->main.AsExtra());
             addSpirv(ops[i]->main.AsExtra(), "isp.ee_ldci");
             ops[i]->outputIndexes[0] = ops[i+1]->outputIndexes[0];
             ops[i+1].reset(); i++;
@@ -522,6 +540,7 @@ private:
             ops[i]->main.AsExtra()->type = "isp.unpack_demosaic";
             ops[i]->main.AsExtra()->attr.clear();
             buildCommonAttrs(ops[i]->main.AsExtra(), 1920, 1080, u);
+            setEngine(ops[i]->main.AsExtra());
             addSpirv(ops[i]->main.AsExtra(), "isp.unpack_demosaic");
             ops[i]->outputIndexes[0] = ops[i+1]->outputIndexes[0];
             ops[i+1].reset(); i++;
@@ -551,6 +570,7 @@ private:
             ops[i]->main.AsExtra()->type = "isp.fused_6in1";
             ops[i]->main.AsExtra()->attr.clear();
             buildCommonAttrs(ops[i]->main.AsExtra(), 1920, 1080, u);
+            setEngine(ops[i]->main.AsExtra());
             // addSpirv for fused_6in1 if available
             ops[i]->outputIndexes[0] = ops[i+2]->outputIndexes[0];
             ops[i+1].reset(); ops[i+2].reset(); i += 2;

@@ -86,7 +86,7 @@ public:
     virtual EXPRP onExecute(EXPRP expr) const override {
         auto op = expr->get();
         auto newVar = createVulkanFuseOp(expr, op, "unpack_blc");
-        return newVar->expr();
+        return newVar->expr().first;
     }
 };
 
@@ -96,7 +96,7 @@ public:
     virtual EXPRP onExecute(EXPRP expr) const override {
         auto op = expr->get();
         auto newVar = createVulkanFuseOp(expr, op, "demosaic_noscale");
-        return newVar->expr();
+        return newVar->expr().first;
     }
 };
 
@@ -106,7 +106,7 @@ public:
     virtual EXPRP onExecute(EXPRP expr) const override {
         auto op = expr->get();
         auto newVar = createVulkanFuseOp(expr, op, "fcs");
-        return newVar->expr();
+        return newVar->expr().first;
     }
 };
 
@@ -116,7 +116,7 @@ public:
     virtual EXPRP onExecute(EXPRP expr) const override {
         auto op = expr->get();
         auto newVar = createVulkanFuseOp(expr, op, "ee");
-        return newVar->expr();
+        return newVar->expr().first;
     }
 };
 
@@ -126,7 +126,7 @@ public:
     virtual EXPRP onExecute(EXPRP expr) const override {
         auto op = expr->get();
         auto newVar = createVulkanFuseOp(expr, op, "ldci");
-        return newVar->expr();
+        return newVar->expr().first;
     }
 };
 
@@ -136,7 +136,7 @@ public:
     virtual EXPRP onExecute(EXPRP expr) const override {
         auto op = expr->get();
         auto newVar = createVulkanFuseOp(expr, op, "display");
-        return newVar->expr();
+        return newVar->expr().first;
     }
 };
 
@@ -146,7 +146,7 @@ public:
     virtual EXPRP onExecute(EXPRP expr) const override {
         auto op = expr->get();
         auto newVar = createVulkanFuseOp(expr, op, "fcs_display");
-        return newVar->expr();
+        return newVar->expr().first;
     }
 };
 
@@ -156,7 +156,7 @@ public:
     virtual EXPRP onExecute(EXPRP expr) const override {
         auto op = expr->get();
         auto newVar = createVulkanFuseOp(expr, op, "ee_ldci");
-        return newVar->expr();
+        return newVar->expr().first;
     }
 };
 
