@@ -321,6 +321,7 @@ private:
             a->tensor->dataType = MNN::DataType_DT_FLOAT;
             a->tensor->float32s = u; a->b = false;
         });
+        setEngine(ex);
         addSpirv(ex, "isp.unpack_blc");
         ops[ci]->main.value = ex;
 
