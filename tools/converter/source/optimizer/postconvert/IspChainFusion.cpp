@@ -587,23 +587,71 @@ public:
             mW = 1920; mH = 1080;
         }
 
-        // Scan repeatedly until no more fusions. Each fusion reduces
-        // operation count, enabling progressively longer chain matches.
+        // Walk in pipeline order: after Pass1 the ops form a linear chain
+        // Input → Extra(unpack) → Extra(demosaic) → Extra(fcs) → ...
+        // Collect consecutive Extra ops and fuse adjacent valid pairs.
         bool any = true;
         while (any) {
             any = false;
 
-            // R11: unpack_demosaic + fcs_display + ee_ldci → fused_6in1 (longest)
-            if (matchFused6in1(ops)) { any = true; continue; }
+            // Collect pipeline Extras in tensor chain order from Input
+            std::vector<int> extras;
+            {
+                int cur = -1;
+                for (auto& op : ops)
+                    if (op && op->type == MNN::OpType_Input && !op->outputIndexes.empty())
+                        { cur = op->outputIndexes[0]; break; }
+                while (cur >= 0) {
+                    bool found = false;
+                    for (int j = 0; j < (int)ops.size(); j++) {
+                        if (!ops[j] || ops[j]->type != MNN::OpType_Extra) continue;
+                        for (int inIdx : ops[j]->inputIndexes)
+                            if (traceTensor(inIdx, ops) == cur) {
+                                extras.push_back(j);
+                                cur = ops[j]->outputIndexes.empty() ? -1 : ops[j]->outputIndexes[0];
+                                found = true; break;
+                            }
+                        if (found) break;
+                    }
+                    if (!found) break;
+                }
+            }
+            if (extras.size() < 2) break;
 
             // R10: unpack_blc + demosaic_ccm → unpack_demosaic
-            if (matchUnpackDemosaic(ops)) { any = true; continue; }
+            for (size_t k = 0; k + 1 < extras.size(); k++) {
+                int i = extras[k], j = extras[k+1];
+                if (isExtraOfType(ops[i].get(), "isp.unpack_blc") &&
+                    isExtraOfType(ops[j].get(), "isp.demosaic_ccm") &&
+                    matchUnpackDemosaic(ops, i, j)) {
+                    any = true; break;
+                }
+            }
+            if (any) continue;
 
             // R9: ee + ldci → ee_ldci
-            if (matchEeLdci(ops)) { any = true; continue; }
+            for (size_t k = 0; k + 1 < extras.size(); k++) {
+                int i = extras[k], j = extras[k+1];
+                if (!ops[i] || !ops[j]) continue;
+                if ((isExtraOfType(ops[i].get(), "isp.ee") && isExtraOfType(ops[j].get(), "isp.ldci")) ||
+                    (isExtraOfType(ops[i].get(), "isp.ldci") && isExtraOfType(ops[j].get(), "isp.ee"))) {
+                    if (matchEeLdci(ops, i, j)) { any = true; break; }
+                }
+            }
+            if (any) continue;
 
             // R8: fcs + display → fcs_display
-            if (matchFcsDisplay(ops)) { any = true; continue; }
+            for (size_t k = 0; k + 1 < extras.size(); k++) {
+                int i = extras[k], j = extras[k+1];
+                if (isExtraOfType(ops[i].get(), "isp.fcs") &&
+                    isExtraOfType(ops[j].get(), "isp.display") &&
+                    matchFcsDisplay(ops, i, j)) {
+                    any = true; break;
+                }
+            }
+            if (any) continue;
+
+            break;
         }
 
         ops.erase(std::remove_if(ops.begin(), ops.end(),
@@ -632,79 +680,51 @@ private:
         return true;
     }
 
-    // R8: isp.fcs + isp.display → isp.fcs_display
-    bool matchFcsDisplay(std::vector<std::unique_ptr<OpT>>& ops) const {
-        for (int i = 0; i < (int)ops.size(); i++) {
-            if (!isExtraOfType(ops[i].get(), "isp.fcs")) continue;
-            for (int j = 0; j < (int)ops.size(); j++) {
-                if (i == j || !ops[j]) continue;
-                if (!isExtraOfType(ops[j].get(), "isp.display")) continue;
-                if (!isChainSkipCT(ops[i].get(), ops[j].get(), ops)) continue;
-
-                VLOG(1) << "[P2] R8: FcsDisplay at " << i << "+" << j;
-                auto* fcs = ops[i]->main.AsExtra();
-                float str = 1.0f;
-                for (auto& a : fcs->attr) {
-                    if (a->key == "const" && a->tensor && a->tensor->float32s.size() >= 3)
-                        str = a->tensor->float32s[2];
-                }
-                std::vector<float> u = {1920,1080, str,0, 2.2f,0, 0,0,0};
-                ops[i]->main.AsExtra()->type = "isp.fcs_display";
-                ops[i]->main.AsExtra()->attr.clear();
-                buildCommonAttrs(ops[i]->main.AsExtra(), 1920, 1080, u);
-                setEngine(ops[i]->main.AsExtra());
-                addSpirv(ops[i]->main.AsExtra(), "isp.fcs_display");
-                ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
-                ops[j].reset();
-                return true;
-            }
+    // R8: isp.fcs + isp.display → isp.fcs_display (pair at indices i,j)
+    bool matchFcsDisplay(std::vector<std::unique_ptr<OpT>>& ops, int i, int j) const {
+        VLOG(1) << "[P2] R8: FcsDisplay at " << i << "+" << j;
+        auto* fcs = ops[i]->main.AsExtra();
+        int W, H;
+        getExtraDims(ops[i], W, H);
+        float str = 1.0f;
+        for (auto& a : fcs->attr) {
+            if (a->key == "const" && a->tensor && a->tensor->float32s.size() >= 3)
+                str = a->tensor->float32s[2];
         }
-        return false;
+        std::vector<float> u = {float(W),float(H), str,0, 2.2f,0, 0,0,0};
+        ops[i]->main.AsExtra()->type = "isp.fcs_display";
+        ops[i]->main.AsExtra()->attr.clear();
+        buildCommonAttrs(ops[i]->main.AsExtra(), W, H, u);
+        setEngine(ops[i]->main.AsExtra());
+        addSpirv(ops[i]->main.AsExtra(), "isp.fcs_display");
+        ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
+        ops[j].reset();
+        return true;
     }
 
-    // R9: isp.ee + isp.ldci → isp.ee_ldci (handles both orderings)
-    // Uses tensor chain detection (not adjacency) to handle any op ordering
-    bool matchEeLdci(std::vector<std::unique_ptr<OpT>>& ops) const {
-        // Find all ldci and ee ops
-        for (int i = 0; i < (int)ops.size(); i++) {
-            if (!isExtraOfType(ops[i].get(), "isp.ldci") &&
-                !isExtraOfType(ops[i].get(), "isp.ee")) continue;
-            for (int j = 0; j < (int)ops.size(); j++) {
-                if (i == j || !ops[j]) continue;
-                if (!isExtraOfType(ops[j].get(), "isp.ldci") &&
-                    !isExtraOfType(ops[j].get(), "isp.ee")) continue;
-                // Check if i→j forms a chain (either direction)
-                bool ldciIn = isExtraOfType(ops[i].get(), "isp.ldci");
-                bool ldciOut = isExtraOfType(ops[j].get(), "isp.ldci");
-                if (ldciIn == ldciOut) continue; // both same type, skip
-                
-                bool chainIJ = isChainSkipCT(ops[i].get(), ops[j].get(), ops);
-                bool chainJI = isChainSkipCT(ops[j].get(), ops[i].get(), ops);
-                
-                int keepIdx = -1, resetIdx = -1;
-                if (chainIJ) { keepIdx = i; resetIdx = j; }
-                else if (chainJI) { keepIdx = j; resetIdx = i; }
-                else continue;
-                
-                std::string order = ldciIn ? "ldci→ee" : "ee→ldci";
-                fprintf(stderr, "[IspFusion] [P2] R9: EeLdci MATCH at %d+%d (%s)\n", i, j, order.c_str());
-                VLOG(1) << "[P2] R9: EeLdci at " << i << "+" << j << " (" << order << ")";
-                int W, H;
-                getExtraDims(ops[keepIdx], W, H);
-                if (W <= 0 || H <= 0) getExtraDims(ops[resetIdx], W, H);
-                if (W <= 0 || H <= 0) { W = 1920; H = 1080; }
-                std::vector<float> u = {float(W),float(H), 0.5f,0.01f, 0.5f,1.0f, 0,0};
-                ops[keepIdx]->main.AsExtra()->type = "isp.ee_ldci";
-                ops[keepIdx]->main.AsExtra()->attr.clear();
-                buildCommonAttrs(ops[keepIdx]->main.AsExtra(), W, H, u);
-                setEngine(ops[keepIdx]->main.AsExtra());
-                addSpirv(ops[keepIdx]->main.AsExtra(), "isp.ee_ldci");
-                ops[keepIdx]->outputIndexes[0] = ops[resetIdx]->outputIndexes[0];
-                ops[resetIdx].reset();
-                return true;
-            }
-        }
-        return false;
+    // R9: isp.ee + isp.ldci → isp.ee_ldci (pair at indices i,j, either order)
+    bool matchEeLdci(std::vector<std::unique_ptr<OpT>>& ops, int i, int j) const {
+        // Determine order: ee→ldci or ldci→ee
+        bool ldciFirst = isExtraOfType(ops[i].get(), "isp.ldci");
+        int keepIdx = ldciFirst ? j : i;  // keep the FIRST in chain order (ee)
+        int resetIdx = ldciFirst ? i : j; // reset the SECOND
+        
+        std::string order = ldciFirst ? "ldci→ee" : "ee→ldci";
+        fprintf(stderr, "[IspFusion] [P2] R9: EeLdci MATCH at %d+%d (%s)\n", i, j, order.c_str());
+        VLOG(1) << "[P2] R9: EeLdci at " << i << "+" << j << " (" << order << ")";
+        int W, H;
+        getExtraDims(ops[keepIdx], W, H);
+        if (W <= 0 || H <= 0) getExtraDims(ops[resetIdx], W, H);
+        if (W <= 0 || H <= 0) { W = 1920; H = 1080; }
+        std::vector<float> u = {float(W),float(H), 0.5f,0.01f, 0.5f,1.0f, 0,0};
+        ops[keepIdx]->main.AsExtra()->type = "isp.ee_ldci";
+        ops[keepIdx]->main.AsExtra()->attr.clear();
+        buildCommonAttrs(ops[keepIdx]->main.AsExtra(), W, H, u);
+        setEngine(ops[keepIdx]->main.AsExtra());
+        addSpirv(ops[keepIdx]->main.AsExtra(), "isp.ee_ldci");
+        ops[keepIdx]->outputIndexes[0] = ops[resetIdx]->outputIndexes[0];
+        ops[resetIdx].reset();
+        return true;
     }
 
     // R10: isp.unpack_blc + isp.demosaic_ccm → isp.unpack_demosaic
@@ -724,57 +744,46 @@ private:
         }
     }
 
-    bool matchUnpackDemosaic(std::vector<std::unique_ptr<OpT>>& ops) const {
-        for (int i = 0; i < (int)ops.size(); i++) {
-            if (!isExtraOfType(ops[i].get(), "isp.unpack_blc")) continue;
-            for (int j = 0; j < (int)ops.size(); j++) {
-                if (i == j || !ops[j]) continue;
-                if (!isExtraOfType(ops[j].get(), "isp.demosaic_ccm")) continue;
-                if (!isChainSkipCT(ops[i].get(), ops[j].get(), ops)) continue;
+    // R10: isp.unpack_blc + isp.demosaic_ccm → isp.unpack_demosaic (pair at i,j)
+    bool matchUnpackDemosaic(std::vector<std::unique_ptr<OpT>>& ops, int i, int j) const {
+        VLOG(1) << "[P2] R10: UnpackDemosaic at " << i << "+" << j;
+        int W, H;
+        getExtraDims(ops[j], W, H);   // demosaic dims (output=FHD)
+        int inpW = W*2, inpH = H*2;    // input dims (Bayer=4K)
 
-            VLOG(1) << "[P2] R10: UnpackDemosaic at " << i << "+" << j;
-            int W, H;
-            getExtraDims(ops[j], W, H);   // demosaic dims (output=FHD)
-            int inpW = W*2, inpH = H*2;    // input dims (Bayer=4K)
+        // Build const buffer for unpack_demosaic: [dims4, smax, blc4, wb4, ccm9, pad4]
+        std::vector<float> u = {float(W),float(H), float(inpW),float(inpH), 1023,
+                                0,0,0,0, 1,1,1,1,
+                                1,0,0, 0,1,0, 0,0,1,
+                                0,0,0,0};
 
-            // Build const buffer for unpack_demosaic: [dims4, smax, blc4, wb4, ccm9, pad4]
-            // Start with defaults, then overlay actual values from constituent ops
-            std::vector<float> u = {float(W),float(H), float(inpW),float(inpH), 1023,
-                                    0,0,0,0, 1,1,1,1,
-                                    1,0,0, 0,1,0, 0,0,1,
-                                    0,0,0,0};
-
-            // Read blc/wb from unpack_blc's const buffer (positions [5..12])
-            auto unpackConst = getExtraConst(ops[i]);
-            if (unpackConst.size() >= 13) {
-                u[5] = unpackConst[5];  u[6] = unpackConst[6];
-                u[7] = unpackConst[7];  u[8] = unpackConst[8];
-                u[9] = unpackConst[9];  u[10] = unpackConst[10];
-                u[11] = unpackConst[11]; u[12] = unpackConst[12];
-            }
-
-            // Read CCM from demosaic_ccm's const buffer (positions [5..13])
-            auto ccmConst = getExtraConst(ops[j]);
-            if (ccmConst.size() >= 14) {
-                for (int k = 0; k < 9; k++) {
-                    u[13 + k] = ccmConst[5 + k];
-                }
-            }
-
-            ops[i]->main.AsExtra()->type = "isp.unpack_demosaic";
-            ops[i]->main.AsExtra()->attr.clear();
-            buildCommonAttrs(ops[i]->main.AsExtra(), W, H, u);
-            setEngine(ops[i]->main.AsExtra());
-            addSpirv(ops[i]->main.AsExtra(), "isp.unpack_demosaic");
-            ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
-            ops[j].reset();
-            return true;
-                }
+        // Read blc/wb from unpack_blc's const buffer (positions [5..12])
+        auto unpackConst = getExtraConst(ops[i]);
+        if (unpackConst.size() >= 13) {
+            u[5] = unpackConst[5];  u[6] = unpackConst[6];
+            u[7] = unpackConst[7];  u[8] = unpackConst[8];
+            u[9] = unpackConst[9];  u[10] = unpackConst[10];
+            u[11] = unpackConst[11]; u[12] = unpackConst[12];
         }
-        return false;
+
+        // Read CCM from demosaic_ccm's const buffer (positions [5..13])
+        auto ccmConst = getExtraConst(ops[j]);
+        if (ccmConst.size() >= 14) {
+            for (int k = 0; k < 9; k++) u[13 + k] = ccmConst[5 + k];
+        }
+
+        ops[i]->main.AsExtra()->type = "isp.unpack_demosaic";
+        ops[i]->main.AsExtra()->attr.clear();
+        buildCommonAttrs(ops[i]->main.AsExtra(), W, H, u);
+        setEngine(ops[i]->main.AsExtra());
+        addSpirv(ops[i]->main.AsExtra(), "isp.unpack_demosaic");
+        ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
+        ops[j].reset();
+        return true;
     }
 
     // R11: unpack_demosaic + fcs_display + ee_ldci → fused_6in1 (3-stage collapse)
+    // R11: (unused — fused_6in1 has no embedded SPIR-V yet)
     bool matchFused6in1(std::vector<std::unique_ptr<OpT>>& ops) const {
         int ud = -1, fd = -1, el = -1;
         for (int i = 0; i < (int)ops.size(); i++) {
@@ -806,6 +815,11 @@ private:
         ops[fd].reset(); ops[el].reset();
         return true;
     }
+
+    // R12: Fuse all pipeline stages into one fused Extra op.
+    // Walks the linear chain from Input → Extra* → Output and fuses
+    // all consecutive Extra ops. This handles any combination of stages
+    // without requiring pairwise adjacency checks.
 };
 
 // ═══════════════════════════════════════════════════════════════════
