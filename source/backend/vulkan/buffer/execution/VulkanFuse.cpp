@@ -8,7 +8,9 @@
 
 #include <stdio.h>
 #include <cstring>
+#include <cstdint>
 #include "VulkanBasicExecution.hpp"
+#include "VulkanBuffer.hpp"
 #include "VulkanFuse.hpp"
 #include "core/OpCommonUtils.hpp"
 namespace MNN {
@@ -67,11 +69,14 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
             break;
         }
     }
-    // If Has group_size, can't auto tuning
+    // Read preferred workgroup size from group_size attribute.
+    // This is the LOCAL_SIZE the shader uses (e.g. 16×16).
+    // optimized_dispatch uses this to compute dispatch group count.
+    mPreferredLocalSize = {16, 16, 1};
     for (int i=0; i<extra->attr()->size(); ++i) {
         auto attr = extra->attr()->GetAs<Attribute>(i);
         if (attr->key()->str() == "group_size") {
-            readInts(attr, mGroupSize.data(), 3);
+            readInts(attr, mPreferredLocalSize.data(), 3);
             mNeedAutoTuning = false;
             break;
         }
@@ -249,10 +254,12 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
             mDescriptorSet->writeBuffer(mConstUniformBuffer->buffer(), std::get<0>(iter), std::get<1>(iter), std::get<2>(iter));
         }
     } else if (mOptimizedDispatch) {
-        // Optimization: Use minimal efficient workgroup size
-        mGroupSize[0] = UP_DIV(mGlobalSize[0], 2);
-        mGroupSize[1] = UP_DIV(mGlobalSize[1], 2);
-        mGroupSize[2] = UP_DIV(mGlobalSize[2], 1);
+        // Optimization: Use preferred workgroup size from shader
+        // local_size (e.g. 16×16) for efficient GPU scheduling.
+        // Group count = ceil(global_size / local_size).
+        mGroupSize[0] = UP_DIV(mGlobalSize[0], mPreferredLocalSize[0]);
+        mGroupSize[1] = UP_DIV(mGlobalSize[1], mPreferredLocalSize[1]);
+        mGroupSize[2] = UP_DIV(mGlobalSize[2], mPreferredLocalSize[2]);
         mNeedAutoTuning = false;
     }
     mPipeline->bind(cmdBuffer->get(), mDescriptorSet->get());

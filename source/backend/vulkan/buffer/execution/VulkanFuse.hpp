@@ -24,6 +24,7 @@ private:
     std::vector<std::tuple<int, size_t, size_t>> mConstUniformOffset;
     SharedPtr<VulkanPipeline> mPipeline;
     SharedPtr<VulkanLayout::DescriptorSet> mDescriptorSet;
+    std::vector<int> mPreferredLocalSize;  // preferred workgroup size from attribute
     bool mNeedAutoTuning = false;
     bool mOptimizedDispatch = false;
 };
