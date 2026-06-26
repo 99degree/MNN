@@ -129,9 +129,42 @@ static void setEngine(MNN::ExtraT* extra) {
     extra->engine = "MNN";
 }
 
+// Trace a tensor index through ConvertTensor ops to find the original producer
+// Returns the original tensor index, or the input if no ConvertTensor found
+static int traceTensor(int tensorIdx, const std::vector<std::unique_ptr<OpT>>& ops) {
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (auto& op : ops) {
+            if (op && op->type == MNN::OpType_ConvertTensor &&
+                op->inputIndexes.size() == 1 && op->outputIndexes.size() == 1 &&
+                op->outputIndexes[0] == tensorIdx) {
+                tensorIdx = op->inputIndexes[0];
+                changed = true;
+                break;
+            }
+        }
+    }
+    return tensorIdx;
+}
+
 static bool isChain(const OpT* a, const OpT* b) {
     return a && b && !a->outputIndexes.empty() && !b->inputIndexes.empty()
            && a->outputIndexes[0] == b->inputIndexes[0];
+}
+
+// Check if two ops are chained, skipping ConvertTensors between them.
+// Also checks if b's input traces back to a's output through ConvertTensors.
+static bool isChainSkipCT(const OpT* a, const OpT* b,
+                           const std::vector<std::unique_ptr<OpT>>& ops) {
+    if (!a || !b || a->outputIndexes.empty() || b->inputIndexes.empty())
+        return false;
+    int aOut = a->outputIndexes[0];
+    // Check each input of b
+    for (int inIdx : b->inputIndexes) {
+        if (traceTensor(inIdx, ops) == aOut) return true;
+    }
+    return false;
 }
 
 static bool isExtraOfType(const OpT* op, const char* type) {
@@ -171,6 +204,15 @@ static bool isEeConv(const Convolution2DT* c) {
 static bool isBinaryType(const OpT* op, int bt) {
     auto* b = op ? op->main.AsBinaryOp() : nullptr;
     return b && b->opType == bt;
+}
+
+// Find the next non-Const, non-ConvertTensor op starting from index `start`
+static int skipThrough(int start, const std::vector<std::unique_ptr<OpT>>& ops) {
+    int j = start;
+    while (j < (int)ops.size() && ops[j] &&
+           (ops[j]->type == MNN::OpType_Const ||
+            ops[j]->type == MNN::OpType_ConvertTensor)) j++;
+    return j;
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -392,20 +434,12 @@ private:
         auto* p = ops[i]->main.AsPool();
         if (!isAvgPool3x3(p)) { VLOG(2) << "[P1] R5: pool not avg3x3 at " << i; return false; }
 
-        // Skip Const ops after Pool to find Sub
-        int subIdx = i + 1;
-        while (subIdx < (int)ops.size() && ops[subIdx] &&
-               ops[subIdx]->type == MNN::OpType_Const) subIdx++;
+        // Skip Const + ConvertTensor ops after Pool to find Sub
+        int subIdx = skipThrough(i + 1, ops);
         if (subIdx >= (int)ops.size() || !ops[subIdx]) { VLOG(2) << "[P1] R5: no op after pool at " << i; return false; }
         if (!isBinaryType(ops[subIdx].get(), MNN::BinaryOpOperation_SUB)) { VLOG(2) << "[P1] R5: op" << subIdx << " not Sub, type=" << ops[subIdx]->type; return false; }
-        // Sub takes (blur - original) — pool output may be first or second input
-        bool poolToSub = false;
-        for (auto inIdx : ops[subIdx]->inputIndexes) {
-            if (!ops[i]->outputIndexes.empty() &&
-                inIdx == ops[i]->outputIndexes[0]) {
-                poolToSub = true; break;
-            }
-        }
+        // Sub takes (blur - original) — check via traceTensor to skip ConvertTensors
+        bool poolToSub = isChainSkipCT(ops[i].get(), ops[subIdx].get(), ops);
         if (!poolToSub) {
             VLOG(2) << "[P1] R5: chain(pool->sub) fail at " << i << ", out="
                     << ops[i]->outputIndexes[0] << " inputs=(" << ops[subIdx]->inputIndexes[0]
@@ -413,20 +447,12 @@ private:
             return false;
         }
 
-        // Skip Const ops after Sub to find Mul
-        int mulIdx = subIdx + 1;
-        while (mulIdx < (int)ops.size() && ops[mulIdx] &&
-               ops[mulIdx]->type == MNN::OpType_Const) mulIdx++;
+        // Skip Const + ConvertTensor ops after Sub to find Mul
+        int mulIdx = skipThrough(subIdx + 1, ops);
         if (mulIdx >= (int)ops.size() || !ops[mulIdx]) { VLOG(2) << "[P1] R5: no op after sub at " << subIdx; return false; }
         if (!isBinaryType(ops[mulIdx].get(), MNN::BinaryOpOperation_MUL)) { VLOG(2) << "[P1] R5: op" << mulIdx << " not Mul"; return false; }
-        // Mul takes (diff × strength) — sub's output is first input
-        bool subToMul = false;
-        for (auto inIdx : ops[mulIdx]->inputIndexes) {
-            if (!ops[subIdx]->outputIndexes.empty() &&
-                inIdx == ops[subIdx]->outputIndexes[0]) {
-                subToMul = true; break;
-            }
-        }
+        // Mul takes (diff × strength) — check via traceTensor
+        bool subToMul = isChainSkipCT(ops[subIdx].get(), ops[mulIdx].get(), ops);
         if (!subToMul) {
             VLOG(2) << "[P1] R5: chain(sub->mul) fail at " << subIdx << ", out="
                     << ops[subIdx]->outputIndexes[0] << " inputs=(" << ops[mulIdx]->inputIndexes[0]
@@ -434,21 +460,12 @@ private:
             return false;
         }
 
-        // Skip Const ops after Mul to find Add
-        int addIdx = mulIdx + 1;
-        while (addIdx < (int)ops.size() && ops[addIdx] &&
-               ops[addIdx]->type == MNN::OpType_Const) addIdx++;
+        // Skip Const + ConvertTensor ops after Mul to find Add
+        int addIdx = skipThrough(mulIdx + 1, ops);
         if (addIdx >= (int)ops.size() || !ops[addIdx]) { VLOG(2) << "[P1] R5: no op after mul at " << mulIdx; return false; }
         if (!isBinaryType(ops[addIdx].get(), MNN::BinaryOpOperation_ADD)) { VLOG(2) << "[P1] R5: op" << addIdx << " not Add"; return false; }
-        // Add takes (ee_output + mul_output) — mul's output may be second input
-        // Check if mul's output appears ANYWHERE in Add's input list
-        bool mulToAdd = false;
-        for (auto inIdx : ops[addIdx]->inputIndexes) {
-            if (!ops[mulIdx]->outputIndexes.empty() &&
-                inIdx == ops[mulIdx]->outputIndexes[0]) {
-                mulToAdd = true; break;
-            }
-        }
+        // Add takes (ee_output + mul_output) — check via traceTensor
+        bool mulToAdd = isChainSkipCT(ops[mulIdx].get(), ops[addIdx].get(), ops);
         if (!mulToAdd) {
             VLOG(2) << "[P1] R5: chain(mul->add) fail at " << mulIdx << ", mulOut="
                     << (ops[mulIdx]->outputIndexes.empty()?-1:ops[mulIdx]->outputIndexes[0]);
@@ -583,51 +600,75 @@ private:
 
     // R8: isp.fcs + isp.display → isp.fcs_display
     bool matchFcsDisplay(std::vector<std::unique_ptr<OpT>>& ops) const {
-        for (int i = 0; i+1 < (int)ops.size(); i++) {
-            if (!isExtraOfType(ops[i].get(), "isp.fcs") ||
-                !isExtraOfType(ops[i+1].get(), "isp.display") ||
-                !isChain(ops[i].get(), ops[i+1].get())) continue;
+        for (int i = 0; i < (int)ops.size(); i++) {
+            if (!isExtraOfType(ops[i].get(), "isp.fcs")) continue;
+            for (int j = 0; j < (int)ops.size(); j++) {
+                if (i == j || !ops[j]) continue;
+                if (!isExtraOfType(ops[j].get(), "isp.display")) continue;
+                if (!isChainSkipCT(ops[i].get(), ops[j].get(), ops)) continue;
 
-            VLOG(1) << "[P2] R8: FcsDisplay at " << i;
-            auto* fcs = ops[i]->main.AsExtra();
-            // Extract fcs strength from const buffer
-            float str = 1.0f;
-            for (auto& a : fcs->attr) {
-                if (a->key == "const" && a->tensor && a->tensor->float32s.size() >= 3)
-                    str = a->tensor->float32s[2];
+                VLOG(1) << "[P2] R8: FcsDisplay at " << i << "+" << j;
+                auto* fcs = ops[i]->main.AsExtra();
+                float str = 1.0f;
+                for (auto& a : fcs->attr) {
+                    if (a->key == "const" && a->tensor && a->tensor->float32s.size() >= 3)
+                        str = a->tensor->float32s[2];
+                }
+                std::vector<float> u = {1920,1080, str,0, 2.2f,0, 0,0,0};
+                ops[i]->main.AsExtra()->type = "isp.fcs_display";
+                ops[i]->main.AsExtra()->attr.clear();
+                buildCommonAttrs(ops[i]->main.AsExtra(), 1920, 1080, u);
+                setEngine(ops[i]->main.AsExtra());
+                addSpirv(ops[i]->main.AsExtra(), "isp.fcs_display");
+                ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
+                ops[j].reset();
+                return true;
             }
-            std::vector<float> u = {1920,1080, str,0, 2.2f,0, 0,0,0};
-            ops[i]->main.AsExtra()->type = "isp.fcs_display";
-            ops[i]->main.AsExtra()->attr.clear();
-            buildCommonAttrs(ops[i]->main.AsExtra(), 1920, 1080, u);
-            setEngine(ops[i]->main.AsExtra());
-            addSpirv(ops[i]->main.AsExtra(), "isp.fcs_display");
-            ops[i]->outputIndexes[0] = ops[i+1]->outputIndexes[0];
-            ops[i+1].reset(); i++;
-            return true;
         }
         return false;
     }
 
-    // R9: isp.ee + isp.ldci → isp.ee_ldci
+    // R9: isp.ee + isp.ldci → isp.ee_ldci (handles both orderings)
+    // Uses tensor chain detection (not adjacency) to handle any op ordering
     bool matchEeLdci(std::vector<std::unique_ptr<OpT>>& ops) const {
-        for (int i = 0; i+1 < (int)ops.size(); i++) {
-            if (!isExtraOfType(ops[i].get(), "isp.ee") ||
-                !isExtraOfType(ops[i+1].get(), "isp.ldci") ||
-                !isChain(ops[i].get(), ops[i+1].get())) continue;
-
-            VLOG(1) << "[P2] R9: EeLdci at " << i;
-            int W, H;
-            getExtraDims(ops[i], W, H);
-            std::vector<float> u = {float(W),float(H), 0.5f,0.01f, 0.5f,1.0f, 0,0};
-            ops[i]->main.AsExtra()->type = "isp.ee_ldci";
-            ops[i]->main.AsExtra()->attr.clear();
-            buildCommonAttrs(ops[i]->main.AsExtra(), W, H, u);
-            setEngine(ops[i]->main.AsExtra());
-            addSpirv(ops[i]->main.AsExtra(), "isp.ee_ldci");
-            ops[i]->outputIndexes[0] = ops[i+1]->outputIndexes[0];
-            ops[i+1].reset(); i++;
-            return true;
+        // Find all ldci and ee ops
+        for (int i = 0; i < (int)ops.size(); i++) {
+            if (!isExtraOfType(ops[i].get(), "isp.ldci") &&
+                !isExtraOfType(ops[i].get(), "isp.ee")) continue;
+            for (int j = 0; j < (int)ops.size(); j++) {
+                if (i == j || !ops[j]) continue;
+                if (!isExtraOfType(ops[j].get(), "isp.ldci") &&
+                    !isExtraOfType(ops[j].get(), "isp.ee")) continue;
+                // Check if i→j forms a chain (either direction)
+                bool ldciIn = isExtraOfType(ops[i].get(), "isp.ldci");
+                bool ldciOut = isExtraOfType(ops[j].get(), "isp.ldci");
+                if (ldciIn == ldciOut) continue; // both same type, skip
+                
+                bool chainIJ = isChainSkipCT(ops[i].get(), ops[j].get(), ops);
+                bool chainJI = isChainSkipCT(ops[j].get(), ops[i].get(), ops);
+                
+                int keepIdx = -1, resetIdx = -1;
+                if (chainIJ) { keepIdx = i; resetIdx = j; }
+                else if (chainJI) { keepIdx = j; resetIdx = i; }
+                else continue;
+                
+                std::string order = ldciIn ? "ldci→ee" : "ee→ldci";
+                fprintf(stderr, "[IspFusion] [P2] R9: EeLdci MATCH at %d+%d (%s)\n", i, j, order.c_str());
+                VLOG(1) << "[P2] R9: EeLdci at " << i << "+" << j << " (" << order << ")";
+                int W, H;
+                getExtraDims(ops[keepIdx], W, H);
+                if (W <= 0 || H <= 0) getExtraDims(ops[resetIdx], W, H);
+                if (W <= 0 || H <= 0) { W = 1920; H = 1080; }
+                std::vector<float> u = {float(W),float(H), 0.5f,0.01f, 0.5f,1.0f, 0,0};
+                ops[keepIdx]->main.AsExtra()->type = "isp.ee_ldci";
+                ops[keepIdx]->main.AsExtra()->attr.clear();
+                buildCommonAttrs(ops[keepIdx]->main.AsExtra(), W, H, u);
+                setEngine(ops[keepIdx]->main.AsExtra());
+                addSpirv(ops[keepIdx]->main.AsExtra(), "isp.ee_ldci");
+                ops[keepIdx]->outputIndexes[0] = ops[resetIdx]->outputIndexes[0];
+                ops[resetIdx].reset();
+                return true;
+            }
         }
         return false;
     }
@@ -650,12 +691,14 @@ private:
     }
 
     bool matchUnpackDemosaic(std::vector<std::unique_ptr<OpT>>& ops) const {
-        for (int i = 0; i+1 < (int)ops.size(); i++) {
-            if (!isExtraOfType(ops[i].get(), "isp.unpack_blc") ||
-                !isExtraOfType(ops[i+1].get(), "isp.demosaic_ccm") ||
-                !isChain(ops[i].get(), ops[i+1].get())) continue;
+        for (int i = 0; i < (int)ops.size(); i++) {
+            if (!isExtraOfType(ops[i].get(), "isp.unpack_blc")) continue;
+            for (int j = 0; j < (int)ops.size(); j++) {
+                if (i == j || !ops[j]) continue;
+                if (!isExtraOfType(ops[j].get(), "isp.demosaic_ccm")) continue;
+                if (!isChainSkipCT(ops[i].get(), ops[j].get(), ops)) continue;
 
-            VLOG(1) << "[P2] R10: UnpackDemosaic at " << i;
+            VLOG(1) << "[P2] R10: UnpackDemosaic at " << i << "+" << j;
             int W, H;
             getExtraDims(ops[i+1], W, H);  // demosaic dims (output=FHD)
             int inpW = W*2, inpH = H*2;    // input dims (Bayer=4K)
@@ -668,44 +711,45 @@ private:
             buildCommonAttrs(ops[i]->main.AsExtra(), W, H, u);
             setEngine(ops[i]->main.AsExtra());
             addSpirv(ops[i]->main.AsExtra(), "isp.unpack_demosaic");
-            ops[i]->outputIndexes[0] = ops[i+1]->outputIndexes[0];
-            ops[i+1].reset(); i++;
+            ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
+            ops[j].reset();
             return true;
+                }
         }
         return false;
     }
 
     // R11: unpack_demosaic + fcs_display + ee_ldci → fused_6in1 (3-stage collapse)
     bool matchFused6in1(std::vector<std::unique_ptr<OpT>>& ops) const {
-        for (int i = 0; i+2 < (int)ops.size(); i++) {
-            if (!isExtraOfType(ops[i].get(),   "isp.unpack_demosaic") ||
-                !isExtraOfType(ops[i+1].get(), "isp.fcs_display") ||
-                !isExtraOfType(ops[i+2].get(), "isp.ee_ldci") ||
-                !isChain(ops[i].get(), ops[i+1].get()) ||
-                !isChain(ops[i+1].get(), ops[i+2].get())) continue;
-
-            VLOG(1) << "[P2] R11: Fused6in1 at " << i;
-            int W, H;
-            getExtraDims(ops[i], W, H);
-            int inpW = W*2, inpH = H*2;
-            std::vector<float> u = {float(W),float(H), float(inpW),float(inpH), 1023,
-                                    0,0,0,0,  // blc
-                                    1,1,1,1,  // wb
-                                    1,0,      // fcs
-                                    0.5f,0.01f, // ee
-                                    0.5f,1.0f, // ldci
-                                    2.2f,0,   // display
-                                    0,0,0};   // pad
-            ops[i]->main.AsExtra()->type = "isp.fused_6in1";
-            ops[i]->main.AsExtra()->attr.clear();
-            buildCommonAttrs(ops[i]->main.AsExtra(), W, H, u);
-            setEngine(ops[i]->main.AsExtra());
-            // addSpirv for fused_6in1 if available
-            ops[i]->outputIndexes[0] = ops[i+2]->outputIndexes[0];
-            ops[i+1].reset(); ops[i+2].reset(); i += 2;
-            return true;
+        int ud = -1, fd = -1, el = -1;
+        for (int i = 0; i < (int)ops.size(); i++) {
+            if (isExtraOfType(ops[i].get(), "isp.unpack_demosaic")) ud = i;
+            else if (isExtraOfType(ops[i].get(), "isp.fcs_display")) fd = i;
+            else if (isExtraOfType(ops[i].get(), "isp.ee_ldci")) el = i;
         }
-        return false;
+        if (ud < 0 || fd < 0 || el < 0) return false;
+        if (!isChainSkipCT(ops[ud].get(), ops[fd].get(), ops)) return false;
+        if (!isChainSkipCT(ops[fd].get(), ops[el].get(), ops)) return false;
+
+        VLOG(1) << "[P2] R11: Fused6in1 at " << ud << "+" << fd << "+" << el;
+        int W, H;
+        getExtraDims(ops[ud], W, H);
+        int inpW = W*2, inpH = H*2;
+        std::vector<float> u = {float(W),float(H), float(inpW),float(inpH), 1023,
+                                0,0,0,0,  // blc
+                                1,1,1,1,  // wb
+                                1,0,      // fcs
+                                0.5f,0.01f, // ee
+                                0.5f,1.0f, // ldci
+                                2.2f,0,   // display
+                                0,0,0};   // pad
+        ops[ud]->main.AsExtra()->type = "isp.fused_6in1";
+        ops[ud]->main.AsExtra()->attr.clear();
+        buildCommonAttrs(ops[ud]->main.AsExtra(), W, H, u);
+        setEngine(ops[ud]->main.AsExtra());
+        ops[ud]->outputIndexes[0] = ops[el]->outputIndexes[0];
+        ops[fd].reset(); ops[el].reset();
+        return true;
     }
 };
 
