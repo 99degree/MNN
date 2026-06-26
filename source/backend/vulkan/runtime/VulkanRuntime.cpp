@@ -19,7 +19,10 @@ public:
         // Do nothing
     }
     virtual MemChunk onAlloc(size_t size, size_t align) override {
-        VulkanBuffer* newBuffer = new VulkanBuffer(mPool, false, size, nullptr, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_SHARING_MODE_EXCLUSIVE, 0);
+        // On UMA (mobile), DEVICE_LOCAL memory is also HOST_VISIBLE.
+        // Requesting HOST_VISIBLE enables zero-copy readback in onCopyBuffer
+        // (direct vkMapMemory + memcpy instead of vkCmdCopyBuffer + barrier).
+        VulkanBuffer* newBuffer = new VulkanBuffer(mPool, false, size, nullptr, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
         return MemChunk(newBuffer, 0);
     }
     virtual void onRelease(MemChunk ptr) override {

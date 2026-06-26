@@ -509,6 +509,15 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
             srcTensor = tempTensor.get();
         }
         size_t cpSize = calculateCpSize(srcTensor);
+        // Zero-copy: map GPU buffer directly (HOST_VISIBLE on UMA)
+        if (nullptr != buffer) {
+            void* gpuPtr = buffer->map((int)offset, (int)cpSize);
+            if (gpuPtr) {
+                ::memcpy(gpuPtr, srcTensor->host<float>(), cpSize);
+                buffer->unmap();
+                return;
+            }
+        }
         _requireHostBuffer(cpSize);
         _copyTensorToBuffer(srcTensor, mHostBuffer.get(), 0, srcTensor->getType().code == halide_type_float && mUseFP16);
         auto cmdbuffer = mCmdBufferForCopy;
@@ -525,9 +534,6 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
     } else if (dstTensor->host<float>() != nullptr) {
         // gpu->host
         _finish();
-        // DEBUG
-        fprintf(stderr, "[VulkanBackend::onCopyBuffer] GPU->HOST: srcDeviceId=%p dstHost=%p\n",
-            (void*)srcTensor->deviceId(), (void*)dstTensor->host<float>());
         auto format = TensorUtils::getDescribe(dstTensor)->dimensionFormat;
         if (format != TensorUtils::getDescribe(srcTensor)->dimensionFormat) {
             tempTensor.reset(Tensor::create(srcTensor->shape(), dstTensor->getType(), nullptr, _convert(TensorUtils::getDescribe(srcTensor)->dimensionFormat)), [dstTensor](void* t) {
@@ -537,10 +543,23 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
             });
             dstTensor = tempTensor.get();
         }
+        // Zero-copy path: if tensor buffer is HOST_VISIBLE, map directly
+        // instead of doing vkCmdCopyBuffer through mHostBuffer.
+        // This eliminates a GPU submission + barrier + intermediate buffer copy.
         size_t cpSize = calculateCpSize(dstTensor);
-        _requireHostBuffer(cpSize);
         auto buffer = reinterpret_cast<VulkanBuffer*>(srcTensor->deviceId());
         auto offset = TensorUtils::getDescribeOrigin(srcTensor)->offset;
+        if (nullptr != buffer) {
+            // Map GPU buffer directly (HOST_VISIBLE on UMA)
+            void* gpuPtr = buffer->map((int)offset, (int)cpSize);
+            if (gpuPtr) {
+                ::memcpy(dstTensor->host<float>(), gpuPtr, cpSize);
+                buffer->unmap();
+                return;
+            }
+        }
+        // Fallback: copy via mHostBuffer (non-UMA or older driver)
+        _requireHostBuffer(cpSize);
         auto cmdbuffer = mCmdBufferForCopy;
         cmdbuffer->begin(0);
         VkBufferCopy bufferCopy;
