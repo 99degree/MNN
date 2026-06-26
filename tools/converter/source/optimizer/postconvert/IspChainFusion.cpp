@@ -355,11 +355,23 @@ private:
         return false;
     }
 
-    // R4: Conv(3×3,unsharp) → isp.ee
+    // R4: Conv(3×3,unsharp) or ConvolutionDepthwise(3×3,unsharp) → isp.ee
     bool tryEe(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
-        if (ops[i]->type != MNN::OpType_Convolution) return false;
+        if (ops[i]->type != MNN::OpType_Convolution &&
+            ops[i]->type != MNN::OpType_ConvolutionDepthwise) return false;
         auto* c = ops[i]->main.AsConvolution2D();
-        if (!isEeConv(c)) return false;
+        if (!c) return false;
+        // Check kernel size and unsharp pattern
+        if (c->common->kernelX != 3 || c->common->kernelY != 3) return false;
+        if (c->common->outputCount != 3) return false;
+        const float expected[9] = {0, -0.5f, 0, -0.5f, 3.0f, -0.5f, 0, -0.5f, 0};
+        // For depthwise: weights are (outputCount, 1, 3, 3) = 9 floats per channel
+        // For regular: weights are (outputCount, inputCount, 3, 3)
+        // Check first 9 weights (first channel, first input)
+        if ((int)c->weight.size() < 9) return false;
+        for (int k = 0; k < 9; k++) {
+            if (std::abs(c->weight[k] - expected[k]) > 0.01f) return false;
+        }
 
         std::vector<float> u = {float(mW),float(mH),0.5f,0.01f, 0,0,0,0};
 
@@ -373,19 +385,75 @@ private:
         return true;
     }
 
-    // R5: Pool(AVG,3×3) + Sub + Mul + Add → isp.ldci
+    // R5: Pool(AVG,3×3) [+ Const*] + Sub [+ Const*] + Mul [+ Const*] + Add → isp.ldci
+    // Const ops between the BinaryOps are skipped (ldci strength params)
     bool tryLdci(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         if (ops[i]->type != MNN::OpType_Pooling) return false;
         auto* p = ops[i]->main.AsPool();
-        if (!isAvgPool3x3(p)) return false;
+        if (!isAvgPool3x3(p)) { VLOG(2) << "[P1] R5: pool not avg3x3 at " << i; return false; }
 
-        if (i+3 >= (int)ops.size()) return false;
-        if (!isBinaryType(ops[i+1].get(), MNN::BinaryOpOperation_SUB)) return false;
-        if (!isBinaryType(ops[i+2].get(), MNN::BinaryOpOperation_MUL)) return false;
-        if (!isBinaryType(ops[i+3].get(), MNN::BinaryOpOperation_ADD)) return false;
-        if (!isChain(ops[i].get(), ops[i+1].get()) ||
-            !isChain(ops[i+1].get(), ops[i+2].get()) ||
-            !isChain(ops[i+2].get(), ops[i+3].get())) return false;
+        // Skip Const ops after Pool to find Sub
+        int subIdx = i + 1;
+        while (subIdx < (int)ops.size() && ops[subIdx] &&
+               ops[subIdx]->type == MNN::OpType_Const) subIdx++;
+        if (subIdx >= (int)ops.size() || !ops[subIdx]) { VLOG(2) << "[P1] R5: no op after pool at " << i; return false; }
+        if (!isBinaryType(ops[subIdx].get(), MNN::BinaryOpOperation_SUB)) { VLOG(2) << "[P1] R5: op" << subIdx << " not Sub, type=" << ops[subIdx]->type; return false; }
+        // Sub takes (blur - original) — pool output may be first or second input
+        bool poolToSub = false;
+        for (auto inIdx : ops[subIdx]->inputIndexes) {
+            if (!ops[i]->outputIndexes.empty() &&
+                inIdx == ops[i]->outputIndexes[0]) {
+                poolToSub = true; break;
+            }
+        }
+        if (!poolToSub) {
+            VLOG(2) << "[P1] R5: chain(pool->sub) fail at " << i << ", out="
+                    << ops[i]->outputIndexes[0] << " inputs=(" << ops[subIdx]->inputIndexes[0]
+                    << "," << (ops[subIdx]->inputIndexes.size()>1?ops[subIdx]->inputIndexes[1]:-1) << ")";
+            return false;
+        }
+
+        // Skip Const ops after Sub to find Mul
+        int mulIdx = subIdx + 1;
+        while (mulIdx < (int)ops.size() && ops[mulIdx] &&
+               ops[mulIdx]->type == MNN::OpType_Const) mulIdx++;
+        if (mulIdx >= (int)ops.size() || !ops[mulIdx]) { VLOG(2) << "[P1] R5: no op after sub at " << subIdx; return false; }
+        if (!isBinaryType(ops[mulIdx].get(), MNN::BinaryOpOperation_MUL)) { VLOG(2) << "[P1] R5: op" << mulIdx << " not Mul"; return false; }
+        // Mul takes (diff × strength) — sub's output is first input
+        bool subToMul = false;
+        for (auto inIdx : ops[mulIdx]->inputIndexes) {
+            if (!ops[subIdx]->outputIndexes.empty() &&
+                inIdx == ops[subIdx]->outputIndexes[0]) {
+                subToMul = true; break;
+            }
+        }
+        if (!subToMul) {
+            VLOG(2) << "[P1] R5: chain(sub->mul) fail at " << subIdx << ", out="
+                    << ops[subIdx]->outputIndexes[0] << " inputs=(" << ops[mulIdx]->inputIndexes[0]
+                    << "," << (ops[mulIdx]->inputIndexes.size()>1?ops[mulIdx]->inputIndexes[1]:-1) << ")";
+            return false;
+        }
+
+        // Skip Const ops after Mul to find Add
+        int addIdx = mulIdx + 1;
+        while (addIdx < (int)ops.size() && ops[addIdx] &&
+               ops[addIdx]->type == MNN::OpType_Const) addIdx++;
+        if (addIdx >= (int)ops.size() || !ops[addIdx]) { VLOG(2) << "[P1] R5: no op after mul at " << mulIdx; return false; }
+        if (!isBinaryType(ops[addIdx].get(), MNN::BinaryOpOperation_ADD)) { VLOG(2) << "[P1] R5: op" << addIdx << " not Add"; return false; }
+        // Add takes (ee_output + mul_output) — mul's output may be second input
+        // Check if mul's output appears ANYWHERE in Add's input list
+        bool mulToAdd = false;
+        for (auto inIdx : ops[addIdx]->inputIndexes) {
+            if (!ops[mulIdx]->outputIndexes.empty() &&
+                inIdx == ops[mulIdx]->outputIndexes[0]) {
+                mulToAdd = true; break;
+            }
+        }
+        if (!mulToAdd) {
+            VLOG(2) << "[P1] R5: chain(mul->add) fail at " << mulIdx << ", mulOut="
+                    << (ops[mulIdx]->outputIndexes.empty()?-1:ops[mulIdx]->outputIndexes[0]);
+            return false;
+        }
 
         std::vector<float> u = {float(mW),float(mH),0.5f,1.0f, 0,0,0,0};
 
@@ -395,11 +463,13 @@ private:
         setEngine(ex);
         addSpirv(ex, "isp.ldci");
         ops[i]->main.value = ex;
-        ops[i]->outputIndexes[0] = ops[i+3]->outputIndexes[0];
+        ops[i]->outputIndexes[0] = ops[addIdx]->outputIndexes[0];
 
-        ops[i+1].reset(); ops[i+2].reset(); ops[i+3].reset();
-        i += 3;
-        VLOG(2) << "[P1] R5: ldci at " << i-3 << " (4 ops fused)";
+        // Reset Sub, Mul, Add
+        ops[subIdx].reset(); ops[mulIdx].reset(); ops[addIdx].reset();
+        i = addIdx;
+        VLOG(2) << "[P1] R5: ldci at " << i << " (pool=" << i << " sub=" << subIdx
+                << " mul=" << mulIdx << " add=" << addIdx << ")";
         return true;
     }
 
@@ -414,7 +484,7 @@ private:
             clip = true;
         }
 
-        std::vector<float> u = {float(mW),float(mH),0,1,2.2f,1, 0,0};
+        std::vector<float> u = {float(mW),float(mH),0,1,1, 2.2f, 0,0};
 
         ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
         auto* ex = new MNN::ExtraT(); ex->type = "isp.display";
@@ -656,6 +726,66 @@ public:
         return true;
     }
 };
+
+// ── Post-format-converter cleanup: Remove ConvertTensors between Extra ops ──
+// Runs AFTER AddTensorFormatConverter to eliminate spurious
+// conversions that corrupt CHW planar data.
+class RemoveExtraConvertTensor : public PostConverter {
+public:
+    virtual bool onExecute(std::unique_ptr<MNN::NetT>& net) const override {
+        auto& ops = net->oplists;
+        bool changed = false;
+        bool any = true;
+        while (any) {
+            any = false;
+            for (int i = 0; i < (int)ops.size(); i++) {
+                if (!ops[i] || ops[i]->type != MNN::OpType_ConvertTensor) continue;
+                auto& ct = ops[i];
+                if (ct->inputIndexes.size() != 1 || ct->outputIndexes.size() != 1) continue;
+                int ctIn = ct->inputIndexes[0];
+                int ctOut = ct->outputIndexes[0];
+                
+                // Check if ctIn comes from an Extra op
+                bool fromExtra = false;
+                for (auto& op : ops) {
+                    if (!op || op->type != MNN::OpType_Extra) continue;
+                    for (auto outIdx : op->outputIndexes) {
+                        if (outIdx == ctIn) { fromExtra = true; break; }
+                    }
+                    if (fromExtra) break;
+                }
+                if (!fromExtra) continue;
+                
+                // Check if ctOut is consumed by an Extra op
+                for (auto& op : ops) {
+                    if (!op || op.get() == ct.get() || op->type != MNN::OpType_Extra) continue;
+                    bool rerouted = false;
+                    for (auto& inIdx : op->inputIndexes) {
+                        if (inIdx == ctOut) {
+                            inIdx = ctIn;  // reroute to ConvertTensor input
+                            rerouted = true;
+                        }
+                    }
+                    if (rerouted) {
+                        VLOG(1) << "[RemoveExtraConvert] Rerouted ConvertTensor at " << i
+                                << " (Extra " << ctIn << "→" << ctOut << ")";
+                        ct.reset();
+                        changed = true;
+                        any = true;
+                        break;
+                    }
+                }
+                if (any) break;  // restart scan
+            }
+        }
+        if (changed) {
+            ops.erase(std::remove_if(ops.begin(), ops.end(),
+                [](const std::unique_ptr<OpT>& o) { return !o; }), ops.end());
+        }
+        return changed;
+    }
+};
+static PostConverterRegister<RemoveExtraConvertTensor> __rm_extra_convert("RemoveExtraConvertTensor");
 
 // ── Registration ──
 // Registers as "IspChainFusion" so optimizer finds it via optimizeNet()

@@ -380,6 +380,10 @@ std::unique_ptr<MNN::NetT> optimizeNetImpl(std::unique_ptr<MNN::NetT>& originNet
         // Add tensor dimension format convert for NC4HW4 - NHWC / NC4HW4 - NCHW
         "AddTensorFormatConverter",
 
+        // Remove ConvertTensors inserted between ISP Extra ops
+        // (format conversion corrupts CHW planar data)
+        "RemoveExtraConvertTensor",
+
         // Turn group convolution to Slice - Convolution - Concat
         "TransformGroupConvolution",
         "TransformGroupConvolution3D",
