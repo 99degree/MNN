@@ -70,6 +70,7 @@ static void addSpirv(MNN::ExtraT* extra, const char* type) {
         {"isp.fcs_display",     g_fcs_display_spv,     g_fcs_display_spv_len},
         {"isp.ee_ldci",         g_ee_ldci_spv,         g_ee_ldci_spv_len},
         {"isp.unpack_demosaic", g_unpack_demosaic_spv, g_unpack_demosaic_spv_len},
+        {"isp.fused_6in1",      g_fused_6in1_spv,      g_fused_6in1_spv_len},
     };
     for (auto& m : map) {
         if (strcmp(type, m.type) == 0) {
@@ -651,6 +652,10 @@ public:
             }
             if (any) continue;
 
+            // R11: If adjacency fusions are exhausted, try full pipeline collapse → fused_6in1
+            // Disabled: SPIR-V for fused_6in1 needs validation before enabling
+            // if (matchFused6in1(ops)) { any = true; continue; }
+
             break;
         }
 
@@ -782,37 +787,99 @@ private:
         return true;
     }
 
-    // R11: unpack_demosaic + fcs_display + ee_ldci → fused_6in1 (3-stage collapse)
-    // R11: (unused — fused_6in1 has no embedded SPIR-V yet)
+    // R11: Fuse all stages from unpack_demosaic → display into fused_6in1.
+    // Collects consecutive Extra ops from unpack_demosaic through display
+    // in tensor chain order and collapses them into a single dispatch.
     bool matchFused6in1(std::vector<std::unique_ptr<OpT>>& ops) const {
-        int ud = -1, fd = -1, el = -1;
-        for (int i = 0; i < (int)ops.size(); i++) {
-            if (isExtraOfType(ops[i].get(), "isp.unpack_demosaic")) ud = i;
-            else if (isExtraOfType(ops[i].get(), "isp.fcs_display")) fd = i;
-            else if (isExtraOfType(ops[i].get(), "isp.ee_ldci")) el = i;
+        // Collect Extras in pipeline order starting from unpack_demosaic
+        std::vector<int> extras;
+        int cur = -1;
+        for (auto& op : ops)
+            if (op && op->type == MNN::OpType_Input && !op->outputIndexes.empty())
+                { cur = op->outputIndexes[0]; break; }
+        if (cur < 0) return false;
+        bool foundUd = false;
+        while (cur >= 0) {
+            bool found = false;
+            for (int j = 0; j < (int)ops.size(); j++) {
+                if (!ops[j] || ops[j]->type != MNN::OpType_Extra) continue;
+                for (int inIdx : ops[j]->inputIndexes)
+                    if (traceTensor(inIdx, ops) == cur) {
+                        if (isExtraOfType(ops[j].get(), "isp.unpack_demosaic")) foundUd = true;
+                        extras.push_back(j);
+                        cur = ops[j]->outputIndexes.empty() ? -1 : ops[j]->outputIndexes[0];
+                        found = true; break;
+                    }
+                if (found) break;
+            }
+            if (!found) break;
         }
-        if (ud < 0 || fd < 0 || el < 0) return false;
-        if (!isChainSkipCT(ops[ud].get(), ops[fd].get(), ops)) return false;
-        if (!isChainSkipCT(ops[fd].get(), ops[el].get(), ops)) return false;
+        // Need at least 4 extras: unpack_demosaic + fcs + ee_ldci + display
+        if (!foundUd || extras.size() < 4) return false;
 
-        VLOG(1) << "[P2] R11: Fused6in1 at " << ud << "+" << fd << "+" << el;
+        VLOG(1) << "[P2] R11: Fused6in1 at " << extras[0] << "+...+" << extras.back();
+        fprintf(stderr, "[IspFusion] [P2] R11: FuseAll %zu stages → isp.fused_6in1\n", extras.size());
+        
         int W, H;
-        getExtraDims(ops[ud], W, H);
+        getExtraDims(ops[extras[0]], W, H);
+        if (W <= 0 || H <= 0) { W = 1920; H = 1080; }
         int inpW = W*2, inpH = H*2;
+        
+        // Merge const buffers from all stages
+        std::vector<float> blc = {0,0,0,0};
+        std::vector<float> wb  = {1,1,1,1};
+        std::vector<float> ccm = {1,0,0, 0,1,0, 0,0,1};
+        float fcs_str = 1.0f, fcs_off = 0.0f;
+        float ee_str = 0.5f, ee_thr = 0.01f;
+        float ldci_str = 0.5f, ldci_rad = 1.0f;
+        float gamma = 2.2f;
+        
+        for (int idx : extras) {
+            auto c = getExtraConst(ops[idx]);
+            const char* t = ops[idx]->main.AsExtra()->type.c_str();
+            if (strcmp(t, "isp.unpack_demosaic") == 0 && c.size() >= 13) {
+                blc = {c[5], c[6], c[7], c[8]};
+                wb  = {c[9], c[10], c[11], c[12]};
+                for (int k = 0; k < 9; k++) ccm[k] = c[13 + k];
+            }
+            if (strcmp(t, "isp.fcs") == 0 && c.size() >= 5) {
+                fcs_str = c[4];  // strength at index 4 (after W,H,BW,BH)
+                fcs_off = 0.0f;
+            }
+            if (strcmp(t, "isp.fcs_display") == 0 && c.size() >= 6) {
+                fcs_str = c[4];  // fcs str at index 4
+                gamma = c[5];     // gamma at index 5
+            }
+            if ((strcmp(t, "isp.ee") == 0 || strcmp(t, "isp.ee_ldci") == 0) && c.size() >= 5) {
+                ee_str = c[4]; ee_thr = c[5];
+            }
+            if ((strcmp(t, "isp.ldci") == 0 || strcmp(t, "isp.ee_ldci") == 0) && c.size() >= 7) {
+                ldci_str = c[6]; ldci_rad = c[7];
+            }
+        }
+        
+        // Build 22-float uniform buffer
+        // Layout: [W, H, BW, BH, smax, blc4, wb4, fcs_str, fcs_off, ee_str, ee_thr, ldci_str, ldci_rad, gamma, bright=0, pad5]
         std::vector<float> u = {float(W),float(H), float(inpW),float(inpH), 1023,
-                                0,0,0,0,  // blc
-                                1,1,1,1,  // wb
-                                1,0,      // fcs
-                                0.5f,0.01f, // ee
-                                0.5f,1.0f, // ldci
-                                2.2f,0,   // display
-                                0,0,0};   // pad
-        ops[ud]->main.AsExtra()->type = "isp.fused_6in1";
-        ops[ud]->main.AsExtra()->attr.clear();
-        buildCommonAttrs(ops[ud]->main.AsExtra(), W, H, u);
-        setEngine(ops[ud]->main.AsExtra());
-        ops[ud]->outputIndexes[0] = ops[el]->outputIndexes[0];
-        ops[fd].reset(); ops[el].reset();
+                                blc[0],blc[1],blc[2],blc[3],
+                                wb[0],wb[1],wb[2],wb[3],
+                                fcs_str, fcs_off,
+                                ee_str, ee_thr,
+                                ldci_str, ldci_rad,
+                                gamma, 0.0f,
+                                0,0,0,0,0};
+        
+        auto* first = ops[extras[0]].get();
+        auto* last  = ops[extras.back()].get();
+        first->main.AsExtra()->type = "isp.fused_6in1";
+        first->main.AsExtra()->attr.clear();
+        buildCommonAttrs(first->main.AsExtra(), W, H, u);
+        setEngine(first->main.AsExtra());
+        addSpirv(first->main.AsExtra(), "isp.fused_6in1");
+        first->outputIndexes[0] = last->outputIndexes[0];
+        
+        for (size_t k = 1; k < extras.size(); k++)
+            ops[extras[k]].reset();
         return true;
     }
 
