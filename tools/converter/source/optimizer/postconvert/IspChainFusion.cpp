@@ -653,7 +653,7 @@ public:
             if (any) continue;
 
             // R11: If adjacency fusions are exhausted, try full pipeline collapse → fused_6in1
-            // Disabled: SPIR-V for fused_6in1 needs validation before enabling
+            // Disabled: SPIR-V produces zero output pending shader validation
             // if (matchFused6in1(ops)) { any = true; continue; }
 
             break;
@@ -819,6 +819,15 @@ private:
 
         VLOG(1) << "[P2] R11: Fused6in1 at " << extras[0] << "+...+" << extras.back();
         fprintf(stderr, "[IspFusion] [P2] R11: FuseAll %zu stages → isp.fused_6in1\n", extras.size());
+
+        // Debug: dump extras
+        for (int idx : extras) {
+            if (ops[idx] && ops[idx]->main.AsExtra())
+                fprintf(stderr, " %d(%s)", idx, ops[idx]->main.AsExtra()->type.c_str());
+            else
+                fprintf(stderr, " %d(NULL)", idx);
+        }
+        fprintf(stderr, "\n");
         
         int W, H;
         getExtraDims(ops[extras[0]], W, H);
@@ -833,9 +842,13 @@ private:
         float ee_str = 0.5f, ee_thr = 0.01f;
         float ldci_str = 0.5f, ldci_rad = 1.0f;
         float gamma = 2.2f;
+
         
         for (int idx : extras) {
             auto c = getExtraConst(ops[idx]);
+            if (!ops[idx] || !ops[idx]->main.AsExtra()) {
+                continue;
+            }
             const char* t = ops[idx]->main.AsExtra()->type.c_str();
             if (strcmp(t, "isp.unpack_demosaic") == 0 && c.size() >= 13) {
                 blc = {c[5], c[6], c[7], c[8]};
@@ -843,12 +856,12 @@ private:
                 for (int k = 0; k < 9; k++) ccm[k] = c[13 + k];
             }
             if (strcmp(t, "isp.fcs") == 0 && c.size() >= 5) {
-                fcs_str = c[4];  // strength at index 4 (after W,H,BW,BH)
+                fcs_str = c[4];
                 fcs_off = 0.0f;
             }
             if (strcmp(t, "isp.fcs_display") == 0 && c.size() >= 6) {
-                fcs_str = c[4];  // fcs str at index 4
-                gamma = c[5];     // gamma at index 5
+                fcs_str = c[4];
+                gamma = c[5];
             }
             if ((strcmp(t, "isp.ee") == 0 || strcmp(t, "isp.ee_ldci") == 0) && c.size() >= 5) {
                 ee_str = c[4]; ee_thr = c[5];
@@ -858,16 +871,17 @@ private:
             }
         }
         
-        // Build 22-float uniform buffer
-        // Layout: [W, H, BW, BH, smax, blc4, wb4, fcs_str, fcs_off, ee_str, ee_thr, ldci_str, ldci_rad, gamma, bright=0, pad5]
+        // Build 33-float uniform buffer
+        // Layout: [W, H, BW, BH, smax, blc4, wb4, ccm9, fcs_str, fcs_off, ee_str, ee_thr, ldci_str, ldci_rad, gamma, bright, pad3]
         std::vector<float> u = {float(W),float(H), float(inpW),float(inpH), 1023,
                                 blc[0],blc[1],blc[2],blc[3],
                                 wb[0],wb[1],wb[2],wb[3],
+                                ccm[0],ccm[1],ccm[2],ccm[3],ccm[4],ccm[5],ccm[6],ccm[7],ccm[8],
                                 fcs_str, fcs_off,
                                 ee_str, ee_thr,
                                 ldci_str, ldci_rad,
                                 gamma, 0.0f,
-                                0,0,0,0,0};
+                                0,0,0};
         
         auto* first = ops[extras[0]].get();
         auto* last  = ops[extras.back()].get();
