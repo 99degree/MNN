@@ -652,8 +652,7 @@ public:
             }
             if (any) continue;
 
-            // R11: If adjacency fusions are exhausted, try full pipeline collapse → fused_6in1
-            // Disabled: SPIR-V produces zero output pending shader validation
+            // R11: fused_6in1 — 1 dispatch but 3-5× slower due to 5×5 FCS redundancy.
             // if (matchFused6in1(ops)) { any = true; continue; }
 
             break;
@@ -855,8 +854,8 @@ private:
                 wb  = {c[9], c[10], c[11], c[12]};
                 for (int k = 0; k < 9; k++) ccm[k] = c[13 + k];
             }
-            if (strcmp(t, "isp.fcs") == 0 && c.size() >= 5) {
-                fcs_str = c[4];
+            if (strcmp(t, "isp.fcs") == 0 && c.size() >= 3) {
+                fcs_str = c[2];
                 fcs_off = 0.0f;
             }
             if (strcmp(t, "isp.fcs_display") == 0 && c.size() >= 6) {
