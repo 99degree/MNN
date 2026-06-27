@@ -125,6 +125,17 @@ static void buildCommonAttrs(MNN::ExtraT* extra, int W, int H,
     });
 }
 
+// Store named float vector as an attribute on an Extra op.
+static void addNamedFloats(MNN::ExtraT* ex, const char* key,
+                           const std::vector<float>& vals) {
+    addAttr(ex, key, [&](MNN::AttributeT* a) {
+        a->i = 0;
+        a->tensor.reset(new MNN::BlobT);
+        a->tensor->dataType = MNN::DataType_DT_FLOAT;
+        a->tensor->float32s = vals;
+    });
+}
+
 // Set engine="MNN" so converter validation passes for custom Extra ops
 static void setEngine(MNN::ExtraT* extra) {
     extra->engine = "MNN";
@@ -181,6 +192,19 @@ static std::vector<float> getExtraConst(const std::unique_ptr<OpT>& op) {
     if (!ex) return {};
     for (auto& attr : ex->attr) {
         if (attr && attr->key == "const" && attr->tensor &&
+            !attr->tensor->float32s.empty()) {
+            return attr->tensor->float32s;
+        }
+    }
+    return {};
+}
+
+// Read a named float vector from Extra op attributes.
+// Each ISP stage stores its params under its own key (e.g. "blc", "wb", "fcs").
+static std::vector<float> getNamedFloats(MNN::ExtraT* ex, const char* key) {
+    if (!ex) return {};
+    for (auto& attr : ex->attr) {
+        if (attr && attr->key == key && attr->tensor &&
             !attr->tensor->float32s.empty()) {
             return attr->tensor->float32s;
         }
@@ -398,6 +422,7 @@ private:
             ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
             auto* ex = new MNN::ExtraT(); ex->type = "isp.fcs";
             buildCommonAttrs(ex, mW, mH, u); setEngine(ex); addSpirv(ex, "isp.fcs");
+            addNamedFloats(ex, "fcs", {str, 0.0f});
             ops[i]->main.value = ex;
             VLOG(2) << "[P1] R3a: fcs (Scale) at " << i;
             return true;
@@ -421,6 +446,7 @@ private:
             ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
             auto* ex = new MNN::ExtraT(); ex->type = "isp.fcs";
             buildCommonAttrs(ex, mW, mH, u); setEngine(ex); addSpirv(ex, "isp.fcs");
+            addNamedFloats(ex, "fcs", {1.0f, 0.0f});
             ops[i]->main.value = ex;
             ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
             ops[j].reset();
@@ -455,6 +481,7 @@ private:
         ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
         auto* ex = new MNN::ExtraT(); ex->type = "isp.ee";
         buildCommonAttrs(ex, mW, mH, u);
+        addNamedFloats(ex, "ee", {0.5f, 0.01f});
         setEngine(ex);
         addSpirv(ex, "isp.ee");
         ops[i]->main.value = ex;
@@ -512,6 +539,7 @@ private:
         ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
         auto* ex = new MNN::ExtraT(); ex->type = "isp.ldci";
         buildCommonAttrs(ex, mW, mH, u);
+        addNamedFloats(ex, "ldci", {0.5f, 1.0f});
         setEngine(ex);
         addSpirv(ex, "isp.ldci");
         ops[i]->main.value = ex;
@@ -541,6 +569,7 @@ private:
         ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
         auto* ex = new MNN::ExtraT(); ex->type = "isp.display";
         buildCommonAttrs(ex, mW, mH, u);
+        addNamedFloats(ex, "display", {2.2f, 0.0f});
         setEngine(ex);
         addSpirv(ex, "isp.display");
         ops[i]->main.value = ex;
@@ -690,15 +719,15 @@ private:
         auto* fcs = ops[i]->main.AsExtra();
         int W, H;
         getExtraDims(ops[i], W, H);
-        float str = 1.0f;
-        for (auto& a : fcs->attr) {
-            if (a->key == "const" && a->tensor && a->tensor->float32s.size() >= 3)
-                str = a->tensor->float32s[2];
-        }
+        // Read fcs strength from named attrs
+        auto fcsVals = getNamedFloats(fcs, "fcs");
+        float str = (fcsVals.size() >= 1) ? fcsVals[0] : 1.0f;
         std::vector<float> u = {float(W),float(H), str,0, 2.2f,0, 0,0,0};
         ops[i]->main.AsExtra()->type = "isp.fcs_display";
         ops[i]->main.AsExtra()->attr.clear();
         buildCommonAttrs(ops[i]->main.AsExtra(), W, H, u);
+        addNamedFloats(ops[i]->main.AsExtra(), "fcs",     {str, 0.0f});
+        addNamedFloats(ops[i]->main.AsExtra(), "display", {2.2f, 0.0f});
         setEngine(ops[i]->main.AsExtra());
         addSpirv(ops[i]->main.AsExtra(), "isp.fcs_display");
         ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
@@ -721,9 +750,18 @@ private:
         if (W <= 0 || H <= 0) getExtraDims(ops[resetIdx], W, H);
         if (W <= 0 || H <= 0) { W = 1920; H = 1080; }
         std::vector<float> u = {float(W),float(H), 0.5f,0.01f, 0.5f,1.0f, 0,0};
+        // Read named params from source ops
+        auto* eeEx = ops[ldciFirst ? j : i]->main.AsExtra();
+        auto* ldciEx = ops[ldciFirst ? i : j]->main.AsExtra();
+        auto eeVals = getNamedFloats(eeEx, "ee");
+        auto ldciVals = getNamedFloats(ldciEx, "ldci");
+        if (eeVals.size() >= 2) { u[2] = eeVals[0]; u[3] = eeVals[1]; }
+        if (ldciVals.size() >= 2) { u[4] = ldciVals[0]; u[5] = ldciVals[1]; }
         ops[keepIdx]->main.AsExtra()->type = "isp.ee_ldci";
         ops[keepIdx]->main.AsExtra()->attr.clear();
         buildCommonAttrs(ops[keepIdx]->main.AsExtra(), W, H, u);
+        addNamedFloats(ops[keepIdx]->main.AsExtra(), "ee",   {u[2], u[3]});
+        addNamedFloats(ops[keepIdx]->main.AsExtra(), "ldci", {u[4], u[5]});
         setEngine(ops[keepIdx]->main.AsExtra());
         addSpirv(ops[keepIdx]->main.AsExtra(), "isp.ee_ldci");
         ops[keepIdx]->outputIndexes[0] = ops[resetIdx]->outputIndexes[0];
@@ -779,6 +817,10 @@ private:
         ops[i]->main.AsExtra()->type = "isp.unpack_demosaic";
         ops[i]->main.AsExtra()->attr.clear();
         buildCommonAttrs(ops[i]->main.AsExtra(), W, H, u);
+        // Store named params for R11 fusion
+        addNamedFloats(ops[i]->main.AsExtra(), "blc", {u[5],u[6],u[7],u[8]});
+        addNamedFloats(ops[i]->main.AsExtra(), "wb",  {u[9],u[10],u[11],u[12]});
+        addNamedFloats(ops[i]->main.AsExtra(), "ccm", {u[13],u[14],u[15],u[16],u[17],u[18],u[19],u[20],u[21]});
         setEngine(ops[i]->main.AsExtra());
         addSpirv(ops[i]->main.AsExtra(), "isp.unpack_demosaic");
         ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
@@ -833,7 +875,7 @@ private:
         if (W <= 0 || H <= 0) { W = 1920; H = 1080; }
         int inpW = W*2, inpH = H*2;
         
-        // Merge const buffers from all stages
+        // Read params from each stage by named attribute
         std::vector<float> blc = {0,0,0,0};
         std::vector<float> wb  = {1,1,1,1};
         std::vector<float> ccm = {1,0,0, 0,1,0, 0,0,1};
@@ -842,32 +884,26 @@ private:
         float ldci_str = 0.5f, ldci_rad = 1.0f;
         float gamma = 2.2f;
 
-        
         for (int idx : extras) {
-            auto c = getExtraConst(ops[idx]);
-            if (!ops[idx] || !ops[idx]->main.AsExtra()) {
-                continue;
-            }
-            const char* t = ops[idx]->main.AsExtra()->type.c_str();
-            if (strcmp(t, "isp.unpack_demosaic") == 0 && c.size() >= 13) {
-                blc = {c[5], c[6], c[7], c[8]};
-                wb  = {c[9], c[10], c[11], c[12]};
-                for (int k = 0; k < 9; k++) ccm[k] = c[13 + k];
-            }
-            if (strcmp(t, "isp.fcs") == 0 && c.size() >= 3) {
-                fcs_str = c[2];
-                fcs_off = 0.0f;
-            }
-            if (strcmp(t, "isp.fcs_display") == 0 && c.size() >= 6) {
-                fcs_str = c[4];
-                gamma = c[5];
-            }
-            if ((strcmp(t, "isp.ee") == 0 || strcmp(t, "isp.ee_ldci") == 0) && c.size() >= 5) {
-                ee_str = c[4]; ee_thr = c[5];
-            }
-            if ((strcmp(t, "isp.ldci") == 0 || strcmp(t, "isp.ee_ldci") == 0) && c.size() >= 7) {
-                ldci_str = c[6]; ldci_rad = c[7];
-            }
+            if (!ops[idx] || !ops[idx]->main.AsExtra()) continue;
+            auto* ex = ops[idx]->main.AsExtra();
+            const char* t = ex->type.c_str();
+
+            auto blcVals = getNamedFloats(ex, "blc");
+            auto wbVals  = getNamedFloats(ex, "wb");
+            auto ccmVals = getNamedFloats(ex, "ccm");
+            auto fcsVals = getNamedFloats(ex, "fcs");
+            auto eeVals  = getNamedFloats(ex, "ee");
+            auto ldciVals= getNamedFloats(ex, "ldci");
+            auto dispVals= getNamedFloats(ex, "display");
+
+            if (blcVals.size() >= 4) blc = blcVals;
+            if (wbVals.size() >= 4)  wb = wbVals;
+            if (ccmVals.size() >= 9) { for (int k = 0; k < 9; k++) ccm[k] = ccmVals[k]; }
+            if (fcsVals.size() >= 2) { fcs_str = fcsVals[0]; fcs_off = fcsVals[1]; }
+            if (eeVals.size() >= 2)  { ee_str = eeVals[0]; ee_thr = eeVals[1]; }
+            if (ldciVals.size() >= 2){ ldci_str = ldciVals[0]; ldci_rad = ldciVals[1]; }
+            if (dispVals.size() >= 2){ gamma = dispVals[0]; }
         }
         
         // Build 33-float uniform buffer
