@@ -218,9 +218,16 @@ static bool isAvgPool3x3(const PoolT* p) {
 }
 
 static bool isUnpackConv(const Convolution2DT* c) {
-    return c && c->common && c->common->kernelX == 2 && c->common->kernelY == 2
-           && c->common->strideX == 2 && c->common->strideY == 2
-           && c->common->outputCount == 4;
+    if (!c || !c->common || c->common->outputCount != 4) return false;
+    // Python pattern: 2×2 kernel, stride 2 (raw Bayer input [1,1,H,W])
+    if (c->common->kernelX == 2 && c->common->kernelY == 2
+        && c->common->strideX == 2 && c->common->strideY == 2)
+        return true;
+    // Rust pattern: 1×2 kernel, stride 1×2 (pre-processed [1,2,H,W/2] from Concat)
+    if (c->common->kernelX == 1 && c->common->kernelY == 2
+        && c->common->strideX == 1 && c->common->strideY == 2)
+        return true;
+    return false;
 }
 
 static bool isCcmConv(const Convolution2DT* c) {
@@ -288,9 +295,10 @@ public:
 
         for (int i = 0; i < (int)ops.size(); i++) {
             if (!ops[i]) continue;
-
             // ── R1: Cast + Conv(2×2,stride=2,4ch) → isp.unpack_blc ──
             if (tryUnpack(ops, i)) { changed = true; continue; }
+            // ── R1b: Rust packed-int16 + Conv → isp.unpack_blc ──
+            if (tryUnpackRust(ops, i)) { changed = true; continue; }
 
             // ── R2: CCM Conv(1×1,4→3ch) → isp.demosaic_ccm ──
             if (tryDemosaic(ops, i)) { changed = true; continue; }
@@ -366,6 +374,74 @@ private:
         VLOG(2) << "[P1] R1: unpack_blc at " << i;
         if (i != ci) ops[i].reset();  // remove Cast
         i = ci;
+        return true;
+    }
+
+    // R1b: Rust packed-int16 pattern → isp.unpack_blc
+    // Matches: ...→ Concat → Conv(4ch, stride=2)
+    // The Rust pipeline generates Mod+Div+Cast+Div+Cast+Div+Concat before Conv
+    // to extract even/odd pixels from packed int16. Same Conv as R1, different preamble.
+    bool tryUnpackRust(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (!ops[i] || ops[i]->type != MNN::OpType_Convolution) return false;
+        auto* conv = ops[i]->main.AsConvolution2D();
+        if (!isUnpackConv(conv)) {
+            return false;
+        }
+
+        // Check that the Conv's input comes from a Concat (Rust pattern)
+        // Python pattern: input comes from Cast → this is R1, skip
+        bool hasConcat = false;
+        for (int inIdx : ops[i]->inputIndexes) {
+            int producer = traceTensor(inIdx, ops);
+            if (producer >= 0 && producer < (int)ops.size() &&
+                ops[producer] && ops[producer]->type == MNN::OpType_Concat) {
+                hasConcat = true;
+                break;
+            }
+        }
+        if (!hasConcat) {
+            return false;  // Not Rust pattern
+        }
+
+        // Found Rust pattern: fuse the Conv into isp.unpack_blc
+        std::vector<float> u = {float(mW),float(mH),float(mInW),float(mInH),
+                                1023.0f, 0,0,0,0, 1,1,1,1};
+
+        ops[i]->type = MNN::OpType_Extra;
+        ops[i]->main.type = MNN::OpParameter_Extra;
+        auto* ex = new MNN::ExtraT(); ex->type = "isp.unpack_blc";
+        addAttr(ex, "output_shape", [&](MNN::AttributeT* a) {
+            a->tensor.reset(new MNN::BlobT);
+            a->tensor->dataType = MNN::DataType_DT_INT32;
+            a->tensor->int32s = {1,4,mH,mW};
+        });
+        addAttr(ex, "global_size", [&](MNN::AttributeT* a) {
+            a->tensor.reset(new MNN::BlobT);
+            a->tensor->dataType = MNN::DataType_DT_INT32;
+            a->tensor->int32s = {mW,mH,1};
+        });
+        addAttr(ex, "group_size", [&](MNN::AttributeT* a) {
+            a->tensor.reset(new MNN::BlobT);
+            a->tensor->dataType = MNN::DataType_DT_INT32;
+            a->tensor->int32s = {16,16,1};
+        });
+        addAttr(ex, "optimized_dispatch", [&](MNN::AttributeT* a) { a->b = true; });
+        addAttr(ex, "input", [&](MNN::AttributeT* a) {
+            a->i = 0; a->list.reset(new MNN::ListValueT); a->list->i = {0,1};
+        });
+        addAttr(ex, "input", [&](MNN::AttributeT* a) {
+            a->i = 0; a->list.reset(new MNN::ListValueT); a->list->i = {1,2};
+        });
+        addAttr(ex, "const", [&](MNN::AttributeT* a) {
+            a->i = 0; a->tensor.reset(new MNN::BlobT);
+            a->tensor->dataType = MNN::DataType_DT_FLOAT;
+            a->tensor->float32s = u; a->b = false;
+        });
+        setEngine(ex);
+        addSpirv(ex, "isp.unpack_blc");
+        ops[i]->main.value = ex;
+
+        VLOG(2) << "[P1] R1b: unpack_blc (Rust pattern) at " << i;
         return true;
     }
 
