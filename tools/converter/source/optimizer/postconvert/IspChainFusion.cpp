@@ -743,7 +743,6 @@ private:
         int resetIdx = ldciFirst ? i : j; // reset the SECOND
         
         std::string order = ldciFirst ? "ldci→ee" : "ee→ldci";
-        fprintf(stderr, "[IspFusion] [P2] R9: EeLdci MATCH at %d+%d (%s)\n", i, j, order.c_str());
         VLOG(1) << "[P2] R9: EeLdci at " << i << "+" << j << " (" << order << ")";
         int W, H;
         getExtraDims(ops[keepIdx], W, H);
@@ -859,16 +858,16 @@ private:
         if (!foundUd || extras.size() < 4) return false;
 
         VLOG(1) << "[P2] R11: Fused6in1 at " << extras[0] << "+...+" << extras.back();
-        fprintf(stderr, "[IspFusion] [P2] R11: FuseAll %zu stages → isp.fused_6in1\n", extras.size());
-
-        // Debug: dump extras
-        for (int idx : extras) {
-            if (ops[idx] && ops[idx]->main.AsExtra())
-                fprintf(stderr, " %d(%s)", idx, ops[idx]->main.AsExtra()->type.c_str());
-            else
-                fprintf(stderr, " %d(NULL)", idx);
+        {
+            std::string s = "[IspFusion] [P2] R11: FuseAll " + std::to_string(extras.size()) + " stages → isp.fused_6in1 ";
+            for (int idx : extras) {
+                if (ops[idx] && ops[idx]->main.AsExtra())
+                    s += std::to_string(idx) + "(" + ops[idx]->main.AsExtra()->type + ") ";
+                else
+                    s += std::to_string(idx) + "(NULL) ";
+            }
+            VLOG(1) << s;
         }
-        fprintf(stderr, "\n");
         
         int W, H;
         getExtraDims(ops[extras[0]], W, H);
