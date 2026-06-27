@@ -244,7 +244,7 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
         for (int i=0; i<inputs.size(); ++i) {
             mDescriptorSet->writeBuffer(vkBn->getBuffer(inputs[i]), mInputBinding[i]);
         }
-        for (int i=0; i<inputs.size(); ++i) {
+        for (int i=0; i<outputs.size(); ++i) {
             mDescriptorSet->writeBuffer(vkBn->getBuffer(outputs[i]), mOutputBinding[i]);
         }
         for (auto& iter : mConstStorageOffset) {
