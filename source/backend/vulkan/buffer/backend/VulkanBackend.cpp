@@ -8,6 +8,7 @@
 
 #include "VulkanBackend.hpp"
 #include <algorithm>
+#include <mutex>
 #include "core/Execution.hpp"
 #include "core/Macro.h"
 #include <MNN/Tensor.hpp>
@@ -374,7 +375,10 @@ void VulkanBackend::_finish() const {
                                 /* .pSignalSemaphores    = */ nullptr};
     auto fenceReal           = mFence->get();
     mFence->reset();
-    CALL_VK(vkQueueSubmit(device().acquireDefaultDevQueue(), 1, &submit_info, fenceReal));
+    {
+        std::lock_guard<std::mutex> lock(device().queueMutex());
+        CALL_VK(vkQueueSubmit(device().acquireDefaultDevQueue(), 1, &submit_info, fenceReal));
+    }
 
     auto res = mFence->wait();
     MNN_VK_CHECK(res);

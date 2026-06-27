@@ -29,6 +29,7 @@ public:
 
     void getDeviceQueue(const uint32_t familyIndex, const uint32_t queueIndex, VkQueue& queue);
     const VkQueue acquireDefaultDevQueue() const;
+    std::mutex& queueMutex() const { return mQueueMutex; }
 
     // VkBuffer/VkDeviceMemory
     const VkResult createBuffer(VkBuffer& buffer, const size_t size, const VkBufferUsageFlags usage,
@@ -214,6 +215,7 @@ private:
     VkDevice mDevice;
     VkPhysicalDeviceProperties mDeviceProty;
     VkQueue mQueue;
+    mutable std::mutex mQueueMutex; ///< serializes vkQueueSubmit across sessions
     VkPhysicalDeviceMemoryProperties mMemoryProty;
     SubgroupInfo mSubgroupInfo{};
     uint32_t mLocalMemorySize = 0;
