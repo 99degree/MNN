@@ -29,7 +29,6 @@
 //    │ 9. isp.ee + isp.ldci                   → isp.ee_ldci      │
 //    │10. isp.unpack_blc + isp.demosaic_ccm   → isp.unpack_demosaic│
 //    │11. isp.unpack_demosaic + isp.fcs_display                  │
-//    │    + isp.ee_ldci                        → isp.fused_6in1   │
 //    └────────────────────────────────────────────────────────────┘
 
 #include <string>
@@ -70,7 +69,7 @@ static void addSpirv(MNN::ExtraT* extra, const char* type) {
         {"isp.fcs_display",     g_fcs_display_spv,     g_fcs_display_spv_len},
         {"isp.ee_ldci",         g_ee_ldci_spv,         g_ee_ldci_spv_len},
         {"isp.unpack_demosaic", g_unpack_demosaic_spv, g_unpack_demosaic_spv_len},
-        {"isp.fused_6in1",      g_fused_6in1_spv,      g_fused_6in1_spv_len},
+
     };
     for (auto& m : map) {
         if (strcmp(type, m.type) == 0) {
@@ -690,9 +689,6 @@ public:
             }
             if (any) continue;
 
-            // R11: fused_6in1 — 1 dispatch but 3-5× slower due to 5×5 FCS redundancy.
-            // if (matchFused6in1(ops)) { any = true; continue; }
-
             break;
         }
 
@@ -873,114 +869,6 @@ private:
         return true;
     }
 
-    // R11: Fuse all stages from unpack_demosaic → display into fused_6in1.
-    // Collects consecutive Extra ops from unpack_demosaic through display
-    // in tensor chain order and collapses them into a single dispatch.
-    bool matchFused6in1(std::vector<std::unique_ptr<OpT>>& ops) const {
-        // Collect Extras in pipeline order starting from unpack_demosaic
-        std::vector<int> extras;
-        int cur = -1;
-        for (auto& op : ops)
-            if (op && op->type == MNN::OpType_Input && !op->outputIndexes.empty())
-                { cur = op->outputIndexes[0]; break; }
-        if (cur < 0) return false;
-        bool foundUd = false;
-        while (cur >= 0) {
-            bool found = false;
-            for (int j = 0; j < (int)ops.size(); j++) {
-                if (!ops[j] || ops[j]->type != MNN::OpType_Extra) continue;
-                for (int inIdx : ops[j]->inputIndexes)
-                    if (traceTensor(inIdx, ops) == cur) {
-                        if (isExtraOfType(ops[j].get(), "isp.unpack_demosaic")) foundUd = true;
-                        extras.push_back(j);
-                        cur = ops[j]->outputIndexes.empty() ? -1 : ops[j]->outputIndexes[0];
-                        found = true; break;
-                    }
-                if (found) break;
-            }
-            if (!found) break;
-        }
-        // Need at least 4 extras: unpack_demosaic + fcs + ee_ldci + display
-        if (!foundUd || extras.size() < 4) return false;
-
-        VLOG(1) << "[P2] R11: Fused6in1 at " << extras[0] << "+...+" << extras.back();
-        {
-            std::string s = "[IspFusion] [P2] R11: FuseAll " + std::to_string(extras.size()) + " stages → isp.fused_6in1 ";
-            for (int idx : extras) {
-                if (ops[idx] && ops[idx]->main.AsExtra())
-                    s += std::to_string(idx) + "(" + ops[idx]->main.AsExtra()->type + ") ";
-                else
-                    s += std::to_string(idx) + "(NULL) ";
-            }
-            VLOG(1) << s;
-        }
-        
-        int W, H;
-        getExtraDims(ops[extras[0]], W, H);
-        if (W <= 0 || H <= 0) { W = 1920; H = 1080; }
-        int inpW = W*2, inpH = H*2;
-        
-        // Read params from each stage by named attribute
-        std::vector<float> blc = {0,0,0,0};
-        std::vector<float> wb  = {1,1,1,1};
-        std::vector<float> ccm = {1,0,0, 0,1,0, 0,0,1};
-        float fcs_str = 1.0f, fcs_off = 0.0f;
-        float ee_str = 0.5f, ee_thr = 0.01f;
-        float ldci_str = 0.5f, ldci_rad = 1.0f;
-        float gamma = 2.2f;
-
-        for (int idx : extras) {
-            if (!ops[idx] || !ops[idx]->main.AsExtra()) continue;
-            auto* ex = ops[idx]->main.AsExtra();
-            const char* t = ex->type.c_str();
-
-            auto blcVals = getNamedFloats(ex, "blc");
-            auto wbVals  = getNamedFloats(ex, "wb");
-            auto ccmVals = getNamedFloats(ex, "ccm");
-            auto fcsVals = getNamedFloats(ex, "fcs");
-            auto eeVals  = getNamedFloats(ex, "ee");
-            auto ldciVals= getNamedFloats(ex, "ldci");
-            auto dispVals= getNamedFloats(ex, "display");
-
-            if (blcVals.size() >= 4) blc = blcVals;
-            if (wbVals.size() >= 4)  wb = wbVals;
-            if (ccmVals.size() >= 9) { for (int k = 0; k < 9; k++) ccm[k] = ccmVals[k]; }
-            if (fcsVals.size() >= 2) { fcs_str = fcsVals[0]; fcs_off = fcsVals[1]; }
-            if (eeVals.size() >= 2)  { ee_str = eeVals[0]; ee_thr = eeVals[1]; }
-            if (ldciVals.size() >= 2){ ldci_str = ldciVals[0]; ldci_rad = ldciVals[1]; }
-            if (dispVals.size() >= 2){ gamma = dispVals[0]; }
-        }
-        
-        // Build 33-float uniform buffer
-        // Layout: [W, H, BW, BH, smax, blc4, wb4, ccm9, fcs_str, fcs_off, ee_str, ee_thr, ldci_str, ldci_rad, gamma, bright, pad3]
-        std::vector<float> u = {float(W),float(H), float(inpW),float(inpH), 1023,
-                                blc[0],blc[1],blc[2],blc[3],
-                                wb[0],wb[1],wb[2],wb[3],
-                                ccm[0],ccm[1],ccm[2],ccm[3],ccm[4],ccm[5],ccm[6],ccm[7],ccm[8],
-                                fcs_str, fcs_off,
-                                ee_str, ee_thr,
-                                ldci_str, ldci_rad,
-                                gamma, 0.0f,
-                                0,0,0};
-        
-        auto* first = ops[extras[0]].get();
-        auto* last  = ops[extras.back()].get();
-        first->main.AsExtra()->type = "isp.fused_6in1";
-        first->main.AsExtra()->attr.clear();
-        buildCommonAttrs(first->main.AsExtra(), W, H, u);
-        setEngine(first->main.AsExtra());
-        addSpirv(first->main.AsExtra(), "isp.fused_6in1");
-        first->outputIndexes[0] = last->outputIndexes[0];
-        
-        for (size_t k = 1; k < extras.size(); k++)
-            ops[extras[k]].reset();
-        return true;
-    }
-
-    // R12: Fuse all pipeline stages into one fused Extra op.
-    // Walks the linear chain from Input → Extra* → Output and fuses
-    // all consecutive Extra ops. This handles any combination of stages
-    // without requiring pairwise adjacency checks.
 };
 
 // ═══════════════════════════════════════════════════════════════════
