@@ -681,6 +681,15 @@ public:
             }
             if (any) continue;
 
+            // R12: unpack_demosaic + fcs → unpack_demosaic (fuse FCS into unpack shader)
+            for (size_t k = 0; k + 1 < extras.size(); k++) {
+                int i = extras[k], j = extras[k+1];
+                if (matchUnpackFcs(ops, i, j)) {
+                    any = true; break;
+                }
+            }
+            if (any) continue;
+
             // R11: fused_6in1 — 1 dispatch but 3-5× slower due to 5×5 FCS redundancy.
             // if (matchFused6in1(ops)) { any = true; continue; }
 
@@ -792,11 +801,12 @@ private:
         getExtraDims(ops[j], W, H);   // demosaic dims (output=FHD)
         int inpW = W*2, inpH = H*2;    // input dims (Bayer=4K)
 
-        // Build const buffer for unpack_demosaic: [dims4, smax, blc4, wb4, ccm9, pad4]
+        // Build const buffer for unpack_demosaic: [dims4, smax, blc4, wb4, ccm9, fcs2, pad2]
         std::vector<float> u = {float(W),float(H), float(inpW),float(inpH), 1023,
                                 0,0,0,0, 1,1,1,1,
                                 1,0,0, 0,1,0, 0,0,1,
-                                0,0,0,0};
+                                1.0f, 0.0f,  // fcs_str=1.0, fcs_off=0.0 (default)
+                                0,0};
 
         // Read blc/wb from unpack_blc's const buffer (positions [5..12])
         auto unpackConst = getExtraConst(ops[i]);
@@ -822,6 +832,42 @@ private:
         addNamedFloats(ops[i]->main.AsExtra(), "ccm", {u[13],u[14],u[15],u[16],u[17],u[18],u[19],u[20],u[21]});
         setEngine(ops[i]->main.AsExtra());
         addSpirv(ops[i]->main.AsExtra(), "isp.unpack_demosaic");
+        ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
+        ops[j].reset();
+        return true;
+    }
+
+    // R12: isp.unpack_demosaic + isp.fcs → isp.unpack_demosaic (fuse FCS into unpack shader)
+    // FCS is a trivial linear transform that can run in the unpack shader.
+    // Eliminates one GPU dispatch and one buffer roundtrip.
+    bool matchUnpackFcs(std::vector<std::unique_ptr<OpT>>& ops, int i, int j) const {
+        if (!isExtraOfType(ops[i].get(), "isp.unpack_demosaic")) return false;
+        if (!isExtraOfType(ops[j].get(), "isp.fcs")) return false;
+        // Check if unpack_demosaic output feeds into fcs (skip intermediate Const/Mul ops)
+        if (!isChainSkipCT(ops[i].get(), ops[j].get(), ops)) return false;
+
+        // Read FCS params from named attrs
+        auto* fcsEx = ops[j]->main.AsExtra();
+        auto fcsVals = getNamedFloats(fcsEx, "fcs");
+        float fcs_str = (fcsVals.size() >= 1) ? fcsVals[0] : 1.0f;
+        float fcs_off = (fcsVals.size() >= 2) ? fcsVals[1] : 0.0f;
+
+        // Update unpack_demosaic const buffer: write fcs params at positions [22..23]
+        auto* ex = ops[i]->main.AsExtra();
+        for (auto& attr : ex->attr) {
+            if (attr && attr->key == "const" && attr->tensor &&
+                attr->tensor->dataType == MNN::DataType_DT_FLOAT &&
+                attr->tensor->float32s.size() >= 24) {
+                attr->tensor->float32s[22] = fcs_str;
+                attr->tensor->float32s[23] = fcs_off;
+                break;
+            }
+        }
+
+        VLOG(1) << "[P2] R12: UnpackFcs at " << i << "+" << j
+                << " (str=" << fcs_str << " off=" << fcs_off << ")";
+
+        // Redirect unpack_demosaic output to fcs output, remove fcs
         ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
         ops[j].reset();
         return true;
