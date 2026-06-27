@@ -872,12 +872,62 @@ private:
 };
 
 // ═══════════════════════════════════════════════════════════════════
+//  Pre-pass: Remove Identity ops (chain through them)
+// ═══════════════════════════════════════════════════════════════════
+// The Rust pipeline generates Identity ops for disabled features
+// (lsc, tone, hook_src, hook_out). These break IspChainFusion's
+// pattern matching. This pre-pass reroutes around them.
+
+class RemoveIdentityOps : public PostConverter {
+public:
+    virtual bool onExecute(std::unique_ptr<MNN::NetT>& net) const override {
+        auto& ops = net->oplists;
+        bool changed = false;
+        bool any = true;
+        while (any) {
+            any = false;
+            for (int i = 0; i < (int)ops.size(); i++) {
+                if (!ops[i] || ops[i]->type != MNN::OpType_Identity) continue;
+                auto& id = ops[i];
+                if (id->inputIndexes.size() != 1 || id->outputIndexes.size() != 1) continue;
+                int inIdx = id->inputIndexes[0];
+                int outIdx = id->outputIndexes[0];
+
+                // Reroute all consumers of outIdx to inIdx
+                for (auto& op : ops) {
+                    if (!op || op.get() == id.get()) continue;
+                    for (auto& idx : op->inputIndexes) {
+                        if (idx == outIdx) {
+                            idx = inIdx;
+                            changed = true;
+                        }
+                    }
+                }
+                VLOG(1) << "[RemoveIdentity] Rerouted Identity at " << i
+                        << " (" << inIdx << " → " << outIdx << ")";
+                id.reset();
+                any = true;
+                break;  // restart scan
+            }
+        }
+        if (changed) {
+            ops.erase(std::remove_if(ops.begin(), ops.end(),
+                [](const std::unique_ptr<OpT>& o) { return !o; }), ops.end());
+        }
+        return changed;
+    }
+};
+
+// ═══════════════════════════════════════════════════════════════════
 //  Orchestrator: runs Pass1 → Pass2 autoregressively
 // ═══════════════════════════════════════════════════════════════════
 
 class IspChainFusion : public PostConverter {
 public:
     virtual bool onExecute(std::unique_ptr<MNN::NetT>& net) const override {
+        VLOG(1) << "[IspFusion] === Pre-pass: Remove Identity ops ===";
+        RemoveIdentityOps().onExecute(net);
+
         VLOG(1) << "[IspFusion] === Pass 1: Standard → ISP Extra ops ===";
         Pass1_ToExtra::instance()->onExecute(net);
 
