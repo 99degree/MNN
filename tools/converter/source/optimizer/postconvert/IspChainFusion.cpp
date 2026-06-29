@@ -69,6 +69,7 @@ static void addSpirv(MNN::ExtraT* extra, const char* type) {
         {"isp.fcs_display",     g_fcs_display_spv,     g_fcs_display_spv_len},
         {"isp.ee_ldci",         g_ee_ldci_spv,         g_ee_ldci_spv_len},
         {"isp.unpack_demosaic", g_unpack_demosaic_spv, g_unpack_demosaic_spv_len},
+        {"isp.demosaic_interp", g_demosaic_interp_spv, g_demosaic_interp_spv_len},
 
     };
     for (auto& m : map) {
@@ -303,6 +304,9 @@ public:
             // ── R2: CCM Conv(1×1,4→3ch) → isp.demosaic_ccm ──
             if (tryDemosaic(ops, i)) { changed = true; continue; }
 
+            // ── R2b: Conv(4×4,stride=1,1ch→3ch) → isp.demosaic_interp ──
+            if (tryDemosaicInterp(ops, i)) { changed = true; continue; }
+
             // ── R3: Scale → isp.fcs ──
             if (tryFcs(ops, i)) { changed = true; continue; }
 
@@ -480,6 +484,35 @@ private:
         addSpirv(ex, "isp.demosaic_ccm");
         ops[i]->main.value = ex;
         VLOG(2) << "[P1] R2: demosaic_ccm at " << i;
+        return true;
+    }
+
+    // R2b: Conv(4×4,stride=1,1ch→3ch) → isp.demosaic_interp
+    // Bilinear interpolation demosaic for full-resolution sensors.
+    // Input: [1,1,H,W] single-channel Bayer
+    // Output: [1,3,H,W] RGB at full resolution
+    bool tryDemosaicInterp(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (ops[i]->type != MNN::OpType_Convolution) return false;
+        auto* c = ops[i]->main.AsConvolution2D();
+        if (!c || !c->common) return false;
+        auto* p = c->common.get();
+        // Match: 1 input, 3 output, kernel 4×4, stride 1, no padding, group 1
+        if (p->inputCount != 1 || p->outputCount != 3) return false;
+        if (p->kernelY != 4 || p->kernelX != 4) return false;
+        if (p->strideY != 1 || p->strideX != 1) return false;
+        if (p->padY != 0 || p->padX != 0) return false;
+        if (p->group != 1) return false;
+
+        std::vector<float> u = {float(mW),float(mH),float(mInW),float(mInH),
+                                1023.0f, 0,0,0, 0,0,0, 0,0,0, 0,0,0,0};
+
+        ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
+        auto* ex = new MNN::ExtraT(); ex->type = "isp.demosaic_interp";
+        buildCommonAttrs(ex, mW, mH, u);
+        setEngine(ex);
+        addSpirv(ex, "isp.demosaic_interp");
+        ops[i]->main.value = ex;
+        VLOG(2) << "[P1] R2b: demosaic_interp at " << i;
         return true;
     }
 
