@@ -257,8 +257,10 @@ static bool isAvgPool3x3(const PoolT* p) {
            && p->strideX == 1 && p->strideY == 1;
 }
 
-static bool isUnpackConv(const Convolution2DT* c) {
-    if (!c || !c->common || c->common->outputCount != 4) return false;
+static bool isUnpackConv(const Convolution2DT* c, bool* is3chOut) {
+    if (!c || !c->common) return false;
+    if (c->common->outputCount != 4 && c->common->outputCount != 3) return false;
+    if (is3chOut) *is3chOut = (c->common->outputCount == 3);
     // Python pattern: 2×2 kernel, stride 2 (raw Bayer input [1,1,H,W])
     if (c->common->kernelX == 2 && c->common->kernelY == 2
         && c->common->strideX == 2 && c->common->strideY == 2)
@@ -268,6 +270,10 @@ static bool isUnpackConv(const Convolution2DT* c) {
         && c->common->strideX == 1 && c->common->strideY == 2)
         return true;
     return false;
+}
+
+static bool isUnpackConv(const Convolution2DT* c) {
+    return isUnpackConv(c, nullptr);
 }
 
 static bool isCcmConv(const Convolution2DT* c) {
@@ -289,6 +295,44 @@ static bool isEeConv(const Convolution2DT* c) {
 static bool isBinaryType(const OpT* op, int bt) {
     auto* b = op ? op->main.AsBinaryOp() : nullptr;
     return b && b->opType == bt;
+}
+
+// skip Const, ConvertTensor, Reshape, Squeeze, Unsqueeze, Identity
+static int skipThroughAll(int start, const std::vector<std::unique_ptr<OpT>>& ops) {
+    int j = start;
+    while (j < (int)ops.size() && ops[j]) {
+        auto t = ops[j]->type;
+        if (t == MNN::OpType_Const ||
+            t == MNN::OpType_ConvertTensor ||
+            t == MNN::OpType_Reshape ||
+            t == MNN::OpType_Squeeze ||
+            t == MNN::OpType_Unsqueeze ||
+            t == MNN::OpType_Identity) {
+            j++;
+        } else {
+            break;
+        }
+    }
+    return j;
+}
+
+// skip backward through same set of ops
+static int skipThroughAllBackward(int start, const std::vector<std::unique_ptr<OpT>>& ops) {
+    int j = start;
+    while (j >= 0 && ops[j]) {
+        auto t = ops[j]->type;
+        if (t == MNN::OpType_Const ||
+            t == MNN::OpType_ConvertTensor ||
+            t == MNN::OpType_Reshape ||
+            t == MNN::OpType_Squeeze ||
+            t == MNN::OpType_Unsqueeze ||
+            t == MNN::OpType_Identity) {
+            j--;
+        } else {
+            break;
+        }
+    }
+    return j;
 }
 
 // Find the next non-Const, non-ConvertTensor op starting from index `start`
@@ -369,65 +413,170 @@ private:
     mutable int mW = 1920, mH = 1080;       // output (after stride-2)
     mutable int mInW = 3840, mInH = 2160;   // input (Bayer raw)
 
-    // R1: Cast + Conv(2×2,stride=2,4ch) → isp.unpack_blc
+    // R1: Cast [+Div(Normalize)] + Conv(2×2,stride=2,3-4ch) → isp.unpack_blc or isp.demosaic(binning)
+    // Enhanced: also absorps Normalize (Div÷max) before Cast, and BLC (Sub+Clip) after Conv.
     bool tryUnpack(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
-        int ci = (ops[i]->type == MNN::OpType_Cast) ? i+1 : i;
+        // Scan backward from i to find Normalize (Div with const) before Cast
+        float normScale = 1023.0f;  // default sensor_max
+        int castIdx = (ops[i]->type == MNN::OpType_Cast) ? i : -1;
+        int divIdx = -1;
+        if (castIdx >= 0) {
+            // Check if there's a BinaryOp(DIV) feeding into the Cast
+            for (int inIdx : ops[castIdx]->inputIndexes) {
+                for (int j = 0; j < (int)ops.size(); j++) {
+                    if (!ops[j] || ops[j]->type != MNN::OpType_BinaryOp) continue;
+                    if (!isBinaryType(ops[j].get(), MNN::BinaryOpOperation_DIV)) continue;
+                    for (int outIdx : ops[j]->outputIndexes) {
+                        if (outIdx == inIdx) {
+                            // Found Div preceding Cast — check if second input is const
+                            for (int divInIdx : ops[j]->inputIndexes) {
+                                if (divInIdx != inIdx) {  // not the first input
+                                    // Look for Const tensor
+                                    for (int k = 0; k < (int)ops.size(); k++) {
+                                        if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
+                                        for (int constOut : ops[k]->outputIndexes) {
+                                            if (constOut == divInIdx) {
+                                                auto* blb = ops[k]->main.AsBlob();
+                                                if (blb && !blb->float32s.empty()) {
+                                                    float maxVal = blb->float32s[0];
+                                                    if (maxVal > 0.0f) {
+                                                        normScale = maxVal;
+                                                        divIdx = j;
+                                                    }
+                                                }
+                                                break;
+                                            }
+                                        }
+                                        if (divIdx >= 0) break;
+                                    }
+                                }
+                                if (divIdx >= 0) break;
+                            }
+                            break;
+                        }
+                    }
+                    if (divIdx >= 0) break;
+                }
+                if (divIdx >= 0) break;
+            }
+        }
+
+        // Find the Conv — it may not be immediately after Cast (Div may be between)
+        int ci = castIdx >= 0 ? skipThroughAll(castIdx + 1, ops) : i;
         if (ci >= (int)ops.size() || !ops[ci]) return false;
         if (ops[ci]->type != MNN::OpType_Convolution) return false;
         auto* conv = ops[ci]->main.AsConvolution2D();
-        if (!isUnpackConv(conv)) return false;
+        bool is3chOut = false;
+        if (!isUnpackConv(conv, &is3chOut)) return false;
 
+        // Scan forward after Conv for BLC (Sub + ReLU6/Clip)
+        float blc0 = 0.0f, blc1 = 0.0f, blc2 = 0.0f, blc3 = 0.0f;
+        int blcSubIdx = -1, blcClipIdx = -1;
+        int afterConv = skipThroughAll(ci + 1, ops);
+        if (afterConv < (int)ops.size() && ops[afterConv] &&
+            ops[afterConv]->type == MNN::OpType_BinaryOp &&
+            isBinaryType(ops[afterConv].get(), MNN::BinaryOpOperation_SUB)) {
+            // Found Sub — extract blc_vals
+            for (int subInIdx : ops[afterConv]->inputIndexes) {
+                // Look for Const in the second input
+                if (subInIdx != ops[afterConv]->inputIndexes[0]) {
+                    // Find Const tensor
+                    for (int k = 0; k < (int)ops.size(); k++) {
+                        if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
+                        for (int constOut : ops[k]->outputIndexes) {
+                            if (constOut == subInIdx) {
+                                auto* blb = ops[k]->main.AsBlob();
+                                if (blb && blb->float32s.size() >= 4) {
+                                    blc0 = blb->float32s[0];
+                                    blc1 = blb->float32s[1];
+                                    blc2 = blb->float32s[2];
+                                    blc3 = blb->float32s[3];
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            blcSubIdx = afterConv;
+            // Check for ReLU6/Clip after Sub
+            int clipIdx = skipThroughAll(afterConv + 1, ops);
+            if (clipIdx < (int)ops.size() && ops[clipIdx] &&
+                (ops[clipIdx]->type == MNN::OpType_ReLU ||
+                 ops[clipIdx]->type == MNN::OpType_ReLU6)) {
+                blcClipIdx = clipIdx;
+            }
+        }
+
+        // Build const buffer with Normalize + BLC
         std::vector<float> u = {float(mW),float(mH),float(mInW),float(mInH),
-                                1023.0f, 0,0,0,0, 1,1,1,1};
+                                normScale,
+                                blc0, blc1, blc2, blc3,
+                                1,1,1,1};
 
-        ops[ci]->type = MNN::OpType_Extra;
-        ops[ci]->main.type = MNN::OpParameter_Extra;
-        auto* ex = new MNN::ExtraT(); ex->type = "isp.unpack_blc";
-        addAttr(ex, "output_shape", [&](MNN::AttributeT* a) {
-            a->tensor.reset(new MNN::BlobT);
-            a->tensor->dataType = MNN::DataType_DT_INT32;
-            a->tensor->int32s = {1,4,mH,mW};
-        });
-        addAttr(ex, "global_size", [&](MNN::AttributeT* a) {
-            a->tensor.reset(new MNN::BlobT);
-            a->tensor->dataType = MNN::DataType_DT_INT32;
-            a->tensor->int32s = {mW,mH,1};
-        });
-        addAttr(ex, "group_size", [&](MNN::AttributeT* a) {
-            a->tensor.reset(new MNN::BlobT);
-            a->tensor->dataType = MNN::DataType_DT_INT32;
-            a->tensor->int32s = {16,16,1};
-        });
-        addAttr(ex, "optimized_dispatch", [&](MNN::AttributeT* a) { a->b = true; });
-        addAttr(ex, "input", [&](MNN::AttributeT* a) {
-            a->i = 0; a->list.reset(new MNN::ListValueT); a->list->i = {0,1};
-        });
-        addAttr(ex, "input", [&](MNN::AttributeT* a) {
-            a->i = 0; a->list.reset(new MNN::ListValueT); a->list->i = {1,2};
-        });
-        addAttr(ex, "const", [&](MNN::AttributeT* a) {
-            a->i = 0; a->tensor.reset(new MNN::BlobT);
-            a->tensor->dataType = MNN::DataType_DT_FLOAT;
-            a->tensor->float32s = u; a->b = false;
-        });
-        setEngine(ex);
-        addSpirv(ex, "isp.unpack_blc");
-        ops[ci]->main.value = ex;
+        if (is3chOut) {
+            // 1ch→3ch binning → isp.demosaic(algo=binning)
+            makeDemosaic(ops[ci].get(), "binning", u);
+            VLOG(2) << "[P1] R1: demosaic(binning) at " << i
+                    << " scale=" << normScale
+                    << " blc=[" << blc0 << "," << blc1 << "," << blc2 << "," << blc3 << "]";
+        } else {
+            // 1ch→4ch unpack → isp.unpack_blc
+            ops[ci]->type = MNN::OpType_Extra;
+            ops[ci]->main.type = MNN::OpParameter_Extra;
+            auto* ex = new MNN::ExtraT(); ex->type = "isp.unpack_blc";
+            addAttr(ex, "output_shape", [&](MNN::AttributeT* a) {
+                a->tensor.reset(new MNN::BlobT);
+                a->tensor->dataType = MNN::DataType_DT_INT32;
+                a->tensor->int32s = {1,4,mH,mW};
+            });
+            addAttr(ex, "global_size", [&](MNN::AttributeT* a) {
+                a->tensor.reset(new MNN::BlobT);
+                a->tensor->dataType = MNN::DataType_DT_INT32;
+                a->tensor->int32s = {mW,mH,1};
+            });
+            addAttr(ex, "group_size", [&](MNN::AttributeT* a) {
+                a->tensor.reset(new MNN::BlobT);
+                a->tensor->dataType = MNN::DataType_DT_INT32;
+                a->tensor->int32s = {16,16,1};
+            });
+            addAttr(ex, "optimized_dispatch", [&](MNN::AttributeT* a) { a->b = true; });
+            addAttr(ex, "input", [&](MNN::AttributeT* a) {
+                a->i = 0; a->list.reset(new MNN::ListValueT); a->list->i = {0,1};
+            });
+            addAttr(ex, "input", [&](MNN::AttributeT* a) {
+                a->i = 0; a->list.reset(new MNN::ListValueT); a->list->i = {1,2};
+            });
+            addAttr(ex, "const", [&](MNN::AttributeT* a) {
+                a->i = 0; a->tensor.reset(new MNN::BlobT);
+                a->tensor->dataType = MNN::DataType_DT_FLOAT;
+                a->tensor->float32s = u; a->b = false;
+            });
+            addNamedFloats(ex, "blc", {blc0, blc1, blc2, blc3});
+            setEngine(ex);
+            addSpirv(ex, "isp.unpack_blc");
+            ops[ci]->main.value = ex;
+            VLOG(2) << "[P1] R1: unpack_blc at " << i
+                    << " scale=" << normScale
+                    << " blc=[" << blc0 << "," << blc1 << "," << blc2 << "," << blc3 << "]";
+        }
 
-        VLOG(2) << "[P1] R1: unpack_blc at " << i;
-        if (i != ci) ops[i].reset();  // remove Cast
+        // Remove consumed ops: Cast, Div, Sub, Clip
+        if (castIdx >= 0) ops[castIdx].reset();
+        if (divIdx >= 0) ops[divIdx].reset();
+        if (blcSubIdx >= 0) ops[blcSubIdx].reset();
+        if (blcClipIdx >= 0) ops[blcClipIdx].reset();
         i = ci;
         return true;
     }
 
-    // R1b: Rust packed-int16 pattern → isp.unpack_blc
-    // Matches: ...→ Concat → Conv(4ch, stride=2)
-    // The Rust pipeline generates Mod+Div+Cast+Div+Cast+Div+Concat before Conv
-    // to extract even/odd pixels from packed int16. Same Conv as R1, different preamble.
+    // R1b: Rust packed-int16 pattern → isp.unpack_blc or isp.demosaic(binning)
+    // Matches: ...→ Concat → Conv(3-4ch, stride=2)
     bool tryUnpackRust(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         if (!ops[i] || ops[i]->type != MNN::OpType_Convolution) return false;
         auto* conv = ops[i]->main.AsConvolution2D();
-        if (!isUnpackConv(conv)) {
+        bool is3chOut = false;
+        if (!isUnpackConv(conv, &is3chOut)) {
             return false;
         }
 
@@ -446,61 +595,134 @@ private:
             return false;  // Not Rust pattern
         }
 
-        // Found Rust pattern: fuse the Conv into isp.unpack_blc
-        std::vector<float> u = {float(mW),float(mH),float(mInW),float(mInH),
-                                1023.0f, 0,0,0,0, 1,1,1,1};
+        if (is3chOut) {
+            // 1ch→3ch binning → isp.demosaic(algo=binning)
+            std::vector<float> u = {float(mW),float(mH),float(mInW),float(mInH),
+                                    1023.0f, 0,0,0,0, 1,1,1,1};
+            makeDemosaic(ops[i].get(), "binning", u);
+            VLOG(2) << "[P1] R1b: demosaic(binning) at " << i << " (Rust 3ch binning)";
+        } else {
+            // Found Rust pattern: fuse the Conv into isp.unpack_blc
+            std::vector<float> u = {float(mW),float(mH),float(mInW),float(mInH),
+                                    1023.0f, 0,0,0,0, 1,1,1,1};
 
-        ops[i]->type = MNN::OpType_Extra;
-        ops[i]->main.type = MNN::OpParameter_Extra;
-        auto* ex = new MNN::ExtraT(); ex->type = "isp.unpack_blc";
-        addAttr(ex, "output_shape", [&](MNN::AttributeT* a) {
-            a->tensor.reset(new MNN::BlobT);
-            a->tensor->dataType = MNN::DataType_DT_INT32;
-            a->tensor->int32s = {1,4,mH,mW};
-        });
-        addAttr(ex, "global_size", [&](MNN::AttributeT* a) {
-            a->tensor.reset(new MNN::BlobT);
-            a->tensor->dataType = MNN::DataType_DT_INT32;
-            a->tensor->int32s = {mW,mH,1};
-        });
-        addAttr(ex, "group_size", [&](MNN::AttributeT* a) {
-            a->tensor.reset(new MNN::BlobT);
-            a->tensor->dataType = MNN::DataType_DT_INT32;
-            a->tensor->int32s = {16,16,1};
-        });
-        addAttr(ex, "optimized_dispatch", [&](MNN::AttributeT* a) { a->b = true; });
-        addAttr(ex, "input", [&](MNN::AttributeT* a) {
-            a->i = 0; a->list.reset(new MNN::ListValueT); a->list->i = {0,1};
-        });
-        addAttr(ex, "input", [&](MNN::AttributeT* a) {
-            a->i = 0; a->list.reset(new MNN::ListValueT); a->list->i = {1,2};
-        });
-        addAttr(ex, "const", [&](MNN::AttributeT* a) {
-            a->i = 0; a->tensor.reset(new MNN::BlobT);
-            a->tensor->dataType = MNN::DataType_DT_FLOAT;
-            a->tensor->float32s = u; a->b = false;
-        });
-        setEngine(ex);
-        addSpirv(ex, "isp.unpack_blc");
-        ops[i]->main.value = ex;
-
-        VLOG(2) << "[P1] R1b: unpack_blc (Rust pattern) at " << i;
+            ops[i]->type = MNN::OpType_Extra;
+            ops[i]->main.type = MNN::OpParameter_Extra;
+            auto* ex = new MNN::ExtraT(); ex->type = "isp.unpack_blc";
+            addAttr(ex, "output_shape", [&](MNN::AttributeT* a) {
+                a->tensor.reset(new MNN::BlobT);
+                a->tensor->dataType = MNN::DataType_DT_INT32;
+                a->tensor->int32s = {1,4,mH,mW};
+            });
+            addAttr(ex, "global_size", [&](MNN::AttributeT* a) {
+                a->tensor.reset(new MNN::BlobT);
+                a->tensor->dataType = MNN::DataType_DT_INT32;
+                a->tensor->int32s = {mW,mH,1};
+            });
+            addAttr(ex, "group_size", [&](MNN::AttributeT* a) {
+                a->tensor.reset(new MNN::BlobT);
+                a->tensor->dataType = MNN::DataType_DT_INT32;
+                a->tensor->int32s = {16,16,1};
+            });
+            addAttr(ex, "optimized_dispatch", [&](MNN::AttributeT* a) { a->b = true; });
+            addAttr(ex, "input", [&](MNN::AttributeT* a) {
+                a->i = 0; a->list.reset(new MNN::ListValueT); a->list->i = {0,1};
+            });
+            addAttr(ex, "input", [&](MNN::AttributeT* a) {
+                a->i = 0; a->list.reset(new MNN::ListValueT); a->list->i = {1,2};
+            });
+            addAttr(ex, "const", [&](MNN::AttributeT* a) {
+                a->i = 0; a->tensor.reset(new MNN::BlobT);
+                a->tensor->dataType = MNN::DataType_DT_FLOAT;
+                a->tensor->float32s = u; a->b = false;
+            });
+            setEngine(ex);
+            addSpirv(ex, "isp.unpack_blc");
+            ops[i]->main.value = ex;
+            VLOG(2) << "[P1] R1b: unpack_blc (Rust pattern) at " << i;
+        }
         return true;
     }
 
     // R2: Conv(1×1,4→3ch) → isp.demosaic_ccm
-    // Extracts the 3×4 Conv weights and converts to 3×3 CCM for the fused shader.
-    // The 3×4 matrix maps [R, Gr, Gb, B] → [R', G', B'].
-    // The demosaic shader computes G=(Gr+Gb)/2, then applies 3×3 CCM:
-    //   ccm[i][R] = w[i][R], ccm[i][G] = 2*w[i][Gr], ccm[i][B] = w[i][B]
-    // Assumes w[i][Gr] == w[i][Gb] (equal Gr/Gb contribution per output channel).
+    // Enhanced: scans backward for BLC (Sub+Clip) and Normalize (Div with const)
+    // and absorbs them into the Extra op const buffer.
     bool tryDemosaic(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         if (ops[i]->type != MNN::OpType_Convolution) return false;
         auto* c = ops[i]->main.AsConvolution2D();
         if (!isCcmConv(c)) return false;
 
+        // Scan backward for BLC: ReLU6 + Sub preceding this Conv
+        float blc0 = 0.0f, blc1 = 0.0f, blc2 = 0.0f, blc3 = 0.0f;
+        float normScale = 1023.0f;
+        int blcSubIdx = -1, blcClipIdx = -1, normDivIdx = -1;
+        
+        int prev = skipThroughAllBackward(i - 1, ops);
+        if (prev >= 0 && ops[prev] &&
+            (ops[prev]->type == MNN::OpType_ReLU ||
+             ops[prev]->type == MNN::OpType_ReLU6)) {
+            blcClipIdx = prev;
+            // Check for Sub before Clip
+            int subPrev = skipThroughAllBackward(prev - 1, ops);
+            if (subPrev >= 0 && ops[subPrev] &&
+                ops[subPrev]->type == MNN::OpType_BinaryOp &&
+                isBinaryType(ops[subPrev].get(), MNN::BinaryOpOperation_SUB)) {
+                // Extract blc_vals from Sub's second input
+                for (int subInIdx : ops[subPrev]->inputIndexes) {
+                    // Look for Const (not the first input which is the image)
+                    bool isFirst = true;
+                    for (int outIdx : ops[subPrev]->outputIndexes) {
+                        if (traceTensor(outIdx, ops) != traceTensor(subInIdx, ops)) {
+                            isFirst = false;
+                        }
+                    }
+                    if (!isFirst || subInIdx != ops[subPrev]->inputIndexes[0]) {
+                        for (int k = 0; k < (int)ops.size(); k++) {
+                            if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
+                            for (int constOut : ops[k]->outputIndexes) {
+                                if (constOut == subInIdx) {
+                                    auto* blb = ops[k]->main.AsBlob();
+                                    if (blb && blb->float32s.size() >= 4) {
+                                        blc0 = blb->float32s[0];
+                                        blc1 = blb->float32s[1];
+                                        blc2 = blb->float32s[2];
+                                        blc3 = blb->float32s[3];
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+                blcSubIdx = subPrev;
+            }
+            
+            // Check for Normalize Div before Sub
+            int divPrev = skipThroughAllBackward((blcSubIdx >= 0 ? blcSubIdx : blcClipIdx) - 1, ops);
+            if (divPrev >= 0 && ops[divPrev] &&
+                ops[divPrev]->type == MNN::OpType_BinaryOp &&
+                isBinaryType(ops[divPrev].get(), MNN::BinaryOpOperation_DIV)) {
+                for (int divInIdx : ops[divPrev]->inputIndexes) {
+                    if (divInIdx != ops[divPrev]->inputIndexes[0]) {
+                        for (int k = 0; k < (int)ops.size(); k++) {
+                            if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
+                            for (int constOut : ops[k]->outputIndexes) {
+                                if (constOut == divInIdx) {
+                                    auto* blb = ops[k]->main.AsBlob();
+                                    if (blb && !blb->float32s.empty() && blb->float32s[0] > 0) {
+                                        normScale = blb->float32s[0];
+                                        normDivIdx = divPrev;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // Extract 3×4 Conv weights → 3×3 CCM
-        // Weights layout: [OC=3, IC=4, KY=1, KX=1] = 12 floats contiguous
         std::vector<float> ccm = {1,0,0, 0,1,0, 0,0,1};  // identity fallback
         if (c && c->weight.size() >= 12) {
             const auto& w = c->weight;
@@ -512,17 +734,27 @@ private:
         }
 
         std::vector<float> u = {float(mW),float(mH),float(mInW),float(mInH),
-                                1023.0f,
+                                normScale,
                                 ccm[0],ccm[1],ccm[2],ccm[3],ccm[4],ccm[5],ccm[6],ccm[7],ccm[8],
-                                0,0,0,0};
+                                blc0, blc1, blc2, blc3};
 
         ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
         auto* ex = new MNN::ExtraT(); ex->type = "isp.demosaic_ccm";
         buildCommonAttrs(ex, mW, mH, u);
+        addNamedFloats(ex, "ccm", {ccm[0],ccm[1],ccm[2],ccm[3],ccm[4],ccm[5],ccm[6],ccm[7],ccm[8]});
+        addNamedFloats(ex, "blc", {blc0, blc1, blc2, blc3});
         setEngine(ex);
         addSpirv(ex, "isp.demosaic_ccm");
         ops[i]->main.value = ex;
-        VLOG(2) << "[P1] R2: demosaic_ccm at " << i;
+        
+        // Remove consumed ops: Div, Sub, Clip
+        if (blcSubIdx >= 0) ops[blcSubIdx].reset();
+        if (blcClipIdx >= 0) ops[blcClipIdx].reset();
+        if (normDivIdx >= 0) ops[normDivIdx].reset();
+        
+        VLOG(2) << "[P1] R2: demosaic_ccm at " << i
+                << " scale=" << normScale
+                << " blc=[" << blc0 << "," << blc1 << "," << blc2 << "," << blc3 << "]";
         return true;
     }
 
@@ -808,6 +1040,28 @@ public:
             }
             if (any) continue;
 
+            // R10b: unpack_blc + isp.demosaic(algorithm=binning) → unpack_demosaic
+            for (size_t k = 0; k + 1 < extras.size(); k++) {
+                int i = extras[k], j = extras[k+1];
+                if (isExtraOfType(ops[i].get(), "isp.unpack_blc") &&
+                    isExtraOfTypeWithAlgo(ops[j].get(), "isp.demosaic", "binning") &&
+                    matchUnpackDemosaicFromUnified(ops, i, j)) {
+                    any = true; break;
+                }
+            }
+            if (any) continue;
+
+            // R11: unpack_demosaic + fcs_display → unpack_demosaic (fuse display gamma)
+            for (size_t k = 0; k + 1 < extras.size(); k++) {
+                int i = extras[k], j = extras[k+1];
+                if ((isExtraOfType(ops[i].get(), "isp.unpack_demosaic") &&
+                     isExtraOfType(ops[j].get(), "isp.fcs_display")) &&
+                    matchUnpackDisplay(ops, i, j)) {
+                    any = true; break;
+                }
+            }
+            if (any) continue;
+
             // R9: ee + ldci → ee_ldci
             for (size_t k = 0; k + 1 < extras.size(); k++) {
                 int i = extras[k], j = extras[k+1];
@@ -978,6 +1232,101 @@ private:
         addNamedFloats(ops[i]->main.AsExtra(), "ccm", {u[13],u[14],u[15],u[16],u[17],u[18],u[19],u[20],u[21]});
         setEngine(ops[i]->main.AsExtra());
         addSpirv(ops[i]->main.AsExtra(), "isp.unpack_demosaic");
+        ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
+        ops[j].reset();
+        return true;
+    }
+
+    // Check if Extra op has a specific type AND algorithm attribute
+    static bool isExtraOfTypeWithAlgo(const OpT* op, const char* type, const char* algo) {
+        if (!op || op->type != MNN::OpType_Extra) return false;
+        auto* e = op->main.AsExtra();
+        if (!e || e->type != type) return false;
+        for (auto& attr : e->attr) {
+            if (attr && attr->key == "algorithm") {
+                return attr->s == algo;
+            }
+        }
+        return false;
+    }
+
+    // R10b: isp.unpack_blc + isp.demosaic(algorithm=binning) → unpack_demosaic
+    // Same as R10 but for the unified isp.demosaic opset with algorithm=binning.
+    bool matchUnpackDemosaicFromUnified(std::vector<std::unique_ptr<OpT>>& ops, int i, int j) const {
+        VLOG(1) << "[P2] R10b: UnpackDemosaicFromUnified at " << i << "+" << j;
+        int W, H;
+        getExtraDims(ops[j], W, H);
+        int inpW = W*2, inpH = H*2;
+
+        std::vector<float> u = {float(W),float(H), float(inpW),float(inpH), 1023,
+                                0,0,0,0, 1,1,1,1,
+                                1,0,0, 0,1,0, 0,0,1,
+                                1.0f, 0.0f,  // fcs_str, fcs_off
+                                0,0};
+
+        // Read blc/wb from unpack_blc's const buffer
+        auto unpackConst = getExtraConst(ops[i]);
+        if (unpackConst.size() >= 13) {
+            u[5] = unpackConst[5];  u[6] = unpackConst[6];
+            u[7] = unpackConst[7];  u[8] = unpackConst[8];
+            u[9] = unpackConst[9];  u[10] = unpackConst[10];
+            u[11] = unpackConst[11]; u[12] = unpackConst[12];
+        }
+
+        // Read CCM from demosaic's const buffer (positions [5..13])
+        auto dmConst = getExtraConst(ops[j]);
+        if (dmConst.size() >= 14) {
+            for (int k = 0; k < 9; k++) u[13 + k] = dmConst[5 + k];
+        }
+
+        ops[i]->main.AsExtra()->type = "isp.unpack_demosaic";
+        ops[i]->main.AsExtra()->attr.clear();
+        buildCommonAttrs(ops[i]->main.AsExtra(), W, H, u);
+        addNamedFloats(ops[i]->main.AsExtra(), "blc", {u[5],u[6],u[7],u[8]});
+        addNamedFloats(ops[i]->main.AsExtra(), "wb",  {u[9],u[10],u[11],u[12]});
+        addNamedFloats(ops[i]->main.AsExtra(), "ccm", {u[13],u[14],u[15],u[16],u[17],u[18],u[19],u[20],u[21]});
+        setEngine(ops[i]->main.AsExtra());
+        addSpirv(ops[i]->main.AsExtra(), "isp.unpack_demosaic");
+        ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
+        ops[j].reset();
+        return true;
+    }
+
+    // R11: isp.unpack_demosaic + isp.fcs_display → unpack_demosaic (no separate display)
+    // Fuses display gamma correction into the unpack_demosaic shader by writing
+    // display gamma and fcs params into the const buffer at positions [22..24].
+    bool matchUnpackDisplay(std::vector<std::unique_ptr<OpT>>& ops, int i, int j) const {
+        VLOG(1) << "[P2] R11: UnpackDisplay at " << i << "+" << j;
+        
+        // Read fcs_str, fcs_off, display_gamma from fcs_display's named attrs
+        auto* fcsDispEx = ops[j]->main.AsExtra();
+        auto fcsVals = getNamedFloats(fcsDispEx, "fcs");
+        auto dispVals = getNamedFloats(fcsDispEx, "display");
+        float fcs_str = (fcsVals.size() >= 1) ? fcsVals[0] : 1.0f;
+        float fcs_off = (fcsVals.size() >= 2) ? fcsVals[1] : 0.0f;
+        float gamma = (dispVals.size() >= 1) ? dispVals[0] : 2.2f;
+        
+        // Update unpack_demosaic const buffer: positions [22..24]
+        auto* ex = ops[i]->main.AsExtra();
+        for (auto& attr : ex->attr) {
+            if (attr && attr->key == "const" && attr->tensor &&
+                attr->tensor->dataType == MNN::DataType_DT_FLOAT &&
+                attr->tensor->float32s.size() >= 24) {
+                attr->tensor->float32s[22] = fcs_str;
+                attr->tensor->float32s[23] = fcs_off;
+                // Position 24 is display gamma (0=none, >0=apply gamma)
+                if (attr->tensor->float32s.size() >= 25) {
+                    attr->tensor->float32s[24] = gamma;
+                }
+                break;
+            }
+        }
+        
+        VLOG(1) << "[P2] R11: UnpackDisplay at " << i << "+" << j
+                << " (fcs_str=" << fcs_str << " fcs_off=" << fcs_off
+                << " gamma=" << gamma << ")";
+        
+        // Redirect output through fcs_display's output, remove fcs_display
         ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
         ops[j].reset();
         return true;
