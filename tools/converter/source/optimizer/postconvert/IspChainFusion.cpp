@@ -12,12 +12,17 @@
 //    Fused ISP pipeline (3 dispatches)
 //      ↓ 3-5× faster on GPU
 //
-//  Pass 1 rules (standard MNN ops → Extra ops):
-//    ┌────────────────────────────────────────────────────────────┐
-//    │ 1. Cast(→FLOAT) + Conv(2×2,stride=2,4ch) → isp.unpack_blc│
-//    │ 2. Conv(1×1,4→3ch)                      → isp.demosaic_ccm│
-//    │ 3. Conv(1×1,4→3ch,noscale)              → isp.demosaic_noscale│
-//    │ 4. Scale                                 → isp.fcs        │
+//  Pass 1 rules (standard MNN ops → isp.demosaic opset):
+//    ┌──────────────────────────────────────────────────────────────┐
+//    │ 1. Cast(→FLOAT) + Conv(2×2,stride=2,4ch) → isp.demosaic    │
+//    │    (binning mode, algo=binning)                              │
+//    │ 2. Conv(4×4,stride=1,1ch→3ch)      → isp.demosaic(algo=bilinear)│
+//    │ 3. Conv(6×6,stride=1,1ch→3ch)      → isp.demosaic(algo=mhc) │
+//    │ 4. Scale (Mul+Add)                  → isp.fcs                │
+//    │ 5. Conv(3×3,unsharp,group=3)        → isp.ee                 │
+//    │ 6. Pool(AVG,3×3)+Sub+Mul+Add        → isp.ldci               │
+//    │ 7. BinaryOp(POW,exp=1/2.4)[+Clip]   → isp.display             │
+//    └──────────────────────────────────────────────────────────────┘
 //    │ 5. Conv(3×3,unsharp,group=3)             → isp.ee         │
 //    │ 6. Pool(AVG,3×3)+Sub+Mul+Add             → isp.ldci       │
 //    │ 7. BinaryOp(POW,exp=1/2.4)[+Clip(0,1)]   → isp.display    │
@@ -70,6 +75,9 @@ static void addSpirv(MNN::ExtraT* extra, const char* type) {
         {"isp.ee_ldci",         g_ee_ldci_spv,         g_ee_ldci_spv_len},
         {"isp.unpack_demosaic", g_unpack_demosaic_spv, g_unpack_demosaic_spv_len},
         {"isp.demosaic_interp", g_demosaic_interp_spv, g_demosaic_interp_spv_len},
+        // Unified isp.demosaic opset — algorithm parameter selects SPIR-V
+        {"isp.demosaic_binning", g_unpack_blc_spv,      g_unpack_blc_spv_len},
+        {"isp.demosaic_bilinear", g_demosaic_interp_spv, g_demosaic_interp_spv_len},
 
     };
     for (auto& m : map) {
@@ -87,6 +95,37 @@ static void addSpirv(MNN::ExtraT* extra, const char* type) {
 #else
     LOG(WARNING) << "[IspFusion] MNN_ISP_EMBED_SPIRV not defined\n";
 #endif
+}
+
+// ── Unified isp.demosaic opset helper ──
+// Creates an Extra op with algorithm parameter.
+// Supported: binning, bilinear, mhc, ahd
+static void makeDemosaic(MNN::OpT* op, const char* algorithm,
+                         const std::vector<float>& uniforms) {
+    if (!op) return;
+    op->type = MNN::OpType_Extra;
+    op->main.type = MNN::OpParameter_Extra;
+    auto* ex = new MNN::ExtraT();
+    static const struct { const char* algo; const char* spv; } map[] = {
+        {"binning",  "isp.demosaic_binning"},
+        {"bilinear", "isp.demosaic_bilinear"},
+    };
+    const char* spv_type = "isp.demosaic_bilinear";
+    for (auto& m : map) {
+        if (strcmp(algorithm, m.algo) == 0) { spv_type = m.spv; break; }
+    }
+    ex->type = spv_type;
+    addAttr(ex, "algorithm", [&](MNN::AttributeT* a) { a->s = algorithm; });
+    addSpirv(ex, spv_type);
+    {
+        std::unique_ptr<MNN::AttributeT> a(new MNN::AttributeT);
+        a->key = "uniforms";
+        a->tensor.reset(new MNN::BlobT);
+        a->tensor->dataType = MNN::DataType_DT_FLOAT;
+        a->tensor->float32s = uniforms;
+        ex->attr.push_back(std::move(a));
+    }
+    op->main.value = ex;
 }
 
 // Common Extra attributes for ISP ops
@@ -487,8 +526,9 @@ private:
         return true;
     }
 
-    // R2b: Conv(4×4,stride=1,1ch→3ch) → isp.demosaic_interp
-    // Bilinear interpolation demosaic for full-resolution sensors.
+    // R2b: Conv(4×4,stride=1,1ch→3ch) → isp.demosaic(algo=bilinear)
+    // R2c: Conv(6×6,stride=1,1ch→3ch) → isp.demosaic(algo=mhc)
+    // Unified demosaic opset for full-resolution sensors.
     // Input: [1,1,H,W] single-channel Bayer
     // Output: [1,3,H,W] RGB at full resolution
     bool tryDemosaicInterp(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
@@ -496,23 +536,24 @@ private:
         auto* c = ops[i]->main.AsConvolution2D();
         if (!c || !c->common) return false;
         auto* p = c->common.get();
-        // Match: 1 input, 3 output, kernel 4×4, stride 1, no padding, group 1
         if (p->inputCount != 1 || p->outputCount != 3) return false;
-        if (p->kernelY != 4 || p->kernelX != 4) return false;
+        if (p->group != 1) return false;
         if (p->strideY != 1 || p->strideX != 1) return false;
         if (p->padY != 0 || p->padX != 0) return false;
-        if (p->group != 1) return false;
+
+        const char* algo = nullptr;
+        if (p->kernelY == 4 && p->kernelX == 4) {
+            algo = "bilinear";
+        } else if (p->kernelY == 6 && p->kernelX == 6) {
+            algo = "mhc";
+        } else {
+            return false;
+        }
 
         std::vector<float> u = {float(mW),float(mH),float(mInW),float(mInH),
                                 1023.0f, 0,0,0, 0,0,0, 0,0,0, 0,0,0,0};
-
-        ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
-        auto* ex = new MNN::ExtraT(); ex->type = "isp.demosaic_interp";
-        buildCommonAttrs(ex, mW, mH, u);
-        setEngine(ex);
-        addSpirv(ex, "isp.demosaic_interp");
-        ops[i]->main.value = ex;
-        VLOG(2) << "[P1] R2b: demosaic_interp at " << i;
+        makeDemosaic(ops[i].get(), algo, u);
+        VLOG(2) << "[P1] R2b: " << algo << " at " << i;
         return true;
     }
 
