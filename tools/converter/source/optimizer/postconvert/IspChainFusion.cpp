@@ -269,6 +269,12 @@ static bool isUnpackConv(const Convolution2DT* c, bool* is3chOut) {
     if (c->common->kernelX == 1 && c->common->kernelY == 2
         && c->common->strideX == 1 && c->common->strideY == 2)
         return true;
+    // Generalized unpack: kernelY=2, strideY=2, kernelX=strideX=sw
+    // sw can be 1,2,4,... (width downscale factor for NativeInt16)
+    if (c->common->kernelY == 2 && c->common->strideY == 2
+        && c->common->kernelX == c->common->strideX
+        && c->common->kernelX >= 1)
+        return true;
     return false;
 }
 
@@ -416,9 +422,20 @@ private:
     // R1: Cast [+Div(Normalize)] + Conv(2×2,stride=2,3-4ch) → isp.unpack_blc or isp.demosaic(binning)
     // Enhanced: also absorps Normalize (Div÷max) before Cast, and BLC (Sub+Clip) after Conv.
     bool tryUnpack(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
-        // Scan backward from i to find Normalize (Div with const) before Cast
+        // Scan backward from i to find a Cast feeding into this Conv
+        int castIdx = -1;
+        if (ops[i]->type == MNN::OpType_Cast) {
+            castIdx = i;  // Cast IS at current position
+        } else {
+            // Cast may be just before current position. Scan backward.
+            int prev = skipThroughAllBackward(i - 1, ops);
+            if (prev >= 0 && ops[prev] && ops[prev]->type == MNN::OpType_Cast) {
+                castIdx = prev;
+            }
+        }
+        
+        // Scan backward from castIdx to find Normalize (Div with const) before Cast
         float normScale = 1023.0f;  // default sensor_max
-        int castIdx = (ops[i]->type == MNN::OpType_Cast) ? i : -1;
         int divIdx = -1;
         if (castIdx >= 0) {
             // Check if there's a BinaryOp(DIV) feeding into the Cast
@@ -521,6 +538,12 @@ private:
                     << " scale=" << normScale
                     << " blc=[" << blc0 << "," << blc1 << "," << blc2 << "," << blc3 << "]";
         } else {
+            // Compute actual output dimensions from Conv strides
+            int outH = (int)(mInH / conv->common->strideY);
+            int outW = (int)(mInW / conv->common->strideX);
+            if (outH <= 0) outH = mH;
+            if (outW <= 0) outW = mW;
+
             // 1ch→4ch unpack → isp.unpack_blc
             ops[ci]->type = MNN::OpType_Extra;
             ops[ci]->main.type = MNN::OpParameter_Extra;
@@ -528,12 +551,12 @@ private:
             addAttr(ex, "output_shape", [&](MNN::AttributeT* a) {
                 a->tensor.reset(new MNN::BlobT);
                 a->tensor->dataType = MNN::DataType_DT_INT32;
-                a->tensor->int32s = {1,4,mH,mW};
+                a->tensor->int32s = {1,4,outH,outW};
             });
             addAttr(ex, "global_size", [&](MNN::AttributeT* a) {
                 a->tensor.reset(new MNN::BlobT);
                 a->tensor->dataType = MNN::DataType_DT_INT32;
-                a->tensor->int32s = {mW,mH,1};
+                a->tensor->int32s = {outW,outH,1};
             });
             addAttr(ex, "group_size", [&](MNN::AttributeT* a) {
                 a->tensor.reset(new MNN::BlobT);
@@ -561,7 +584,61 @@ private:
                     << " blc=[" << blc0 << "," << blc1 << "," << blc2 << "," << blc3 << "]";
         }
 
+        // Reroute the Extra's input to skip consumed intermediate ops
+        // so Pass2 pipeline collection can trace back to Input.
+        // Chain: Input → [Reshape/Const/...] → Cast → Div(Normalize) → Conv
+        // The Conv's input is the Div's output. We need to trace back
+        // through consumed ops to find the original input tensor.
+        if (castIdx >= 0) {
+            // Walk backward through consumed ops from Conv's first input
+            int traceIn = ops[ci]->inputIndexes.empty() ? -1 : ops[ci]->inputIndexes[0];
+            // Try to find the Cast's input by checking all consumed ops' outputs
+            for (auto deadIdx : {castIdx, divIdx}) {
+                if (deadIdx < 0) continue;
+                if (ops[deadIdx]) continue;  // already reset? shouldn't matter
+                // Actually ops[deadIdx] is still valid here (not yet reset)
+            }
+            // Check Div first: if Div's first input equals Cast's output → trace through
+            if (divIdx >= 0 && ops[divIdx] && !ops[divIdx]->inputIndexes.empty()) {
+                // Div's first input = Cast's output
+                traceIn = ops[divIdx]->inputIndexes[0];
+            }
+            // Then check Cast: Cast's first input = original input
+            if (castIdx >= 0 && ops[castIdx] && !ops[castIdx]->inputIndexes.empty()) {
+                traceIn = ops[castIdx]->inputIndexes[0];
+            }
+            if (traceIn >= 0 && !ops[ci]->inputIndexes.empty()) {
+                VLOG(2) << "[P1] R1: reroute Extra input " << ops[ci]->inputIndexes[0]
+                        << " -> " << traceIn;
+                ops[ci]->inputIndexes[0] = traceIn;
+            }
+        }
+
         // Remove consumed ops: Cast, Div, Sub, Clip
+        // Also reroute downstream consumers to the unpack output tensor
+        int convOutTensor = ops[ci]->outputIndexes[0];
+        
+        std::vector<int> deadTensors;
+        if (blcSubIdx >= 0) deadTensors.push_back(ops[blcSubIdx]->outputIndexes[0]);
+        if (blcClipIdx >= 0) deadTensors.push_back(ops[blcClipIdx]->outputIndexes[0]);
+        if (divIdx >= 0) deadTensors.push_back(ops[divIdx]->outputIndexes[0]);
+        if (castIdx >= 0) {
+            for (auto outIdx : ops[castIdx]->outputIndexes) deadTensors.push_back(outIdx);
+        }
+        
+        // Reroute all ops that consume dead tensors to the conv output
+        for (auto& op : ops) {
+            if (!op || op.get() == ops[ci].get()) continue;
+            for (auto& inIdx : op->inputIndexes) {
+                for (int dead : deadTensors) {
+                    if (inIdx == dead) {
+                        inIdx = convOutTensor;
+                        break;
+                    }
+                }
+            }
+        }
+        
         if (castIdx >= 0) ops[castIdx].reset();
         if (divIdx >= 0) ops[divIdx].reset();
         if (blcSubIdx >= 0) ops[blcSubIdx].reset();
@@ -1012,19 +1089,33 @@ public:
                 for (auto& op : ops)
                     if (op && op->type == MNN::OpType_Input && !op->outputIndexes.empty())
                         { cur = op->outputIndexes[0]; break; }
-                while (cur >= 0) {
-                    bool found = false;
-                    for (int j = 0; j < (int)ops.size(); j++) {
-                        if (!ops[j] || ops[j]->type != MNN::OpType_Extra) continue;
-                        for (int inIdx : ops[j]->inputIndexes)
-                            if (traceTensor(inIdx, ops) == cur) {
-                                extras.push_back(j);
-                                cur = ops[j]->outputIndexes.empty() ? -1 : ops[j]->outputIndexes[0];
-                                found = true; break;
-                            }
-                        if (found) break;
+                // Try chain order first (tracing tensor from Input)
+                if (cur >= 0) {
+                    while (cur >= 0) {
+                        bool found = false;
+                        for (int j = 0; j < (int)ops.size(); j++) {
+                            if (!ops[j] || ops[j]->type != MNN::OpType_Extra) continue;
+                            for (int inIdx : ops[j]->inputIndexes)
+                                if (traceTensor(inIdx, ops) == cur) {
+                                    extras.push_back(j);
+                                    cur = ops[j]->outputIndexes.empty() ? -1 : ops[j]->outputIndexes[0];
+                                    found = true; break;
+                                }
+                            if (found) break;
+                        }
+                        if (!found) break;
                     }
-                    if (!found) break;
+                }
+                // If chain tracing failed, fall back to scanning all Extras
+                // and linking them by their tensor positions
+                if (extras.size() < 2) {
+                    extras.clear();
+                    for (int j = 0; j < (int)ops.size(); j++) {
+                        if (ops[j] && ops[j]->type == MNN::OpType_Extra) {
+                            extras.push_back(j);
+                        }
+                    }
+                    VLOG(1) << "[P2] fallback scan found " << extras.size() << " Extras";
                 }
             }
             if (extras.size() < 2) break;
