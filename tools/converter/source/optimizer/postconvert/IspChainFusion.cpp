@@ -1020,7 +1020,6 @@ private:
 
         // Reset Sub, Mul, Add
         ops[subIdx].reset(); ops[mulIdx].reset(); ops[addIdx].reset();
-        i = addIdx;
         VLOG(2) << "[P1] R5: ldci at " << i << " (pool=" << i << " sub=" << subIdx
                 << " mul=" << mulIdx << " add=" << addIdx << ")";
         return true;
@@ -1242,7 +1241,21 @@ private:
                 group = a->i;
             }
         }
-        if (kernelY != 3 || kernelX != 5 || group != 3) return false;
+        if (kernelY != 3 || kernelX != 5 || group != 3) {
+            // Atomic EE: Extra(Conv, 3×3, group=3, unsharp) — standalone, no chain
+            if (kernelY == 3 && kernelX == 3 && group == 3) {
+                std::vector<float> u = {float(mW),float(mH),0.5f,0.01f, 0,0,0,0};
+                ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
+                auto* ex = new MNN::ExtraT(); ex->type = "isp.ee";
+                buildCommonAttrs(ex, mW, mH, u);
+                addNamedFloats(ex, "ee", {0.5f, 0.01f});
+                setEngine(ex);
+                addSpirv(ex, "isp.ee");
+                ops[i]->main.value = ex;
+                return true;
+            }
+            return false;
+        }
         // Exclude FCS: search for UnaryOp (Abs) that consumes this Extra's output
         int convOut = ops[i]->outputIndexes[0];
         for (int s = i + 1; s < std::min((int)ops.size(), i + 25); s++) {
