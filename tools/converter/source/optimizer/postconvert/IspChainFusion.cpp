@@ -1449,12 +1449,13 @@ public:
             }
             if (any) continue;
 
-            // R11: unpack_demosaic + fcs_display → unpack_demosaic (fuse display gamma)
+            // R8: fcs + display → fcs_display (must fire before R9 to avoid ee_ldci
+            //     blocking the fcs+display adjacency)
             for (size_t k = 0; k + 1 < extras.size(); k++) {
                 int i = extras[k], j = extras[k+1];
-                if ((isExtraOfType(ops[i].get(), "isp.unpack_demosaic") &&
-                     isExtraOfType(ops[j].get(), "isp.fcs_display")) &&
-                    matchUnpackDisplay(ops, i, j)) {
+                if (isExtraOfType(ops[i].get(), "isp.fcs") &&
+                    isExtraOfType(ops[j].get(), "isp.display") &&
+                    matchFcsDisplay(ops, i, j)) {
                     any = true; break;
                 }
             }
@@ -1471,12 +1472,12 @@ public:
             }
             if (any) continue;
 
-            // R8: fcs + display → fcs_display
+            // R11: unpack_demosaic + fcs_display → unpack_demosaic (fuse display gamma)
             for (size_t k = 0; k + 1 < extras.size(); k++) {
                 int i = extras[k], j = extras[k+1];
-                if (isExtraOfType(ops[i].get(), "isp.fcs") &&
-                    isExtraOfType(ops[j].get(), "isp.display") &&
-                    matchFcsDisplay(ops, i, j)) {
+                if ((isExtraOfType(ops[i].get(), "isp.unpack_demosaic") &&
+                     isExtraOfType(ops[j].get(), "isp.fcs_display")) &&
+                    matchUnpackDisplay(ops, i, j)) {
                     any = true; break;
                 }
             }
