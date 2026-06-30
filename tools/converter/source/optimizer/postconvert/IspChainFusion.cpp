@@ -402,11 +402,20 @@ public:
             // ── R4: Conv(3×3,unsharp) → isp.ee ──
             if (tryEe(ops, i)) { changed = true; continue; }
 
+            // ── Rust EE variant: Conv(3×5,g=3,laplacian) + Mul(y_mask) chain → isp.ee ──
+            if (tryRustConvEe(ops, i)) { changed = true; continue; }
+
             // ── R5: Pool(AVG,3×3)+Sub+Mul+Add → isp.ldci ──
             if (tryLdci(ops, i)) { changed = true; continue; }
 
+            // ── Rust LDCI variant: ReduceMean(H,W)+Sub+Mul+Mul+Add+Clip → isp.ldci ──
+            if (tryRustReduceLdci(ops, i)) { changed = true; continue; }
+
             // ── R6: BinaryOp(POW)[+Clip] → isp.display ──
             if (tryDisplay(ops, i)) { changed = true; continue; }
+
+            // ── Rust FCS/EE matching: Conv(3×5,g=3,laplacian) → isp.fcs/isp.ee ──
+            if (tryRustConvFcs(ops, i)) { changed = true; continue; }
         }
 
         ops.erase(std::remove_if(ops.begin(), ops.end(),
@@ -1037,6 +1046,171 @@ private:
             ops[i+1].reset(); i += 1;
         }
         VLOG(2) << "[P1] R6: display at " << i << (clip ? " + clip" : "");
+        return true;
+    }
+
+    // Rust EeBlock variant: Conv(3×5,g=3,laplacian) + Mul(y_mask) chain → isp.ee
+    // Same algorithm (laplacian edge sharpening) but different kernel size and y_mask.
+    bool tryRustConvEe(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (ops[i]->type != MNN::OpType_Convolution &&
+            ops[i]->type != MNN::OpType_ConvolutionDepthwise) return false;
+        auto* c = ops[i]->main.AsConvolution2D();
+        if (!c || !c->common) return false;
+        if (c->common->kernelX != 5 || c->common->kernelY != 3) return false;
+        if (c->common->outputCount != 3 || c->common->inputCount != 3) return false;
+        if ((int)c->weight.size() < 15) return false;
+        // Check laplacian kernel (sum ≈ 0, center weight ≈ 1)
+        float sum = 0; float center = 0;
+        for (int k = 0; k < 15; k++) {
+            sum += c->weight[k];
+            if (k == 7) center = c->weight[k];  // center of 3×5 = position 7
+        }
+        if (std::abs(sum) > 0.1f || std::abs(center - 1.0f) > 0.1f) return false;
+        // Check follow-up is Mul(y_mask) — distinguishes from FCS (which is Abs)
+        int nxt = skipThroughAll(i + 1, ops);
+        if (nxt < 0 || !ops[nxt] || ops[nxt]->type != MNN::OpType_BinaryOp) return false;
+        if (!isBinaryType(ops[nxt].get(), MNN::BinaryOpOperation_MUL)) return false;
+        // Follow chain: Mul(y_mask) → Mul(gain) → Clip → Add(input) → Clip(0,1)
+        int last = nxt;
+        for (int cur = nxt; cur + 1 < (int)ops.size() && ops[cur + 1]; ) {
+            int n = cur + 1;
+            // Skip Const, ConvertTensor, Identity, Reshape
+            if (ops[n]->type == MNN::OpType_Const || ops[n]->type == MNN::OpType_ConvertTensor ||
+                ops[n]->type == MNN::OpType_Identity || ops[n]->type == MNN::OpType_Reshape ||
+                ops[n]->type == MNN::OpType_Squeeze || ops[n]->type == MNN::OpType_Unsqueeze) {
+                cur = n; continue;
+            }
+            bool consumes = false;
+            for (int inIdx : ops[n]->inputIndexes)
+                if (inIdx == ops[cur]->outputIndexes[0]) { consumes = true; break; }
+            if (!consumes) break;
+            auto nt = ops[n]->type;
+            if (nt == MNN::OpType_BinaryOp || nt == MNN::OpType_ReLU ||
+                nt == MNN::OpType_ReLU6 || nt == MNN::OpType_Identity) {
+                last = n; cur = n;
+            } else { break; }
+        }
+        if (last == i) return false;
+        
+        // Convert to isp.ee with default strength
+        std::vector<float> u = {float(mW),float(mH),0.5f,0.01f, 0,0,0,0};
+        ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
+        auto* ex = new MNN::ExtraT(); ex->type = "isp.ee";
+        buildCommonAttrs(ex, mW, mH, u);
+        addNamedFloats(ex, "ee", {0.5f, 0.01f});
+        setEngine(ex);
+        addSpirv(ex, "isp.ee");
+        ops[i]->main.value = ex;
+        // Reroute output to last op in chain
+        if (last != i) {
+            ops[i]->outputIndexes[0] = ops[last]->outputIndexes[0];
+            for (int r = i+1; r <= last; r++) ops[r].reset();
+        }
+        VLOG(2) << "[P1] Rust EE at " << i << " (chain to " << last << ")";
+        i = last;
+        return true;
+    }
+
+    // Rust FcsBlock variant: Conv(3×5,g=3,laplacian) + Abs chain → isp.fcs
+    // The shader runs luma-based correction; with suppression=0 it becomes identity.
+    // This lets Pass2 fuse unpack_demosaic + fcs via R12.
+    bool tryRustConvFcs(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (ops[i]->type != MNN::OpType_Convolution &&
+            ops[i]->type != MNN::OpType_ConvolutionDepthwise) return false;
+        auto* c = ops[i]->main.AsConvolution2D();
+        if (!c || !c->common) return false;
+        if (c->common->kernelX != 5 || c->common->kernelY != 3) return false;
+        if (c->common->outputCount != 3 || c->common->inputCount != 3) return false;
+        if ((int)c->weight.size() < 15) return false;
+        float sum = 0; float center = 0;
+        for (int k = 0; k < 15; k++) {
+            sum += c->weight[k];
+            if (k == 7) center = c->weight[k];
+        }
+        if (std::abs(sum) > 0.1f || std::abs(center - 1.0f) > 0.1f) return false;
+        // Check follow-up is Abs (distinguishes FCS from EE)
+        int nxt = skipThroughAll(i + 1, ops);
+        if (nxt < 0 || !ops[nxt] || ops[nxt]->type != MNN::OpType_UnaryOp) return false;
+        // Follow the chain to find the end (13+ ops)
+        int last = i;
+        for (int cur = i; cur + 1 < (int)ops.size() && ops[cur + 1]; ) {
+            int n = cur + 1;
+            if (ops[n]->type == MNN::OpType_Const || ops[n]->type == MNN::OpType_ConvertTensor ||
+                ops[n]->type == MNN::OpType_Identity || ops[n]->type == MNN::OpType_Reshape ||
+                ops[n]->type == MNN::OpType_Squeeze || ops[n]->type == MNN::OpType_Unsqueeze) {
+                cur = n; continue;
+            }
+            bool consumes = false;
+            for (int inIdx : ops[n]->inputIndexes)
+                if (inIdx == ops[cur]->outputIndexes[0]) { consumes = true; break; }
+            if (!consumes) break;
+            auto nt = ops[n]->type;
+            if (nt == MNN::OpType_UnaryOp || nt == MNN::OpType_BinaryOp ||
+                nt == MNN::OpType_ReLU || nt == MNN::OpType_ReLU6 ||
+                nt == MNN::OpType_Identity) {
+                last = n; cur = n;
+            } else { break; }
+        }
+        if (last == i) return false;
+        
+        // Convert to isp.fcs with suppression=0 → identity in shader
+        std::vector<float> u = {float(mW),float(mH),1.0f,0.5f,0.0f,0,0,0};
+        ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
+        auto* ex = new MNN::ExtraT(); ex->type = "isp.fcs";
+        buildCommonAttrs(ex, mW, mH, u);
+        addNamedFloats(ex, "fcs", {1.0f, 0.0f});
+        setEngine(ex);
+        addSpirv(ex, "isp.fcs");
+        ops[i]->main.value = ex;
+        if (last != i) {
+            ops[i]->outputIndexes[0] = ops[last]->outputIndexes[0];
+            for (int r = i+1; r <= last; r++) ops[r].reset();
+        }
+        VLOG(2) << "[P1] Rust FCS at " << i << " (chain to " << last << ")";
+        i = last;
+        return true;
+    }
+
+    // Rust LdciBlock variant: ReduceMean(H,W) + Sub + Mul + Mul + Add + Clip → isp.ldci
+    // Same concept (mean-subtract contrast), different spatial scale (global vs local 3×3).
+    // Using radius=1 (local 3×3) as approximation for the global mean.
+    bool tryRustReduceLdci(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (ops[i]->type != MNN::OpType_Reduction) return false;
+        // Follow chain: ReduceMean → Sub → Mul(y_mask) → Mul(strength) → Add → Clip
+        int last = i;
+        for (int cur = i; cur + 1 < (int)ops.size() && ops[cur + 1]; ) {
+            int n = cur + 1;
+            if (ops[n]->type == MNN::OpType_Const || ops[n]->type == MNN::OpType_ConvertTensor ||
+                ops[n]->type == MNN::OpType_Identity || ops[n]->type == MNN::OpType_Reshape ||
+                ops[n]->type == MNN::OpType_Squeeze || ops[n]->type == MNN::OpType_Unsqueeze) {
+                cur = n; continue;
+            }
+            bool consumes = false;
+            for (int inIdx : ops[n]->inputIndexes)
+                if (inIdx == ops[cur]->outputIndexes[0]) { consumes = true; break; }
+            if (!consumes) break;
+            auto nt = ops[n]->type;
+            if (nt == MNN::OpType_BinaryOp || nt == MNN::OpType_ReLU ||
+                nt == MNN::OpType_ReLU6 || nt == MNN::OpType_Identity) {
+                last = n; cur = n;
+            } else { break; }
+        }
+        if (last == i) return false;
+        
+        std::vector<float> u = {float(mW),float(mH),0.5f,1.0f, 0,0,0,0};
+        ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
+        auto* ex = new MNN::ExtraT(); ex->type = "isp.ldci";
+        buildCommonAttrs(ex, mW, mH, u);
+        addNamedFloats(ex, "ldci", {0.5f, 1.0f});
+        setEngine(ex);
+        addSpirv(ex, "isp.ldci");
+        ops[i]->main.value = ex;
+        if (last != i) {
+            ops[i]->outputIndexes[0] = ops[last]->outputIndexes[0];
+            for (int r = i+1; r <= last; r++) ops[r].reset();
+        }
+        VLOG(2) << "[P1] Rust LDCI at " << i << " (chain to " << last << ")";
+        i = last;
         return true;
     }
 };
