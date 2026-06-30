@@ -416,6 +416,12 @@ public:
 
             // ── Rust FCS/EE matching: Conv(3×5,g=3,laplacian) → isp.fcs/isp.ee ──
             if (tryRustConvFcs(ops, i)) { changed = true; continue; }
+
+            // ── Rust EE: detect ONNX Conv Extra (3×5,group=3) → isp.ee ──
+            if (tryRustExtraEe(ops, i)) { changed = true; continue; }
+
+            // ── Rust Display: detect Mul(scale≈1) → isp.display (identity gamma) ──
+            if (tryRustDisplay(ops, i)) { changed = true; continue; }
         }
 
         ops.erase(std::remove_if(ops.begin(), ops.end(),
@@ -1074,12 +1080,14 @@ private:
         int last = nxt;
         for (int cur = nxt; cur + 1 < (int)ops.size() && ops[cur + 1]; ) {
             int n = cur + 1;
-            // Skip Const, ConvertTensor, Identity, Reshape
-            if (ops[n]->type == MNN::OpType_Const || ops[n]->type == MNN::OpType_ConvertTensor ||
-                ops[n]->type == MNN::OpType_Identity || ops[n]->type == MNN::OpType_Reshape ||
-                ops[n]->type == MNN::OpType_Squeeze || ops[n]->type == MNN::OpType_Unsqueeze) {
-                cur = n; continue;
+            // Skip forward past skippable ops (don't advance cur — chain continuity)
+            while (n < (int)ops.size() && ops[n] &&
+                   (ops[n]->type == MNN::OpType_Const || ops[n]->type == MNN::OpType_ConvertTensor ||
+                    ops[n]->type == MNN::OpType_Identity || ops[n]->type == MNN::OpType_Reshape ||
+                    ops[n]->type == MNN::OpType_Squeeze || ops[n]->type == MNN::OpType_Unsqueeze)) {
+                cur = n; n = cur + 1;
             }
+            if (n >= (int)ops.size() || !ops[n]) break;
             bool consumes = false;
             for (int inIdx : ops[n]->inputIndexes)
                 if (inIdx == ops[cur]->outputIndexes[0]) { consumes = true; break; }
@@ -1211,6 +1219,118 @@ private:
         }
         VLOG(2) << "[P1] Rust LDCI at " << i << " (chain to " << last << ")";
         i = last;
+        return true;
+    }
+
+    // Rust EE via ONNX Conv Extra: detect Extra(type="Conv", kernel=3×5, group=3)
+    // after RunExtraPass, some group convolutions remain as Extras.
+    bool tryRustExtraEe(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (ops[i]->type != MNN::OpType_Extra) return false;
+        if (ops[i]->main.type != MNN::OpParameter_Extra) return false;
+        auto* ex = ops[i]->main.AsExtra();
+        if (!ex || ex->attr.empty()) return false;
+        if (ex->type != "Conv") return false;
+        // Extract kernel_shape and group from attributes
+        int kernelY = 0, kernelX = 0, group = 1;
+        for (const auto& attr_ptr : ex->attr) {
+            if (!attr_ptr) continue;
+            auto* a = attr_ptr.get();
+            if (a->key == "kernel_shape" && a->list && a->list->i.size() >= 2) {
+                kernelY = a->list->i[0];
+                kernelX = a->list->i[1];
+            } else if (a->key == "group") {
+                group = a->i;
+            }
+        }
+        if (kernelY != 3 || kernelX != 5 || group != 3) return false;
+        // Exclude FCS: search for UnaryOp (Abs) that consumes this Extra's output
+        int convOut = ops[i]->outputIndexes[0];
+        for (int s = i + 1; s < std::min((int)ops.size(), i + 25); s++) {
+            if (!ops[s]) continue;
+            if (ops[s]->type == MNN::OpType_UnaryOp) {
+                for (int inIdx : ops[s]->inputIndexes)
+                    if (inIdx == convOut) return false;  // FCS has Abs(edge)
+            }
+        }
+        // Absorb chain after Extra — consume all consumers up to graph output
+        int last = i;
+        for (int cur = i; cur + 1 < (int)ops.size() && ops[cur + 1]; ) {
+            // Skip forward past skippable ops
+            int n = cur + 1;
+            while (n < (int)ops.size() && ops[n] &&
+                   (ops[n]->type == MNN::OpType_Const || ops[n]->type == MNN::OpType_ConvertTensor ||
+                    ops[n]->type == MNN::OpType_Identity || ops[n]->type == MNN::OpType_Reshape ||
+                    ops[n]->type == MNN::OpType_Squeeze || ops[n]->type == MNN::OpType_Unsqueeze)) {
+                cur = n; n = cur + 1;
+            }
+            if (n >= (int)ops.size() || !ops[n]) break;
+            // Consume if the op's inputs include THIS Extra's output tensor
+            bool consumesExtra = false;
+            for (int inIdx : ops[n]->inputIndexes)
+                if (inIdx == convOut || inIdx == ops[last]->outputIndexes[0]) { consumesExtra = true; break; }
+            if (!consumesExtra) break;
+            // Stop at ops that indicate a DIFFERENT pipeline stage
+            auto nt = ops[n]->type;
+            if (nt == MNN::OpType_Pooling) break;
+            if (nt == MNN::OpType_Extra) {
+                // Allow Clip Extras (part of EE chain), break on other Extras
+                auto* ex2 = ops[n]->main.AsExtra();
+                if (!ex2 || ex2->type != "Clip") break;
+                // Consume Clip Extra (part of EE sequence)
+                last = n; cur = n; continue;
+            }
+            last = n; cur = n;
+        }
+        if (last == i) return false;
+        // Convert to isp.ee
+        std::vector<float> u = {float(mW),float(mH),0.5f,0.01f, 0,0,0,0};
+        ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
+        auto* ee = new MNN::ExtraT(); ee->type = "isp.ee";
+        buildCommonAttrs(ee, mW, mH, u);
+        addNamedFloats(ee, "ee", {0.5f, 0.01f});
+        setEngine(ee);
+        addSpirv(ee, "isp.ee");
+        ops[i]->main.value = ee;
+        if (last != i) {
+            ops[i]->outputIndexes[0] = ops[last]->outputIndexes[0];
+            for (int r = i+1; r <= last; r++) ops[r].reset();
+        }
+        VLOG(2) << "[P1] Rust EE (Extra) at " << i << " (chain to " << last << ")";
+        i = last;
+        return true;
+    }
+
+    // Rust DisplayBlock: detect Mul(scale≈1) → isp.display identity gamma
+    bool tryRustDisplay(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (!isBinaryType(ops[i].get(), MNN::BinaryOpOperation_MUL)) return false;
+        // Check if one input is Const(≈1.0) — the identity scale
+        bool hasIdentityScale = false;
+        for (int inIdx : ops[i]->inputIndexes) {
+            for (int j = 0; j < (int)ops.size(); j++) {
+                if (!ops[j] || ops[j]->type != MNN::OpType_Const) continue;
+                for (int outIdx : ops[j]->outputIndexes) {
+                    if (outIdx == inIdx) {
+                        auto* blb = ops[j]->main.AsBlob();
+                        if (blb && !blb->float32s.empty() && std::abs(blb->float32s[0] - 1.0f) < 0.01f) {
+                            hasIdentityScale = true;
+                        }
+                        break;
+                    }
+                }
+                if (hasIdentityScale) break;
+            }
+            if (hasIdentityScale) break;
+        }
+        if (!hasIdentityScale) return false;
+        std::vector<float> u = {float(mW),float(mH),2.2f,0.0f, 0,0,0,0};
+        ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
+        auto* ex = new MNN::ExtraT(); ex->type = "isp.display";
+        buildCommonAttrs(ex, mW, mH, u);
+        addNamedFloats(ex, "display", {2.2f, 0.0f});
+        setEngine(ex);
+        addSpirv(ex, "isp.display");
+        ops[i]->main.value = ex;
+        VLOG(2) << "[P1] Rust Display at " << i;
         return true;
     }
 };
