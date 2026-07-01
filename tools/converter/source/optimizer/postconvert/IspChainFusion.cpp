@@ -383,6 +383,135 @@ public:
         VLOG(2) << "[P1] Input dims: " << mInH << "x" << mInW
                 << " → Output dims: " << mH << "x" << mW;
 
+        // Pre-pass: convert ONNX Extras (Conv, AveragePool, Clip) to native MNN ops.
+        // These are created by DefaultonnxOpConverter during ONNX import and would
+        // only be converted by RunExtraPass (which runs AFTER IspChainFusion).
+        // By converting them here, ISP detection rules can check for native op types.
+        for (int i = 0; i < (int)ops.size(); i++) {
+            if (!ops[i] || ops[i]->type != MNN::OpType_Extra) continue;
+            if (ops[i]->main.type != MNN::OpParameter_Extra) continue;
+            auto* ex = ops[i]->main.AsExtra();
+            if (!ex) continue;
+
+            if (ex->type == "Conv") {
+                // Convert Extra(type="Conv") to native Convolution2D
+                int kernelY = 1, kernelX = 1, strideY = 1, strideX = 1, group = 1;
+                std::vector<int> pads = {0, 0, 0, 0};
+                for (const auto& attr_ptr : ex->attr) {
+                    if (!attr_ptr) continue;
+                    auto* a = attr_ptr.get();
+                    if (a->key == "kernel_shape" && a->list && a->list->i.size() >= 2) {
+                        kernelY = a->list->i[0]; kernelX = a->list->i[1];
+                    } else if (a->key == "strides" && a->list && a->list->i.size() >= 2) {
+                        strideY = a->list->i[0]; strideX = a->list->i[1];
+                    } else if (a->key == "pads" && a->list && a->list->i.size() >= 4) {
+                        for (int p = 0; p < 4; p++) pads[p] = a->list->i[p];
+                    } else if (a->key == "group") {
+                        group = a->i;
+                    }
+                }
+                // Find weight and bias from Const ops
+                const float* weightData = nullptr;
+                const float* biasData = nullptr;
+                int weightSize = 0, biasSize = 0;
+                if (ops[i]->inputIndexes.size() >= 2) {
+                    int wIn = ops[i]->inputIndexes[1];
+                    int bIn = ops[i]->inputIndexes.size() >= 3 ? ops[i]->inputIndexes[2] : -1;
+                    for (int j = 0; j < (int)ops.size(); j++) {
+                        if (!ops[j] || ops[j]->type != MNN::OpType_Const) continue;
+                        for (int outIdx : ops[j]->outputIndexes) {
+                            if (outIdx == wIn && ops[j]->main.AsBlob()) {
+                                auto* blb = ops[j]->main.AsBlob();
+                                weightData = blb->float32s.data();
+                                weightSize = (int)blb->float32s.size();
+                            }
+                            if (outIdx == bIn && ops[j]->main.AsBlob()) {
+                                auto* blb = ops[j]->main.AsBlob();
+                                biasData = blb->float32s.data();
+                                biasSize = (int)blb->float32s.size();
+                            }
+                        }
+                    }
+                }
+                if (!weightData || weightSize < 1) continue;
+                // Infer oc and ic from weight shape [oc, ic_per_group, ky, kx]
+                int oc = 0, ic = 1;
+                if (biasSize > 0) {
+                    oc = biasSize;
+                    ic = weightSize / (oc * kernelY * kernelX);
+                } else {
+                    ic = group;
+                    oc = weightSize / (ic * kernelY * kernelX);
+                }
+                if (oc * ic * kernelY * kernelX != weightSize) {
+                    // Fallback: divide by known dimensions
+                    ic = 1;
+                    oc = weightSize / (kernelY * kernelX);
+                }
+
+                auto* convParam = new MNN::Convolution2DT;
+                convParam->common.reset(new MNN::Convolution2DCommonT);
+                convParam->common->kernelX = kernelX;
+                convParam->common->kernelY = kernelY;
+                convParam->common->strideX = strideX;
+                convParam->common->strideY = strideY;
+                convParam->common->padX = pads.size() >= 2 ? pads[1] : 0;
+                convParam->common->padY = pads.size() >= 1 ? pads[0] : 0;
+                convParam->common->group = group;
+                convParam->common->inputCount = ic * group;
+                convParam->common->outputCount = oc;
+                convParam->common->dilateX = 1;
+                convParam->common->dilateY = 1;
+                convParam->weight.assign(weightData, weightData + weightSize);
+                convParam->bias.assign(biasData, biasData + biasSize);
+
+                if (group > 1 && group == oc && ic * group == oc) {
+                    ops[i]->type = MNN::OpType_ConvolutionDepthwise;
+                } else {
+                    ops[i]->type = MNN::OpType_Convolution;
+                }
+                ops[i]->main.type = MNN::OpParameter_Convolution2D;
+                ops[i]->main.value = convParam;
+                VLOG(2) << "[P1]  ConvNative at " << i << " k=" << kernelY << "x" << kernelX
+                        << " oc=" << oc << " ic=" << ic << " g=" << group;
+            } else if (ex->type == "AveragePool") {
+                int kernelY = 3, kernelX = 3, strideY = 1, strideX = 1;
+                std::vector<int> pads = {1, 1, 1, 1};
+                for (const auto& attr_ptr : ex->attr) {
+                    if (!attr_ptr) continue;
+                    auto* a = attr_ptr.get();
+                    if (a->key == "kernel_shape" && a->list && a->list->i.size() >= 2) {
+                        kernelY = a->list->i[0]; kernelX = a->list->i[1];
+                    } else if (a->key == "strides" && a->list && a->list->i.size() >= 2) {
+                        strideY = a->list->i[0]; strideX = a->list->i[1];
+                    } else if (a->key == "pads" && a->list && a->list->i.size() >= 4) {
+                        for (int p = 0; p < 4; p++) pads[p] = a->list->i[p];
+                    }
+                }
+                auto* poolParam = new MNN::PoolT;
+                poolParam->type = MNN::PoolType_AVEPOOL;
+                poolParam->kernelY = kernelY;
+                poolParam->kernelX = kernelX;
+                poolParam->strideY = strideY;
+                poolParam->strideX = strideX;
+                poolParam->padY = pads[0];
+                poolParam->padX = pads[1];
+                poolParam->padType = MNN::PoolPadType_CAFFE;
+                ops[i]->type = MNN::OpType_Pooling;
+                ops[i]->main.type = MNN::OpParameter_Pool;
+                ops[i]->main.value = poolParam;
+                VLOG(2) << "[P1]  AvgPoolNative at " << i;
+            } else if (ex->type == "Clip") {
+                // Convert ONNX Clip with min=0,max=1 to native ReLU6
+                auto* reluParam = new MNN::ReluT;
+                reluParam->slope = 0.0f;
+                ops[i]->type = MNN::OpType_ReLU6;
+                ops[i]->main.type = MNN::OpParameter_Relu;
+                ops[i]->main.value = reluParam;
+                VLOG(2) << "[P1]  ClipNative at " << i;
+            }
+        }
+
         for (int i = 0; i < (int)ops.size(); i++) {
             if (!ops[i]) continue;
             // ── R1: Cast + Conv(2×2,stride=2,4ch) → isp.unpack_blc ──
@@ -1451,47 +1580,35 @@ public:
 
             // R8: fcs + display → fcs_display (must fire before R9 to avoid ee_ldci
             //     blocking the fcs+display adjacency)
-            // Scan all pairs to handle non-ISP Extras between them.
-            for (size_t ki = 0; ki + 1 < extras.size(); ki++) {
-                for (size_t kj = ki + 1; kj < extras.size(); kj++) {
-                    int i = extras[ki], j = extras[kj];
-                    if (isExtraOfType(ops[i].get(), "isp.fcs") &&
-                        isExtraOfType(ops[j].get(), "isp.display") &&
-                        matchFcsDisplay(ops, i, j)) {
-                        any = true; break;
-                    }
+            for (size_t k = 0; k + 1 < extras.size(); k++) {
+                int i = extras[k], j = extras[k+1];
+                if (isExtraOfType(ops[i].get(), "isp.fcs") &&
+                    isExtraOfType(ops[j].get(), "isp.display") &&
+                    matchFcsDisplay(ops, i, j)) {
+                    any = true; break;
                 }
-                if (any) break;
             }
             if (any) continue;
 
             // R9: ee + ldci → ee_ldci
-            // Scan all pairs (not just consecutive) to handle non-ISP Extras
-            // (like Clip/Const inserted between ISP stages).
-            for (size_t ki = 0; ki + 1 < extras.size(); ki++) {
-                for (size_t kj = ki + 1; kj < extras.size(); kj++) {
-                    int i = extras[ki], j = extras[kj];
-                    if (!ops[i] || !ops[j]) continue;
-                    if ((isExtraOfType(ops[i].get(), "isp.ee") && isExtraOfType(ops[j].get(), "isp.ldci")) ||
-                        (isExtraOfType(ops[i].get(), "isp.ldci") && isExtraOfType(ops[j].get(), "isp.ee"))) {
-                        if (matchEeLdci(ops, i, j)) { any = true; break; }
-                    }
+            for (size_t k = 0; k + 1 < extras.size(); k++) {
+                int i = extras[k], j = extras[k+1];
+                if (!ops[i] || !ops[j]) continue;
+                if ((isExtraOfType(ops[i].get(), "isp.ee") && isExtraOfType(ops[j].get(), "isp.ldci")) ||
+                    (isExtraOfType(ops[i].get(), "isp.ldci") && isExtraOfType(ops[j].get(), "isp.ee"))) {
+                    if (matchEeLdci(ops, i, j)) { any = true; break; }
                 }
-                if (any) break;
             }
             if (any) continue;
 
             // R11: unpack_demosaic + fcs_display → unpack_demosaic (fuse display gamma)
-            for (size_t ki = 0; ki + 1 < extras.size(); ki++) {
-                for (size_t kj = ki + 1; kj < extras.size(); kj++) {
-                    int i = extras[ki], j = extras[kj];
-                    if ((isExtraOfType(ops[i].get(), "isp.unpack_demosaic") &&
-                         isExtraOfType(ops[j].get(), "isp.fcs_display")) &&
-                        matchUnpackDisplay(ops, i, j)) {
-                        any = true; break;
-                    }
+            for (size_t k = 0; k + 1 < extras.size(); k++) {
+                int i = extras[k], j = extras[k+1];
+                if ((isExtraOfType(ops[i].get(), "isp.unpack_demosaic") &&
+                     isExtraOfType(ops[j].get(), "isp.fcs_display")) &&
+                    matchUnpackDisplay(ops, i, j)) {
+                    any = true; break;
                 }
-                if (any) break;
             }
             if (any) continue;
 
