@@ -1451,35 +1451,47 @@ public:
 
             // R8: fcs + display → fcs_display (must fire before R9 to avoid ee_ldci
             //     blocking the fcs+display adjacency)
-            for (size_t k = 0; k + 1 < extras.size(); k++) {
-                int i = extras[k], j = extras[k+1];
-                if (isExtraOfType(ops[i].get(), "isp.fcs") &&
-                    isExtraOfType(ops[j].get(), "isp.display") &&
-                    matchFcsDisplay(ops, i, j)) {
-                    any = true; break;
+            // Scan all pairs to handle non-ISP Extras between them.
+            for (size_t ki = 0; ki + 1 < extras.size(); ki++) {
+                for (size_t kj = ki + 1; kj < extras.size(); kj++) {
+                    int i = extras[ki], j = extras[kj];
+                    if (isExtraOfType(ops[i].get(), "isp.fcs") &&
+                        isExtraOfType(ops[j].get(), "isp.display") &&
+                        matchFcsDisplay(ops, i, j)) {
+                        any = true; break;
+                    }
                 }
+                if (any) break;
             }
             if (any) continue;
 
             // R9: ee + ldci → ee_ldci
-            for (size_t k = 0; k + 1 < extras.size(); k++) {
-                int i = extras[k], j = extras[k+1];
-                if (!ops[i] || !ops[j]) continue;
-                if ((isExtraOfType(ops[i].get(), "isp.ee") && isExtraOfType(ops[j].get(), "isp.ldci")) ||
-                    (isExtraOfType(ops[i].get(), "isp.ldci") && isExtraOfType(ops[j].get(), "isp.ee"))) {
-                    if (matchEeLdci(ops, i, j)) { any = true; break; }
+            // Scan all pairs (not just consecutive) to handle non-ISP Extras
+            // (like Clip/Const inserted between ISP stages).
+            for (size_t ki = 0; ki + 1 < extras.size(); ki++) {
+                for (size_t kj = ki + 1; kj < extras.size(); kj++) {
+                    int i = extras[ki], j = extras[kj];
+                    if (!ops[i] || !ops[j]) continue;
+                    if ((isExtraOfType(ops[i].get(), "isp.ee") && isExtraOfType(ops[j].get(), "isp.ldci")) ||
+                        (isExtraOfType(ops[i].get(), "isp.ldci") && isExtraOfType(ops[j].get(), "isp.ee"))) {
+                        if (matchEeLdci(ops, i, j)) { any = true; break; }
+                    }
                 }
+                if (any) break;
             }
             if (any) continue;
 
             // R11: unpack_demosaic + fcs_display → unpack_demosaic (fuse display gamma)
-            for (size_t k = 0; k + 1 < extras.size(); k++) {
-                int i = extras[k], j = extras[k+1];
-                if ((isExtraOfType(ops[i].get(), "isp.unpack_demosaic") &&
-                     isExtraOfType(ops[j].get(), "isp.fcs_display")) &&
-                    matchUnpackDisplay(ops, i, j)) {
-                    any = true; break;
+            for (size_t ki = 0; ki + 1 < extras.size(); ki++) {
+                for (size_t kj = ki + 1; kj < extras.size(); kj++) {
+                    int i = extras[ki], j = extras[kj];
+                    if ((isExtraOfType(ops[i].get(), "isp.unpack_demosaic") &&
+                         isExtraOfType(ops[j].get(), "isp.fcs_display")) &&
+                        matchUnpackDisplay(ops, i, j)) {
+                        any = true; break;
+                    }
                 }
+                if (any) break;
             }
             if (any) continue;
 
