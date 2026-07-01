@@ -416,6 +416,7 @@ public:
                 const float* weightData = nullptr;
                 const float* biasData = nullptr;
                 int weightSize = 0, biasSize = 0;
+                int oc_dims = 0, ic_dims = 0;  // from weight tensor shape
                 if (ops[i]->inputIndexes.size() >= 2) {
                     int wIn = ops[i]->inputIndexes[1];
                     int bIn = ops[i]->inputIndexes.size() >= 3 ? ops[i]->inputIndexes[2] : -1;
@@ -426,6 +427,11 @@ public:
                                 auto* blb = ops[j]->main.AsBlob();
                                 weightData = blb->float32s.data();
                                 weightSize = (int)blb->float32s.size();
+                                // Try to read original weight shape from the Const blob
+                                if (blb->dims.size() >= 4) {
+                                    oc_dims = blb->dims[0];  // output channels
+                                    ic_dims = blb->dims[1];  // input channels per group
+                                }
                             }
                             if (outIdx == bIn && ops[j]->main.AsBlob()) {
                                 auto* blb = ops[j]->main.AsBlob();
@@ -438,17 +444,26 @@ public:
                 if (!weightData || weightSize < 1) continue;
                 // Infer oc and ic from weight shape [oc, ic_per_group, ky, kx]
                 int oc = 0, ic = 1;
-                if (biasSize > 0) {
-                    oc = biasSize;
-                    ic = weightSize / (oc * kernelY * kernelX);
-                } else {
-                    ic = group;
-                    oc = weightSize / (ic * kernelY * kernelX);
+                // First try dims from the Const blob (set above)
+                if (oc_dims > 0 && ic_dims > 0) {
+                    oc = oc_dims;
+                    ic = ic_dims;
+                    if (oc * ic * kernelY * kernelX != weightSize) {
+                        oc = 0;  // fall back to inference
+                    }
                 }
-                if (oc * ic * kernelY * kernelX != weightSize) {
-                    // Fallback: divide by known dimensions
-                    ic = 1;
-                    oc = weightSize / (kernelY * kernelX);
+                if (oc == 0) {
+                    if (biasSize > 0) {
+                        oc = biasSize;
+                        ic = weightSize / (oc * kernelY * kernelX);
+                    } else {
+                        ic = group;
+                        oc = weightSize / (ic * kernelY * kernelX);
+                    }
+                    if (oc * ic * kernelY * kernelX != weightSize) {
+                        ic = 1;
+                        oc = weightSize / (kernelY * kernelX);
+                    }
                 }
 
                 auto* convParam = new MNN::Convolution2DT;
@@ -516,6 +531,12 @@ public:
 
         for (int i = 0; i < (int)ops.size(); i++) {
             if (!ops[i]) continue;
+            // ── R8: Conv(2×2,stride=2,identity,oc=ic) → isp.pyramid ──
+            if (tryPyramid(ops, i)) { changed = true; continue; }
+
+            // ── R7: Conv(1×1,3→1ch,luminance) → isp.grayscale ──
+            if (tryGrayscale(ops, i)) { changed = true; continue; }
+
             // ── R1: Cast + Conv(2×2,stride=2,4ch) → isp.unpack_blc ──
             if (tryUnpack(ops, i)) { changed = true; continue; }
             // ── R1b: Rust packed-int16 + Conv → isp.unpack_blc ──
@@ -544,12 +565,6 @@ public:
 
             // ── R6: BinaryOp(POW)[+Clip] → isp.display ──
             if (tryDisplay(ops, i)) { changed = true; continue; }
-
-            // ── R7: Conv(1×1,3→1ch,luminance) → isp.grayscale ──
-            if (tryGrayscale(ops, i)) { changed = true; continue; }
-
-            // ── R8: Conv(2×2,stride=2,identity) → isp.pyramid ──
-            if (tryPyramid(ops, i)) { changed = true; continue; }
 
             // ── Rust FCS/EE matching: Conv(3×5,g=3,laplacian) → isp.fcs/isp.ee ──
             if (tryRustConvFcs(ops, i)) { changed = true; continue; }
