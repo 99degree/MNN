@@ -545,6 +545,12 @@ public:
             // ── R6: BinaryOp(POW)[+Clip] → isp.display ──
             if (tryDisplay(ops, i)) { changed = true; continue; }
 
+            // ── R7: Conv(1×1,3→1ch,luminance) → isp.grayscale ──
+            if (tryGrayscale(ops, i)) { changed = true; continue; }
+
+            // ── R8: Conv(2×2,stride=2,identity) → isp.pyramid ──
+            if (tryPyramid(ops, i)) { changed = true; continue; }
+
             // ── Rust FCS/EE matching: Conv(3×5,g=3,laplacian) → isp.fcs/isp.ee ──
             if (tryRustConvFcs(ops, i)) { changed = true; continue; }
 
@@ -1182,6 +1188,135 @@ private:
             ops[i+1].reset(); i += 1;
         }
         VLOG(2) << "[P1] R6: display at " << i << (clip ? " + clip" : "");
+        return true;
+    }
+
+    // R7: Conv(1×1,3→1ch,luminance weights) → isp.grayscale
+    // Detects the GrayscaleBlock which generates a single Conv(1×1) with
+    // BT.601 luminance weights [0.299, 0.587, 0.114].
+    // Converts to isp.grayscale Extra op running SPIR-V compute shader.
+    bool tryGrayscale(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (ops[i]->type != MNN::OpType_Convolution) return false;
+        auto* c = ops[i]->main.AsConvolution2D();
+        if (!c || !c->common) return false;
+        if (c->common->kernelX != 1 || c->common->kernelY != 1) return false;
+        if (c->common->outputCount != 1 || c->common->inputCount != 3) return false;
+        if ((int)c->weight.size() < 3) return false;
+        // Check BT.601 luminance weights
+        const float expected[3] = {0.299f, 0.587f, 0.114f};
+        for (int k = 0; k < 3; k++) {
+            if (std::abs(c->weight[k] - expected[k]) > 0.01f) return false;
+        }
+
+        ops[i]->type = MNN::OpType_Extra;
+        ops[i]->main.type = MNN::OpParameter_Extra;
+        auto* ex = new MNN::ExtraT();
+        ex->type = "isp.grayscale";
+        // Output is [1, 1, H, W] — single luminance channel
+        addAttr(ex, "output_shape", [&](MNN::AttributeT* a) {
+            a->tensor.reset(new MNN::BlobT);
+            a->tensor->dataType = MNN::DataType_DT_INT32;
+            a->tensor->int32s = {1, 1, mH, mW};
+        });
+        addAttr(ex, "global_size", [&](MNN::AttributeT* a) {
+            a->tensor.reset(new MNN::BlobT);
+            a->tensor->dataType = MNN::DataType_DT_INT32;
+            a->tensor->int32s = {mW, mH, 1};
+        });
+        addAttr(ex, "group_size", [&](MNN::AttributeT* a) {
+            a->tensor.reset(new MNN::BlobT);
+            a->tensor->dataType = MNN::DataType_DT_INT32;
+            a->tensor->int32s = {16, 16, 1};
+        });
+        addAttr(ex, "optimized_dispatch", [&](MNN::AttributeT* a) { a->b = true; });
+        std::vector<float> u = {float(mW), float(mH), 0, 0, 0, 0, 0, 0};
+        addAttr(ex, "input", [&](MNN::AttributeT* a) {
+            a->i = 0; a->list.reset(new MNN::ListValueT); a->list->i = {0, 1};
+        });
+        addAttr(ex, "input", [&](MNN::AttributeT* a) {
+            a->i = 0; a->list.reset(new MNN::ListValueT); a->list->i = {1, 2};
+        });
+        addAttr(ex, "const", [&](MNN::AttributeT* a) {
+            a->i = 0; a->tensor.reset(new MNN::BlobT);
+            a->tensor->dataType = MNN::DataType_DT_FLOAT;
+            a->tensor->float32s = u; a->b = false;
+        });
+        addNamedFloats(ex, "grayscale", {0.299f, 0.587f, 0.114f});
+        setEngine(ex);
+        addSpirv(ex, "isp.grayscale");
+        ops[i]->main.value = ex;
+        VLOG(2) << "[P1] R7: grayscale at " << i;
+        return true;
+    }
+
+    // R8: Conv(2×2,stride=2,identity weights, oc=ic) → isp.pyramid
+    // Detects the PyramidBlock which generates a Conv(2×2, stride=2) with
+    // identity diagonal weights (top-left = 1.0, rest = 0).
+    // Converts to isp.pyramid Extra op for 2× nearest-neighbor downscale.
+    bool tryPyramid(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (ops[i]->type != MNN::OpType_Convolution) return false;
+        auto* c = ops[i]->main.AsConvolution2D();
+        if (!c || !c->common) return false;
+        if (c->common->kernelX != 2 || c->common->kernelY != 2) return false;
+        if (c->common->strideX != 2 || c->common->strideY != 2) return false;
+        int oc = c->common->outputCount;
+        int ic = c->common->inputCount;
+        if (oc < 1 || oc != ic) return false;
+        if ((int)c->weight.size() != oc * ic * 4) return false;
+        // Check identity weights: for each output channel, weight[pos=0] = 1.0 (top-left)
+        for (int ch = 0; ch < oc; ch++) {
+            float* w = c->weight.data() + ch * ic * 4;
+            for (int ic_idx = 0; ic_idx < ic; ic_idx++) {
+                float* kw = w + ic_idx * 4;
+                if (ic_idx == ch) {
+                    if (std::abs(kw[0] - 1.0f) > 0.01f) return false;
+                } else {
+                    if (std::abs(kw[0]) > 0.01f) return false;
+                }
+                for (int p = 1; p < 4; p++) {
+                    if (std::abs(kw[p]) > 0.01f) return false;
+                }
+            }
+        }
+
+        ops[i]->type = MNN::OpType_Extra;
+        ops[i]->main.type = MNN::OpParameter_Extra;
+        auto* ex = new MNN::ExtraT();
+        ex->type = "isp.pyramid";
+        // Output is [1, oc, H/2, W/2] — same channels, half resolution
+        addAttr(ex, "output_shape", [&](MNN::AttributeT* a) {
+            a->tensor.reset(new MNN::BlobT);
+            a->tensor->dataType = MNN::DataType_DT_INT32;
+            a->tensor->int32s = {1, oc, mH/2, mW/2};
+        });
+        addAttr(ex, "global_size", [&](MNN::AttributeT* a) {
+            a->tensor.reset(new MNN::BlobT);
+            a->tensor->dataType = MNN::DataType_DT_INT32;
+            a->tensor->int32s = {mW/2, mH/2, 1};
+        });
+        addAttr(ex, "group_size", [&](MNN::AttributeT* a) {
+            a->tensor.reset(new MNN::BlobT);
+            a->tensor->dataType = MNN::DataType_DT_INT32;
+            a->tensor->int32s = {16, 16, 1};
+        });
+        addAttr(ex, "optimized_dispatch", [&](MNN::AttributeT* a) { a->b = true; });
+        std::vector<float> u = {float(mW/2), float(mH/2), float(oc), 0, 0, 0, 0, 0};
+        addAttr(ex, "input", [&](MNN::AttributeT* a) {
+            a->i = 0; a->list.reset(new MNN::ListValueT); a->list->i = {0, 1};
+        });
+        addAttr(ex, "input", [&](MNN::AttributeT* a) {
+            a->i = 0; a->list.reset(new MNN::ListValueT); a->list->i = {1, 2};
+        });
+        addAttr(ex, "const", [&](MNN::AttributeT* a) {
+            a->i = 0; a->tensor.reset(new MNN::BlobT);
+            a->tensor->dataType = MNN::DataType_DT_FLOAT;
+            a->tensor->float32s = u; a->b = false;
+        });
+        addNamedFloats(ex, "pyramid", {float(oc)});
+        setEngine(ex);
+        addSpirv(ex, "isp.pyramid");
+        ops[i]->main.value = ex;
+        VLOG(2) << "[P1] R8: pyramid at " << i << " oc=" << oc;
         return true;
     }
 
