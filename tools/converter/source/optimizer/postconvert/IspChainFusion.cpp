@@ -1883,12 +1883,13 @@ private:
         getExtraDims(ops[j], W, H);   // demosaic dims (output=FHD)
         int inpW = W*2, inpH = H*2;    // input dims (Bayer=4K)
 
-        // Build const buffer for unpack_demosaic: [dims4, smax, blc4, wb4, ccm9, fcs2, pad2]
+        // Build const buffer for unpack_demosaic:
+        // [dims4, smax, blc4, wb4, ccm9, fcs2, bayer_pat, gamma]
         std::vector<float> u = {float(W),float(H), float(inpW),float(inpH), 1023,
                                 0,0,0,0, 1,1,1,1,
                                 1,0,0, 0,1,0, 0,0,1,
                                 1.0f, 0.0f,  // fcs_str=1.0, fcs_off=0.0 (default)
-                                0,0};
+                                0,0};  // bayer_pattern=0(RGGB), gamma=0
 
         // Read blc/wb from unpack_blc's const buffer (positions [5..12])
         auto unpackConst = getExtraConst(ops[i]);
@@ -1944,7 +1945,7 @@ private:
                                 0,0,0,0, 1,1,1,1,
                                 1,0,0, 0,1,0, 0,0,1,
                                 1.0f, 0.0f,  // fcs_str, fcs_off
-                                0,0};
+                                0,0};  // bayer_pattern=0(RGGB), gamma=0
 
         // Read blc/wb from unpack_blc's const buffer
         auto unpackConst = getExtraConst(ops[i]);
@@ -1988,18 +1989,18 @@ private:
         float fcs_off = (fcsVals.size() >= 2) ? fcsVals[1] : 0.0f;
         float gamma = (dispVals.size() >= 1) ? dispVals[0] : 2.2f;
         
-        // Update unpack_demosaic const buffer: positions [22..24]
+        // Update unpack_demosaic const buffer: positions [22..25]
+        // Layout: [22]=fcs_str, [23]=fcs_off, [24]=bayer_pattern, [25]=display_gamma
         auto* ex = ops[i]->main.AsExtra();
         for (auto& attr : ex->attr) {
             if (attr && attr->key == "const" && attr->tensor &&
                 attr->tensor->dataType == MNN::DataType_DT_FLOAT &&
-                attr->tensor->float32s.size() >= 24) {
+                attr->tensor->float32s.size() >= 26) {
                 attr->tensor->float32s[22] = fcs_str;
                 attr->tensor->float32s[23] = fcs_off;
-                // Position 24 is display gamma (0=none, >0=apply gamma)
-                if (attr->tensor->float32s.size() >= 25) {
-                    attr->tensor->float32s[24] = gamma;
-                }
+                // Position 24 is bayer_pattern (preserved from unpack)
+                // Position 25 is display gamma (0=none, >0=apply gamma)
+                attr->tensor->float32s[25] = gamma;
                 break;
             }
         }
