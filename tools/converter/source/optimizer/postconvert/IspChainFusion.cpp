@@ -78,6 +78,7 @@ static void addSpirv(MNN::ExtraT* extra, const char* type) {
         // Unified isp.demosaic opset — algorithm parameter selects SPIR-V
         {"isp.demosaic_binning", g_unpack_blc_spv,      g_unpack_blc_spv_len},
         {"isp.demosaic_bilinear", g_demosaic_interp_spv, g_demosaic_interp_spv_len},
+        {"isp.demosaic_mhc",     g_demosaic_mhc_spv,     g_demosaic_mhc_spv_len},
         {"isp.grayscale",       g_grayscale_spv,       g_grayscale_spv_len},
         {"isp.pyramid",         g_pyramid_spv,         g_pyramid_spv_len},
 
@@ -111,6 +112,7 @@ static void makeDemosaic(MNN::OpT* op, const char* algorithm,
     static const struct { const char* algo; const char* spv; } map[] = {
         {"binning",  "isp.demosaic_binning"},
         {"bilinear", "isp.demosaic_bilinear"},
+        {"mhc",      "isp.demosaic_mhc"},
     };
     const char* spv_type = "isp.demosaic_bilinear";
     for (auto& m : map) {
