@@ -78,6 +78,8 @@ static void addSpirv(MNN::ExtraT* extra, const char* type) {
         // Unified isp.demosaic opset — algorithm parameter selects SPIR-V
         {"isp.demosaic_binning", g_unpack_blc_spv,      g_unpack_blc_spv_len},
         {"isp.demosaic_bilinear", g_demosaic_interp_spv, g_demosaic_interp_spv_len},
+        {"isp.grayscale",       g_grayscale_spv,       g_grayscale_spv_len},
+        {"isp.pyramid",         g_pyramid_spv,         g_pyramid_spv_len},
 
     };
     for (auto& m : map) {
