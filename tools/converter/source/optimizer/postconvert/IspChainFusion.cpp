@@ -1793,6 +1793,33 @@ public:
             }
             if (any) continue;
 
+            // R11b: unpack_demosaic + ... + display → unpack_demosaic (fuse display gamma)
+            // After R12 and R9, we may have unpack_demosaic_fcs, ee_ldci, display.
+            // This rule skips over cosmetic intermediates (ee_ldci, ee, ldci, fcs)
+            // to absorb display gamma directly into unpack_demosaic.
+            for (size_t k = 0; k + 1 < extras.size(); k++) {
+                int i = extras[k];
+                if (!isExtraOfType(ops[i].get(), "isp.unpack_demosaic")) continue;
+                // Find display somewhere after i, skipping only cosmetic extras
+                for (size_t kk = k + 1; kk < extras.size(); kk++) {
+                    int mid = extras[kk];
+                    if (isExtraOfType(ops[mid].get(), "isp.display")) {
+                        if (matchUnpackDisplayDirect(ops, i, mid)) {
+                            any = true; break;
+                        }
+                    }
+                    // Allow cosmetic intermediates
+                    if (!isExtraOfType(ops[mid].get(), "isp.ee_ldci") &&
+                        !isExtraOfType(ops[mid].get(), "isp.ee") &&
+                        !isExtraOfType(ops[mid].get(), "isp.ldci") &&
+                        !isExtraOfType(ops[mid].get(), "isp.fcs")) {
+                        break;  // non-cosmetic op in between → stop
+                    }
+                }
+                if (any) break;
+            }
+            if (any) continue;
+
             break;
         }
 
@@ -2064,6 +2091,39 @@ private:
                 << " (str=" << fcs_str << " off=" << fcs_off << ")";
 
         // Redirect unpack_demosaic output to fcs output, remove fcs
+        ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
+        ops[j].reset();
+        return true;
+    }
+
+    // R11b: isp.unpack_demosaic + ... + isp.display → isp.unpack_demosaic
+    // Absorbs display gamma into unpack_demosaic's const buffer even when
+    // cosmetic ops (ee_ldci, ee, ldci, fcs) are between them.
+    // This handles the case where FCS is already fused into unpack_demosaic
+    // and EE+LDCI are fused into ee_ldci, leaving:
+    //   [unpack_demosaic_fcs, ee_ldci, display]
+    bool matchUnpackDisplayDirect(
+        std::vector<std::unique_ptr<OpT>>& ops, int i, int j) const {
+        auto* dispEx = ops[j]->main.AsExtra();
+        auto dispVals = getNamedFloats(dispEx, "display");
+        float gamma = (dispVals.size() >= 1) ? dispVals[0] : 2.2f;
+        
+        // Write gamma into unpack_demosaic's const buffer at position [25]
+        // Layout: [24]=bayer_pattern, [25]=display_gamma (0=none, >0=apply gamma)
+        auto* ex = ops[i]->main.AsExtra();
+        for (auto& attr : ex->attr) {
+            if (attr && attr->key == "const" && attr->tensor &&
+                attr->tensor->dataType == MNN::DataType_DT_FLOAT &&
+                attr->tensor->float32s.size() >= 26) {
+                attr->tensor->float32s[25] = gamma;
+                break;
+            }
+        }
+        
+        VLOG(1) << "[P2] R11b: UnpackDisplayDirect at " << i << "+" << j
+                << " (gamma=" << gamma << ")";
+        
+        // Redirect unpack_demosaic output to display output, remove display
         ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
         ops[j].reset();
         return true;
