@@ -81,6 +81,7 @@ static void addSpirv(MNN::ExtraT* extra, const char* type) {
         {"isp.demosaic_mhc",     g_demosaic_mhc_spv,     g_demosaic_mhc_spv_len},
         {"isp.grayscale",       g_grayscale_spv,       g_grayscale_spv_len},
         {"isp.pyramid",         g_pyramid_spv,         g_pyramid_spv_len},
+        {"isp.warp",             g_warp_spv,             g_warp_spv_len},
 
     };
     for (auto& m : map) {
@@ -113,6 +114,7 @@ static void makeDemosaic(MNN::OpT* op, const char* algorithm,
         {"binning",  "isp.demosaic_binning"},
         {"bilinear", "isp.demosaic_bilinear"},
         {"mhc",      "isp.demosaic_mhc"},
+        {"warp",      "isp.warp"},
     };
     const char* spv_type = "isp.demosaic_bilinear";
     for (auto& m : map) {
@@ -535,6 +537,8 @@ public:
             if (!ops[i]) continue;
             // ── R8: Conv(2×2,stride=2,identity,oc=ic) → isp.pyramid ──
             if (tryPyramid(ops, i)) { changed = true; continue; }
+            // ── Rwarp: Extra(isp.warp) → mark detected ──
+            if (tryWarp(ops, i)) { changed = true; continue; }
 
             // ── R7: Conv(1×1,3→1ch,luminance) → isp.grayscale ──
             if (tryGrayscale(ops, i)) { changed = true; continue; }
@@ -1339,6 +1343,16 @@ private:
 
     // Rust EeBlock variant: Conv(3×5,g=3,laplacian) + Mul(y_mask) chain → isp.ee
     // Same algorithm (laplacian edge sharpening) but different kernel size and y_mask.
+    // Rwarp: Extra(isp.warp) from Rust WarpBlock → mark detected 
+    bool tryWarp(std::vector<std::unique_ptr<OpT>>& ops, int& i) const { 
+        if (ops[i]->type != MNN::OpType_Extra) return false; 
+        auto* extra = ops[i]->main.AsExtra(); 
+        if (!extra) return false; 
+        if (std::string(extra->type) != "isp.warp") return false; 
+        VLOG(2) << "[P1] Rwarp: warp at " << i; 
+        return true; 
+    } 
+
     bool tryRustConvEe(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         if (ops[i]->type != MNN::OpType_Convolution &&
             ops[i]->type != MNN::OpType_ConvolutionDepthwise) return false;
