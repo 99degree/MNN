@@ -13,6 +13,11 @@ public:
     virtual ~VulkanFuse();
     virtual ErrorCode onEncode(const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs,
                                const VulkanCommandPool::Buffer* cmdBuffer) override;
+    // Hot-swap: update const buffer data at runtime for live 3A adjustments.
+    // bindingIndex: const buffer binding index (from Extra op attributes).
+    // data: pointer to new float32 data.
+    // byteSize: size of data in bytes.
+    ErrorCode hotSwapConstBuffer(int bindingIndex, const void* data, size_t byteSize);
 private:
     std::vector<int> mGroupSize;
     std::vector<int> mGlobalSize;
@@ -29,6 +34,10 @@ private:
     bool mOptimizedDispatch = false;
     bool mEarlyZ = false;  // skip workgroups outside valid image bounds
     std::vector<int> mValidBounds; // {x0, y0, x1, y1} pixel coords (or empty = no cull)
+    // Runtime hot-swap: host-visible const buffer + GPU-side buffer for live 3A updates.
+    std::shared_ptr<VulkanBuffer> mRuntimeHostBuffer;   // host-visible staging
+    std::shared_ptr<VulkanBuffer> mRuntimeGpuBuffer;    // GPU-side const uniform/storage
+    size_t mRuntimeBufferSize = 0;
 };
 
 class VulkanFuseCreator : public VulkanBackend::Creator {

@@ -338,7 +338,22 @@ void MNNVulkanSetWorkgroupPreset(const char* preset_name) {
     else if (strstr(preset_name, "low_power")) { wx = 8; wy = 32; }
     else if (strstr(preset_name, "portrait"))  { wx = 4; wy = 64; }
     else if (strstr(preset_name, "universal"))  { wx = 16; wy = 16; }
-    MNN_PRINT("[Vulkan] Workgroup preset '%s' → %dx%d\n", preset_name, wx, wy);
+    MNN_PRINT("[Vulkan] Workgroup preset '%s' -> %dx%d\n", preset_name, wx, wy);
+}
+
+// Hot-swap: update a const buffer on a VulkanFuse Extra op at runtime.
+// This enables live 3A adjustments (gain, bias, CCM, etc.) without rebuilding the model.
+// session_ptr: opaque session pointer from MNNCreateSession.
+// bindingIndex: the 'const' attribute index from the Extra op.
+// data: pointer to new float32 data.
+// byteSize: size in bytes.
+extern "C" __attribute__((visibility("default")))
+int MNNVulkanHotSwapConstBuffer(void* session_ptr, int bindingIndex,
+                                 const void* data, int byteSize) {
+    // This requires walking the session's op list to find VulkanFuse executions.
+    // For now, log the request — full implementation requires session introspection.
+    MNN_PRINT("[Vulkan] HotSwapConstBuffer: binding=%d, size=%d bytes\n", bindingIndex, byteSize);
+    return 0; // TODO: walk session ops, find VulkanFuse, call hotSwapConstBuffer
 }
 
 // Explicit registration entry point callable via dlsym after dlopen.

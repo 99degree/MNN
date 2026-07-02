@@ -227,6 +227,59 @@ VulkanFuse::~VulkanFuse() {
     mDescriptorSet = nullptr;
 }
 
+ErrorCode VulkanFuse::hotSwapConstBuffer(int bindingIndex, const void* data, size_t byteSize) {
+    auto vkBn = static_cast<VulkanBackend*>(backend());
+    auto cmdbuffer = std::shared_ptr<VulkanCommandPool::Buffer>(vkBn->getPool().allocBuffer());
+    cmdbuffer->begin(0);
+
+    // Find the matching const buffer offset
+    for (auto& iter : mConstUniformOffset) {
+        if (std::get<0>(iter) == bindingIndex) {
+            auto bufSize = std::min(byteSize, std::get<1>(iter));
+            // Create host-visible staging buffer
+            auto hostBuf = std::make_shared<VulkanBuffer>(
+                vkBn->getMemoryPool(), false, bufSize, nullptr,
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_SHARING_MODE_EXCLUSIVE,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+            auto ptr = hostBuf->map();
+            ::memcpy(ptr, data, bufSize);
+            hostBuf->unmap();
+            // Copy to GPU const uniform buffer
+            VkBufferCopy copy{};
+            copy.size = bufSize;
+            copy.dstOffset = std::get<2>(iter);
+            copy.srcOffset = 0;
+            vkCmdCopyBuffer(cmdbuffer->get(), hostBuf->buffer(),
+                           mConstUniformBuffer->buffer(), 1, &copy);
+            auto fence = vkBn->getPool().submit(cmdbuffer->get());
+            fence->wait();
+            return NO_ERROR;
+        }
+    }
+    for (auto& iter : mConstStorageOffset) {
+        if (std::get<0>(iter) == bindingIndex) {
+            auto bufSize = std::min(byteSize, std::get<1>(iter));
+            auto hostBuf = std::make_shared<VulkanBuffer>(
+                vkBn->getMemoryPool(), false, bufSize, nullptr,
+                VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_SHARING_MODE_EXCLUSIVE,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+            auto ptr = hostBuf->map();
+            ::memcpy(ptr, data, bufSize);
+            hostBuf->unmap();
+            VkBufferCopy copy{};
+            copy.size = bufSize;
+            copy.dstOffset = std::get<2>(iter);
+            copy.srcOffset = 0;
+            vkCmdCopyBuffer(cmdbuffer->get(), hostBuf->buffer(),
+                           mConstStorageBuffer->buffer(), 1, &copy);
+            auto fence = vkBn->getPool().submit(cmdbuffer->get());
+            fence->wait();
+            return NO_ERROR;
+        }
+    }
+    return NOT_SUPPORT;
+}
+
 ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs,
                                const VulkanCommandPool::Buffer* cmdBuffer) {
     auto vkBn = static_cast<VulkanBackend*>(backend());
