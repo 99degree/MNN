@@ -101,6 +101,9 @@ static void addSpirv(MNN::ExtraT* extra, const char* type) {
 #endif
 }
 
+// Forward declaration
+static void setEngine(MNN::ExtraT* extra);
+
 // ── Unified isp.demosaic opset helper ──
 // Creates an Extra op with algorithm parameter.
 // Supported: binning, bilinear, mhc, ahd
@@ -121,6 +124,7 @@ static void makeDemosaic(MNN::OpT* op, const char* algorithm,
         if (strcmp(algorithm, m.algo) == 0) { spv_type = m.spv; break; }
     }
     ex->type = spv_type;
+    setEngine(ex);
     addAttr(ex, "algorithm", [&](MNN::AttributeT* a) { a->s = algorithm; });
     addSpirv(ex, spv_type);
     {
