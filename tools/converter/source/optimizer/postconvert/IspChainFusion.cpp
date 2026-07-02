@@ -157,6 +157,7 @@ static void buildCommonAttrs(MNN::ExtraT* extra, int W, int H,
         a->tensor->int32s = {16, 16, 1};
     });
     addAttr(extra, "optimized_dispatch", [&](MNN::AttributeT* a) { a->b = true; });
+    addAttr(extra, "fp16_consts", [&](MNN::AttributeT* a) { a->b = true; });
     addAttr(extra, "input", [&](MNN::AttributeT* a) {
         a->i = 0;
         a->list.reset(new MNN::ListValueT); a->list->i = {0, 1};

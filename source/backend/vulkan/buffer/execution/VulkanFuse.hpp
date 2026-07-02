@@ -34,6 +34,8 @@ private:
     bool mOptimizedDispatch = false;
     bool mEarlyZ = false;  // skip workgroups outside valid image bounds
     std::vector<int> mValidBounds; // {x0, y0, x1, y1} pixel coords (or empty = no cull)
+    bool mFp16Consts = false; // pack const buffers as FP16 (halves bandwidth)
+    std::vector<uint8_t> mFp16DataStorage; // keeps FP16 packed data alive during merge
     // Runtime hot-swap: host-visible const buffer + GPU-side buffer for live 3A updates.
     std::shared_ptr<VulkanBuffer> mRuntimeHostBuffer;   // host-visible staging
     std::shared_ptr<VulkanBuffer> mRuntimeGpuBuffer;    // GPU-side const uniform/storage

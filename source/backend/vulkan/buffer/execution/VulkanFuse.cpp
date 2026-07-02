@@ -105,6 +105,15 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
             }
         }
     }
+    // FP16 const packing: when fp16_consts=true, pack const buffers as FP16
+    // to halve GPU→shader bandwidth. Shader reads via unpackHalf2x16.
+    for (int i=0; i<extra->attr()->size(); ++i) {
+        auto attr = extra->attr()->GetAs<Attribute>(i);
+        if (attr->key()->str() == "fp16_consts") {
+            mFp16Consts = attr->b();
+            break;
+        }
+    }
     // [VulkanFuse] mOptimizedDispatch set
     // ... rest of constructor ...
     std::vector<VkDescriptorType> types;
@@ -161,6 +170,30 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
                 default:
                     MNN_ASSERT(false);
                     break;
+            }
+            // FP16 const packing: when fp16_consts=true, convert f32→f16
+            // to halve const buffer bandwidth. Shader reads via unpackHalf2x16.
+            if (mFp16Consts && b->dataType() == DataType_DT_FLOAT) {
+                int count = b->float32s()->size();
+                // Pack as FP16: each float → half (2 bytes)
+                // Store as array of uint32 where each holds 2 packed halfs
+                std::vector<uint16_t> fp16(count);
+                for (int j = 0; j < count; j++) {
+                    float v = b->float32s()->data()[j];
+                    // Simple round-to-nearest FP16
+                    uint32_t f = *((uint32_t*)&v);
+                    uint32_t sign = (f >> 16) & 0x8000;
+                    int32_t exponent = ((f >> 23) & 0xFF) - 127 + 15;
+                    uint32_t mantissa = (f >> 13) & 0x3FF;
+                    if (exponent <= 0) { fp16[j] = (uint16_t)sign; }
+                    else if (exponent >= 31) { fp16[j] = (uint16_t)(sign | 0x7BFF); }
+                    else { fp16[j] = (uint16_t)(sign | (exponent << 10) | mantissa); }
+                }
+                result = fp16.data();
+                bufferSize = count * sizeof(uint16_t);
+                // Store fp16 data to keep alive during merge
+                mFp16DataStorage = std::vector<uint8_t>((uint8_t*)fp16.data(), (uint8_t*)fp16.data() + bufferSize);
+                result = mFp16DataStorage.data();
             }
             if (attr->b()) {
                 types[attr->i()] = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
