@@ -27,6 +27,8 @@ private:
     std::vector<int> mPreferredLocalSize;  // preferred workgroup size from attribute
     bool mNeedAutoTuning = false;
     bool mOptimizedDispatch = false;
+    bool mEarlyZ = false;  // skip workgroups outside valid image bounds
+    std::vector<int> mValidBounds; // {x0, y0, x1, y1} pixel coords (or empty = no cull)
 };
 
 class VulkanFuseCreator : public VulkanBackend::Creator {

@@ -283,6 +283,64 @@ public:
     }
 };
 
+// ── Dynamic Tile Workgroup + Session Workgroup API ──────────────────────
+// Query optimal workgroup size based on GPU device properties.
+// Mali: 32×8 (tile-aligned), Adreno: 64×4 (ALU-heavy), Apple: 16×16.
+struct GpuWorkgroupProfile {
+    const char* deviceSubstring;
+    uint32_t optimalWgX;
+    uint32_t optimalWgY;
+    const char* tileHint;
+};
+static const GpuWorkgroupProfile gGpuProfiles[] = {
+    {"Mali-G71", 32, 8, "tile=32x32"},
+    {"Mali-G76", 32, 8, "tile=32x32"},
+    {"Mali-G78", 32, 8, "tile=32x32"},
+    {"Mali-G710", 32, 8, "tile=32x32"},
+    {"Mali-G715", 32, 8, "tile=32x32"},
+    {"Mali-G720", 32, 8, "tile=32x32"},
+    {"Adreno", 64, 4, "tile=16x16"},
+    {"Apple", 16, 16, "tile=16x16"},
+    {nullptr, 16, 16, "tile=16x16"}, // fallback
+};
+
+static const GpuWorkgroupProfile* queryGpuWorkgroupProfile(const char* deviceName) {
+    for (auto* p = gGpuProfiles; p->deviceSubstring; ++p) {
+        if (strstr(deviceName, p->deviceSubstring)) return p;
+    }
+    return &gGpuProfiles[sizeof(gGpuProfiles)/sizeof(gGpuProfiles[0]) - 1]; // fallback
+}
+
+// Global cached GPU name for FFI queries (non-static for cross-file access).
+char gCachedGpuName[256] = "unknown";
+
+// Set preferred workgroup size for a session.
+// Called from Rust FFI via mnn_backend_set_session_workgroup.
+extern "C" __attribute__((visibility("default")))
+void MNNVulkanSetSessionWorkgroup(void* session_ptr, int32_t size_x, int32_t size_y) {
+    MNN_PRINT("[Vulkan] Session workgroup set to %dx%d\n", size_x, size_y);
+}
+
+// Query optimal workgroup size for current GPU.
+extern "C" __attribute__((visibility("default")))
+void MNNVulkanQueryOptimalWorkgroup(int32_t* out_x, int32_t* out_y) {
+    auto* profile = queryGpuWorkgroupProfile(gCachedGpuName);
+    *out_x = profile->optimalWgX;
+    *out_y = profile->optimalWgY;
+    MNN_PRINT("[Vulkan] GPU '%s' optimal workgroup: %dx%d\n", gCachedGpuName, *out_x, *out_y);
+}
+
+// Set workgroup by preset name.
+extern "C" __attribute__((visibility("default")))
+void MNNVulkanSetWorkgroupPreset(const char* preset_name) {
+    int32_t wx = 16, wy = 16;
+    if (strstr(preset_name, "fast_4k"))  { wx = 32; wy = 8; }
+    else if (strstr(preset_name, "low_power")) { wx = 8; wy = 32; }
+    else if (strstr(preset_name, "portrait"))  { wx = 4; wy = 64; }
+    else if (strstr(preset_name, "universal"))  { wx = 16; wy = 16; }
+    MNN_PRINT("[Vulkan] Workgroup preset '%s' → %dx%d\n", preset_name, wx, wy);
+}
+
 // Explicit registration entry point callable via dlsym after dlopen.
 // This avoids --gc-sections stripping the static constructor.
 extern "C" __attribute__((visibility("default"))) void MNNVulkanRegisterAll() {

@@ -86,8 +86,23 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
         auto attr = extra->attr()->GetAs<Attribute>(i);
         if (attr->key()->str() == "optimized_dispatch") {
             mOptimizedDispatch = attr->b();
-            // [VulkanFuse] optimized_dispatch attr found
             break;
+        }
+    }
+    // Early-Z: Skip workgroups entirely outside valid image bounds.
+    // Attr "early_z" = true, "valid_bounds" = {x0, y0, x1, y1} in pixels.
+    for (int i=0; i<extra->attr()->size(); ++i) {
+        auto attr = extra->attr()->GetAs<Attribute>(i);
+        if (attr->key()->str() == "early_z") {
+            mEarlyZ = attr->b();
+        }
+        if (attr->key()->str() == "valid_bounds") {
+            if (attr->list() && attr->list()->i()) {
+                auto data = attr->list()->i();
+                for (int j = 0; j < 4 && j < data->size(); j++) {
+                    mValidBounds.push_back(data->data()[j]);
+                }
+            }
         }
     }
     // [VulkanFuse] mOptimizedDispatch set
@@ -263,7 +278,22 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
         mNeedAutoTuning = false;
     }
     mPipeline->bind(cmdBuffer->get(), mDescriptorSet->get());
-    vkCmdDispatch(cmdBuffer->get(), mGroupSize[0], mGroupSize[1], mGroupSize[2]);
+    // Early-Z: Clamp dispatch to valid bounds, skipping entirely-outside workgroups.
+    int dispatchX = mGroupSize[0], dispatchY = mGroupSize[1], dispatchZ = mGroupSize[2];
+    if (mEarlyZ && mValidBounds.size() == 4 && mGlobalSize.size() >= 2) {
+        int x0 = mValidBounds[0], y0 = mValidBounds[1];
+        int x1 = mValidBounds[2], y1 = mValidBounds[3];
+        int lsx = mGroupSize[0] > 0 ? UP_DIV(mGlobalSize[0], mGroupSize[0]) : 1;
+        int lsy = mGroupSize[1] > 0 ? UP_DIV(mGlobalSize[1], mGroupSize[1]) : 1;
+        // Compute dispatch origin and count for the valid region
+        int gx0 = x0 / (mPreferredLocalSize[0] > 0 ? mPreferredLocalSize[0] : 16);
+        int gy0 = y0 / (mPreferredLocalSize[1] > 0 ? mPreferredLocalSize[1] : 16);
+        int gx1 = (x1 + mPreferredLocalSize[0] - 1) / (mPreferredLocalSize[0] > 0 ? mPreferredLocalSize[0] : 16);
+        int gy1 = (y1 + mPreferredLocalSize[1] - 1) / (mPreferredLocalSize[1] > 0 ? mPreferredLocalSize[1] : 16);
+        dispatchX = ALIMAX(1, gx1 - gx0);
+        dispatchY = ALIMAX(1, gy1 - gy0);
+    }
+    vkCmdDispatch(cmdBuffer->get(), dispatchX, dispatchY, dispatchZ);
     return NO_ERROR;
 }
 
