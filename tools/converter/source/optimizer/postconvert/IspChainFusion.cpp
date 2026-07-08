@@ -612,6 +612,12 @@ public:
             if (trySubMul(ops, i)) { changed = true; continue; }
             // R3e: Mul+Add(channel bias) → fuse
             if (tryMulAdd(ops, i)) { changed = true; continue; }
+            // R6d: Mul+ReLU6 → absorb (white-level clamp)
+            if (tryMulClip(ops, i)) { changed = true; continue; }
+            // R3f: Sub+Max+Min → fuse (BLC50)
+            if (trySubMaxMin(ops, i)) { changed = true; continue; }
+            // R4c: Conv(3×3)+Sub → fuse (unsharp sharpen)
+            if (tryConvSub(ops, i)) { changed = true; continue; }
 
             // ── Single-block single-op patterns ──
             // R3: Scale → isp.fcs
@@ -1388,6 +1394,92 @@ private:
             VLOG(2) << "[P1] R3e: Mul+Add fused at " << i << " add at " << j;
             i = j;
             return true;
+        }
+        return false;
+    }
+
+    // R6d: Mul+ReLU6 → absorb (white-level clamp after scale)
+    // Covers: BayerWb non-identity gains, any Mul+Clip pattern.
+    bool tryMulClip(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (!ops[i] || ops[i]->type != MNN::OpType_BinaryOp) return false;
+        if (!isBinaryType(ops[i].get(), MNN::BinaryOpOperation_MUL)) return false;
+        for (int j = i + 1; j < std::min((int)ops.size(), i + 3); j++) {
+            if (!ops[j]) continue;
+            if (ops[j]->type == MNN::OpType_Const) continue;
+            if (ops[j]->type == MNN::OpType_ReLU6) {
+                if (!isChain(ops[i].get(), ops[j].get())) return false;
+                ops[i]->outputIndexes = ops[j]->outputIndexes;
+                ops[j].reset();
+                VLOG(2) << "[P1] R6d: Mul+ReLU6 absorbed at " << i;
+                i = j;
+                return true;
+            }
+            break;
+        }
+        return false;
+    }
+
+    // R3f: Sub+Max+Min → fuse (BLC50 pattern: Sub(dark_frame)+Max(0)+Min(max))
+    bool trySubMaxMin(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (!ops[i] || ops[i]->type != MNN::OpType_BinaryOp) return false;
+        if (!isBinaryType(ops[i].get(), MNN::BinaryOpOperation_SUB)) return false;
+        // Find Max (next non-Const)
+        int maxIdx = -1;
+        for (int j = i + 1; j < std::min((int)ops.size(), i + 3); j++) {
+            if (!ops[j]) continue;
+            if (ops[j]->type == MNN::OpType_Const) continue;
+            if (ops[j]->type == MNN::OpType_BinaryOp &&
+                isBinaryType(ops[j].get(), MNN::BinaryOpOperation_MAX)) {
+                if (!isChain(ops[i].get(), ops[j].get())) return false;
+                maxIdx = j;
+            }
+            break;
+        }
+        if (maxIdx < 0) return false;
+        // Find Min (next non-Const after Max)
+        for (int k = maxIdx + 1; k < std::min((int)ops.size(), maxIdx + 3); k++) {
+            if (!ops[k]) continue;
+            if (ops[k]->type == MNN::OpType_Const) continue;
+            if (ops[k]->type == MNN::OpType_BinaryOp &&
+                isBinaryType(ops[k].get(), MNN::BinaryOpOperation_MIN)) {
+                if (!isChain(ops[maxIdx].get(), ops[k].get())) return false;
+                // Fuse all three: Sub takes Min's output
+                ops[i]->outputIndexes = ops[k]->outputIndexes;
+                ops[maxIdx].reset();
+                ops[k].reset();
+                VLOG(2) << "[P1] R3f: Sub+Max+Min fused at " << i;
+                i = k;
+                return true;
+            }
+            break;
+        }
+        return false;
+    }
+
+    // R4c: Conv(3×3)+Sub → fuse (unsharp: Conv(blur) → Sub(original-blur))
+    // Simplified sharpen pattern: Conv→Sub (without Mul+Add).
+    bool tryConvSub(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (!ops[i]) return false;
+        bool isConv = (ops[i]->type == MNN::OpType_Convolution) ||
+                      (ops[i]->type == MNN::OpType_ConvolutionDepthwise);
+        if (!isConv) return false;
+        auto* c = ops[i]->main.AsConvolution2D();
+        if (!c || !c->common) return false;
+        if (c->common->kernelX != 3 || c->common->kernelY != 3) return false;
+        // Find next Sub
+        for (int j = i + 1; j < std::min((int)ops.size(), i + 3); j++) {
+            if (!ops[j]) continue;
+            if (ops[j]->type == MNN::OpType_Const) continue;
+            if (ops[j]->type == MNN::OpType_BinaryOp &&
+                isBinaryType(ops[j].get(), MNN::BinaryOpOperation_SUB)) {
+                // Absorb: Conv takes Sub's output
+                ops[i]->outputIndexes = ops[j]->outputIndexes;
+                ops[j].reset();
+                VLOG(2) << "[P1] R4c: Conv+Sub fused at " << i;
+                i = j;
+                return true;
+            }
+            break;
         }
         return false;
     }
