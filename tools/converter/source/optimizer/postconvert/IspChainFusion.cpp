@@ -81,6 +81,7 @@ static void addSpirv(MNN::ExtraT* extra, const char* type) {
         {"isp.demosaic_mhc",     g_demosaic_mhc_spv,     g_demosaic_mhc_spv_len},
         {"isp.grayscale",       g_grayscale_spv,       g_grayscale_spv_len},
         {"isp.argb_convert",    g_argb_convert_spv,    g_argb_convert_spv_len},
+        {"isp.yuv420_convert",  g_yuv420_convert_spv,  g_yuv420_convert_spv_len},
         {"isp.pyramid",         g_pyramid_spv,         g_pyramid_spv_len},
         {"isp.warp",             g_warp_spv,             g_warp_spv_len},
 
@@ -589,6 +590,9 @@ public:
 
             // ── R7b: Conv(1×1,3→4,ARGB weights)[+Clip] → isp.argb_convert ──
             if (tryArgbConvert(ops, i)) { changed = true; continue; }
+
+            // ── R7c: Conv(1×1,3→3,BT.601 YUV weights)[+Clip] → isp.yuv420_convert ──
+            if (tryYuv420Convert(ops, i)) { changed = true; continue; }
         }
 
         ops.erase(std::remove_if(ops.begin(), ops.end(),
@@ -1326,11 +1330,11 @@ private:
         ops[i]->main.type = MNN::OpParameter_Extra;
         auto* ex = new MNN::ExtraT();
         ex->type = "isp.argb_convert";
-        // Output is [1, 4, H, W] — ARGB as 4 channels
+        // Output is [1, H, W, 1] INT32 — ARGB8888 packed as single 32-bit per pixel
         addAttr(ex, "output_shape", [&](MNN::AttributeT* a) {
             a->tensor.reset(new MNN::BlobT);
             a->tensor->dataType = MNN::DataType_DT_INT32;
-            a->tensor->int32s = {1, 4, mH, mW};
+            a->tensor->int32s = {1, mH, mW, 1};
         });
         addAttr(ex, "global_size", [&](MNN::AttributeT* a) {
             a->tensor.reset(new MNN::BlobT);
@@ -1358,6 +1362,77 @@ private:
             ops[i + 1].reset(); i += 1;
         }
         VLOG(2) << "[P1] R7b: argb_convert at " << i << (has_clip ? " + clip" : "");
+        return true;
+    }
+
+    // R7c: Conv(1×1,3→3,BT.601 YUV weights) [+Clip] → isp.yuv420_convert
+    // Detects the YUV420Block's Conv that converts RGB to YUV using BT.601.
+    // The shader outputs I420 planar: Y full-res, U/V half-res (2×2 averaged).
+    bool tryYuv420Convert(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (ops[i]->type != MNN::OpType_Convolution) return false;
+        auto* c = ops[i]->main.AsConvolution2D();
+        if (!c || !c->common) return false;
+        if (c->common->kernelX != 1 || c->common->kernelY != 1) return false;
+        if (c->common->outputCount != 3 || c->common->inputCount != 3) return false;
+        if ((int)c->weight.size() < 9) return false;
+        // Check BT.601 YUV weight pattern:
+        // Row 0 (Y): 0.299, 0.587, 0.114
+        // Row 1 (U): -0.169, -0.331, 0.500
+        // Row 2 (V): 0.500, -0.419, -0.081
+        const float y_row[3] = {0.299f, 0.587f, 0.114f};
+        const float u_row[3] = {-0.169f, -0.331f, 0.500f};
+        const float v_row[3] = {0.500f, -0.419f, -0.081f};
+        for (int k = 0; k < 3; k++) {
+            if (std::abs(c->weight[k] - y_row[k]) > 0.01f) return false;
+            if (std::abs(c->weight[3+k] - u_row[k]) > 0.01f) return false;
+            if (std::abs(c->weight[6+k] - v_row[k]) > 0.01f) return false;
+        }
+        // Check if next op is Clip(0, 255)
+        bool has_clip = false;
+        if (i + 1 < (int)ops.size() && ops[i + 1] &&
+            (ops[i + 1]->type == MNN::OpType_ReLU || ops[i + 1]->type == MNN::OpType_ReLU6)) {
+            if (isChain(ops[i].get(), ops[i + 1].get())) {
+                has_clip = true;
+            }
+        }
+        ops[i]->type = MNN::OpType_Extra;
+        ops[i]->main.type = MNN::OpParameter_Extra;
+        auto* ex = new MNN::ExtraT();
+        ex->type = "isp.yuv420_convert";
+        // Output is I420 planar: Y[H*W] + U[H/2*W/2] + V[H/2*W/2] = H*W*3/2 bytes
+        // Stored as [1, 1, H*3/2, W] in NCHW
+        int yuv_h = mH + mH / 2; // H + H/2 = 3H/2
+        addAttr(ex, "output_shape", [&](MNN::AttributeT* a) {
+            a->tensor.reset(new MNN::BlobT);
+            a->tensor->dataType = MNN::DataType_DT_INT32;
+            a->tensor->int32s = {1, 1, yuv_h, mW};
+        });
+        addAttr(ex, "global_size", [&](MNN::AttributeT* a) {
+            a->tensor.reset(new MNN::BlobT);
+            a->tensor->dataType = MNN::DataType_DT_INT32;
+            a->tensor->int32s = {mW, mH, 1};
+        });
+        addAttr(ex, "group_size", [&](MNN::AttributeT* a) {
+            a->tensor.reset(new MNN::BlobT);
+            a->tensor->dataType = MNN::DataType_DT_INT32;
+            a->tensor->int32s = {16, 16, 1};
+        });
+        addAttr(ex, "optimized_dispatch", [&](MNN::AttributeT* a) { a->b = true; });
+        std::vector<float> u = {float(mW), float(mH), 0, 0, 0, 0, 0, 0};
+        addAttr(ex, "const", [&](MNN::AttributeT* a) {
+            a->i = 0; a->tensor.reset(new MNN::BlobT);
+            a->tensor->dataType = MNN::DataType_DT_FLOAT;
+            a->tensor->float32s = u; a->b = false;
+        });
+        addNamedFloats(ex, "yuv420_convert", {0.299f, 0.587f, 0.114f});
+        setEngine(ex);
+        addSpirv(ex, "isp.yuv420_convert");
+        ops[i]->main.value = ex;
+        if (has_clip) {
+            ops[i]->outputIndexes[0] = ops[i + 1]->outputIndexes[0];
+            ops[i + 1].reset(); i += 1;
+        }
+        VLOG(2) << "[P1] R7c: yuv420_convert at " << i << (has_clip ? " + clip" : "");
         return true;
     }
 
