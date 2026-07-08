@@ -602,13 +602,16 @@ public:
             // R4b: Conv(3×5,g=3,laplacian)+Mul → isp.ee (Rust variant)
             if (tryRustConvEe(ops, i)) { changed = true; continue; }
 
-            // ── Micro clip-absorption (2 ops, prevents extra GPU dispatch) ──
+            // ── Micro fusion FIRST (before block rules consume ops) ──
+            // R6c: ReLU6 → absorb into Conv producer
+            // MUST run before R2/R4 — those convert Conv to Extra, preventing absorption.
+            if (tryClipAbsorbFwd(ops, i)) { changed = true; continue; }
             // R3c: Sub+ReLU6 → isp.fcs (white-level normalize)
             if (trySubClipNormalize(ops, i)) { changed = true; continue; }
-            // R6b: Conv(1×1)+ReLU6 → absorb ReLU6 (post-conv clamp)
-            if (tryDisplayClip(ops, i)) { changed = true; continue; }
-            // R2c: Conv(1×1)+ReLU6 → absorb ReLU6 (identity conv clamp)
-            if (tryConvClipIdentity(ops, i)) { changed = true; continue; }
+            // R3d: Sub+Mul(difference scaling) → fuse
+            if (trySubMul(ops, i)) { changed = true; continue; }
+            // R3e: Mul+Add(channel bias) → fuse
+            if (tryMulAdd(ops, i)) { changed = true; continue; }
 
             // ── Single-block single-op patterns ──
             // R3: Scale → isp.fcs
@@ -1312,6 +1315,81 @@ private:
         VLOG(2) << "[P1] R2c: absorbed Conv+Clip at " << i;
         i = next;
         return true;
+    }
+
+    // R6c: Conv + ReLU6 (forward scan) → absorb ReLU6 into Conv
+    // Looks at op i (Conv), checks if next non-Const op is ReLU6.
+    // R6c: ReLU6 → absorb into Conv producer (producer lookup)
+    // When op i is ReLU6, find its Conv producer and absorb.
+    bool tryClipAbsorbFwd(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (!ops[i] || ops[i]->type != MNN::OpType_ReLU6) return false;
+        if (ops[i]->inputIndexes.empty()) return false;
+        int tensorIdx = traceTensor(ops[i]->inputIndexes[0], ops);
+        VLOG(2) << "[P1] R6c: ReLU6 at " << i << " input tensor=" << tensorIdx;
+        // Find producer: scan all ops for one that outputs tensorIdx
+        int prov = -1;
+        for (int j = 0; j < (int)ops.size(); j++) {
+            if (!ops[j]) continue;
+            for (int out : ops[j]->outputIndexes) {
+                if (out == tensorIdx) { prov = j; break; }
+            }
+            if (prov >= 0) break;
+        }
+        VLOG(2) << "[P1] R6c: producer=" << prov;
+        if (prov < 0) return false;
+        bool isConv = (ops[prov]->type == MNN::OpType_Convolution) ||
+                      (ops[prov]->type == MNN::OpType_ConvolutionDepthwise);
+        if (!isConv) return false;
+        // Absorb: Conv takes ReLU6's output index, ReLU6 is removed
+        ops[prov]->outputIndexes = ops[i]->outputIndexes;
+        ops[i].reset();
+        VLOG(2) << "[P1] R6c: Conv+ReLU6 absorbed, conv=" << prov << " clip=" << i;
+        i = prov;
+        return true;
+    }
+
+    // R3d: Sub+Mul (difference scaling) → fuse into single dispatch
+    // Common in LDCI: Sub(mean) × Mul(strength)
+    bool trySubMul(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (!ops[i] || ops[i]->type != MNN::OpType_BinaryOp) return false;
+        if (!isBinaryType(ops[i].get(), MNN::BinaryOpOperation_SUB)) return false;
+        // Find next non-Const op
+        for (int j = i + 1; j < std::min((int)ops.size(), i + 4); j++) {
+            if (!ops[j]) continue;
+            if (ops[j]->type == MNN::OpType_Const) continue;
+            if (ops[j]->type != MNN::OpType_BinaryOp) return false;
+            if (!isBinaryType(ops[j].get(), MNN::BinaryOpOperation_MUL)) return false;
+            if (!isChain(ops[i].get(), ops[j].get())) return false;
+            // Absorb: Sub takes Mul's output, Mul is removed
+            ops[i]->outputIndexes = ops[j]->outputIndexes;
+            ops[j].reset();
+            VLOG(2) << "[P1] R3d: Sub+Mul fused at " << i << " mul at " << j;
+            i = j;
+            return true;
+        }
+        return false;
+    }
+
+    // R3e: Mul+Add (channel bias) → fuse into single dispatch
+    // Common in FCS: Mul(gain) + Add(bias)
+    bool tryMulAdd(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (!ops[i] || ops[i]->type != MNN::OpType_BinaryOp) return false;
+        if (!isBinaryType(ops[i].get(), MNN::BinaryOpOperation_MUL)) return false;
+        // Find next non-Const op
+        for (int j = i + 1; j < std::min((int)ops.size(), i + 4); j++) {
+            if (!ops[j]) continue;
+            if (ops[j]->type == MNN::OpType_Const) continue;
+            if (ops[j]->type != MNN::OpType_BinaryOp) return false;
+            if (!isBinaryType(ops[j].get(), MNN::BinaryOpOperation_ADD)) return false;
+            if (!isChain(ops[i].get(), ops[j].get())) return false;
+            // Absorb: Mul takes Add's output, Add is removed
+            ops[i]->outputIndexes = ops[j]->outputIndexes;
+            ops[j].reset();
+            VLOG(2) << "[P1] R3e: Mul+Add fused at " << i << " add at " << j;
+            i = j;
+            return true;
+        }
+        return false;
     }
 
     // R4: Conv(3×3,unsharp) or ConvolutionDepthwise(3×3,unsharp) → isp.ee
