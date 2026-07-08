@@ -1,39 +1,59 @@
 //
-//  IspChainFusion.cpp — MNN converter optimization pass (2-pass autoregressive)
+//  IspChainFusion.cpp — MNN converter optimization pass (2-pass architecture)
 //
 //  Architecture — two passes, each running iteratively to fixpoint:
 //
 //    ONNX model (standard ai.onnx ops)
 //      ↓ MNNConvert
-//    Standard MNN ops (NC4HW4)
-//      ↓ Pass 1: Standard → ISP Extra ops
-//    Logical ISP stages (CHW planar, one op per stage)
-//      ↓ Pass 2: Adjacent ISP Extra → Fused Extra ops
-//    Fused ISP pipeline (3 dispatches)
-//      ↓ 3-5× faster on GPU
+//    Standard MNN ops
+//      ↓ Pass 1: MICRO-FUSION — fuse ops within each ISP block's ONNX pattern
+//    Logical ISP stages (one Extra op per block)
+//      ↓ Pass 2: MACRO-FUSION — fuse adjacent ISP blocks into single dispatch
+//    Fused ISP pipeline (3–5 GPU dispatches)
+//      ↓ 3–5× faster on GPU
 //
-//  Pass 1 rules (standard MNN ops → isp.demosaic opset):
+//  Pass 1 rules — MICRO-FUSION (longest chain first, single-block patterns):
 //    ┌──────────────────────────────────────────────────────────────┐
-//    │ 1. Cast(→FLOAT) + Conv(2×2,stride=2,4ch) → isp.demosaic    │
-//    │    (binning mode, algo=binning)                              │
-//    │ 2. Conv(4×4,stride=1,1ch→3ch)      → isp.demosaic(algo=bilinear)│
-//    │ 3. Conv(6×6,stride=1,1ch→3ch)      → isp.demosaic(algo=mhc) │
-//    │ 4. Scale (Mul+Add)                  → isp.fcs                │
-//    │ 5. Conv(3×3,unsharp,group=3)        → isp.ee                 │
-//    │ 6. Pool(AVG,3×3)+Sub+Mul+Add        → isp.ldci               │
-//    │ 7. BinaryOp(POW,exp=1/2.4)[+Clip]   → isp.display             │
+//    │ Unpack block patterns:                                      │
+//    │  R1c. Mod+Cast+Div+Stack+Conv(1×2) → isp.unpack_packed     │
+//    │  R1.  Cast[+Div]+Conv(2×2,stride=2) → isp.unpack_blc       │
+//    │  R1b. Concat+Conv(1×2)              → isp.unpack_blc       │
+//    │ LDCI block patterns:                                        │
+//    │  R5.  Pool+Sub+Mul+Add+Clip          → isp.ldci            │
+//    │  R5b. ReduceMean+Sub+Mul+Add+Clip    → isp.ldci (Rust)     │
+//    │ Demosaic block patterns:                                    │
+//    │  R2.  Conv(1×1,4→3ch)               → isp.demosaic_ccm     │
+//    │  R2b. Conv(4×4,1ch→3ch)             → isp.demosaic_interp  │
+//    │ EE block patterns:                                          │
+//    │  R4.  Conv(3×3)                      → isp.ee              │
+//    │  R4b. Conv(3×5,g=3)+Mul             → isp.ee (Rust)       │
+//    │ Micro clip-absorption (2 ops):                              │
+//    │  R3c. Sub+Clip                       → isp.fcs             │
+//    │  R6b. Conv(1×1)+Clip                 → absorb Clip         │
+//    │  R2c. Conv(1×1)+Clip                 → absorb Clip         │
+//    │ Single-op patterns:                                         │
+//    │  R3.  Scale                           → isp.fcs             │
+//    │  R6.  Pow+Clip                        → isp.display         │
+//    │  R7.  Conv(1×1,3→1ch)                → isp.grayscale       │
+//    │  R7b. Conv(1×1,3→4)                  → isp.argb_convert    │
+//    │  R7c. Conv(1×1,3→3)                  → isp.yuv420_convert  │
+//    │  R8.  Conv(2×2,stride=2)             → isp.pyramid         │
 //    └──────────────────────────────────────────────────────────────┘
-//    │ 5. Conv(3×3,unsharp,group=3)             → isp.ee         │
-//    │ 6. Pool(AVG,3×3)+Sub+Mul+Add             → isp.ldci       │
-//    │ 7. BinaryOp(POW,exp=1/2.4)[+Clip(0,1)]   → isp.display    │
-//    └────────────────────────────────────────────────────────────┘
 //
-//  Pass 2 rules (Extra chain → fused Extra):
+//  Pass 2 rules — MACRO-FUSION (Extra chain → fused Extra):
 //    ┌────────────────────────────────────────────────────────────┐
-//    │ 8. isp.fcs + isp.display               → isp.fcs_display  │
-//    │ 9. isp.ee + isp.ldci                   → isp.ee_ldci      │
-//    │10. isp.unpack_blc + isp.demosaic_ccm   → isp.unpack_demosaic│
-//    │11. isp.unpack_demosaic + isp.fcs_display                  │
+//    │ 10.  isp.unpack_blc + isp.demosaic_ccm                    │
+//    │      → isp.unpack_demosaic                                │
+//    │ 10b. isp.unpack_blc + isp.demosaic(binning)               │
+//    │      → isp.unpack_demosaic                                │
+//    │  8.  isp.fcs + isp.display               → isp.fcs_display│
+//    │  9.  isp.ee + isp.ldci                   → isp.ee_ldci    │
+//    │ 11.  isp.unpack_demosaic + isp.fcs_display                │
+//    │      → isp.unpack_demosaic (fuse display gamma)           │
+//    │ 12.  isp.unpack_demosaic + isp.fcs                        │
+//    │      → isp.unpack_demosaic (fuse FCS)                     │
+//    │ 11b. isp.unpack_demosaic + ... + display                  │
+//    │      → isp.unpack_demosaic (skip cosmetic intermediates)  │
 //    └────────────────────────────────────────────────────────────┘
 
 #include <string>
@@ -546,59 +566,68 @@ public:
 
             // ═══ LONGEST CHAIN FIRST (prevents short rules from consuming ops) ═══
 
+            // ═══════════════════════════════════════════════════════════════
+            // PASS 1: MICRO-FUSION — fuse ops within each ISP block's ONNX pattern
+            // Each rule matches the ONNX node pattern emitted by ONE block.
+            // Longest chain first → prevents short rules from consuming ops
+            // that belong to a longer block pattern.
+            // ═══════════════════════════════════════════════════════════════
+
+            // ── Unpack block patterns (longest first) ──
             // R1c: Full packed-int32 chain (~8 ops) → isp.unpack_packed
-            // Skips if demosaic follows (lets R1+R10 handle for better fusion)
+            // UnpackCfaBlock PackedInt32: Mod+Cast+Div+Cast+Div+Div+Stack+Conv
+            // Skips if demosaic Conv follows → lets Pass 2 macro-fuse instead.
             if (tryUnpackPackedChain(ops, i)) { changed = true; continue; }
-            // R1: Cast + Conv(2×2,stride=2,4ch) → isp.unpack_blc
+            // R1: Cast[+Div]+Conv(2×2,stride=2,4ch) → isp.unpack_blc
+            // UnpackCfaBlock NativeInt16: Cast+Conv or Div+Cast+Conv
             if (tryUnpack(ops, i)) { changed = true; continue; }
-            // R1b: Rust packed-int16 + Conv → isp.unpack_blc
+            // R1b: Rust Concat+Conv(1×2,stride=1×2,4ch) → isp.unpack_blc
             if (tryUnpackRust(ops, i)) { changed = true; continue; }
 
-            // R5: Pool+Sub+Mul+Add+Clip (~5 ops) → isp.ldci
+            // ── LDCI block patterns (~5 ops) ──
+            // R5: Pool(AVG,3×3)+Sub+Mul+Add+ReLU6 → isp.ldci
             if (tryLdci(ops, i)) { changed = true; continue; }
-            // Rust LDCI variant: ReduceMean+Sub+Mul+Mul+Add+Clip (~5 ops)
+            // R5b: ReduceMean+Sub+Mul+Mul+Add+ReLU6 → isp.ldci (Rust variant)
             if (tryRustReduceLdci(ops, i)) { changed = true; continue; }
 
-            // ═══ MEDIUM CHAIN: 1–2 ops ═══
-
+            // ── Demosaic block patterns ──
             // R2: Conv(1×1,4→3ch) → isp.demosaic_ccm
             if (tryDemosaic(ops, i)) { changed = true; continue; }
             // R2b: Conv(4×4,stride=1,1ch→3ch) → isp.demosaic_interp
             if (tryDemosaicInterp(ops, i)) { changed = true; continue; }
-            // R4: Conv(3×3,unsharp) → isp.ee
+
+            // ── EE block patterns ──
+            // R4: Conv(3×3) → isp.ee
             if (tryEe(ops, i)) { changed = true; continue; }
-            // Rust EE variant: Conv(3×5,g=3,laplacian) + Mul(y_mask) chain
+            // R4b: Conv(3×5,g=3,laplacian)+Mul → isp.ee (Rust variant)
             if (tryRustConvEe(ops, i)) { changed = true; continue; }
 
-            // ═══ SHORT (single-op + short chain) MATCHES ═══
-
-            // R3c: BinaryOp(SUB)+Clip(0,max) → isp.fcs (white-level normalize)
-            // Common in ISP: Sub(black_level) + Clip(0,white_level)
+            // ── Micro clip-absorption (2 ops, prevents extra GPU dispatch) ──
+            // R3c: Sub+ReLU6 → isp.fcs (white-level normalize)
             if (trySubClipNormalize(ops, i)) { changed = true; continue; }
-            // R6b: Conv(1×1)+Clip → isp.display_clip (post-demosaic clamp)
+            // R6b: Conv(1×1)+ReLU6 → absorb ReLU6 (post-conv clamp)
             if (tryDisplayClip(ops, i)) { changed = true; continue; }
-            // R2c: Identity Conv(1×1)+Clip → absorb Clip into prior op
+            // R2c: Conv(1×1)+ReLU6 → absorb ReLU6 (identity conv clamp)
             if (tryConvClipIdentity(ops, i)) { changed = true; continue; }
 
+            // ── Single-block single-op patterns ──
             // R3: Scale → isp.fcs
             if (tryFcs(ops, i)) { changed = true; continue; }
-            // R7b: Conv(1×1,3→4,ARGB weights)[+Clip] → isp.argb_convert
+            // R7b: Conv(1×1,3→4) → isp.argb_convert
             if (tryArgbConvert(ops, i)) { changed = true; continue; }
-            // R7c: Conv(1×1,3→3,BT.601 YUV weights)[+Clip] → isp.yuv420_convert
+            // R7c: Conv(1×1,3→3) → isp.yuv420_convert
             if (tryYuv420Convert(ops, i)) { changed = true; continue; }
-            // R7: Conv(1×1,3→1ch,luminance) → isp.grayscale
+            // R7: Conv(1×1,3→1ch) → isp.grayscale
             if (tryGrayscale(ops, i)) { changed = true; continue; }
-            // R6: BinaryOp(POW)[+Clip] → isp.display
+            // R6: Pow+ReLU6 → isp.display
             if (tryDisplay(ops, i)) { changed = true; continue; }
-            // R8: Conv(2×2,stride=2,identity,oc=ic) → isp.pyramid
+            // R8: Conv(2×2,stride=2) → isp.pyramid
             if (tryPyramid(ops, i)) { changed = true; continue; }
-            // Rwarp: Extra(isp.warp) → mark detected
+            // Rwarp: Extra(isp.warp)
             if (tryWarp(ops, i)) { changed = true; continue; }
-            // Rust FCS/EE: Conv(3×5,g=3) → isp.fcs/isp.ee
+            // Rust variants: FCS, ExtraEe, Display
             if (tryRustConvFcs(ops, i)) { changed = true; continue; }
-            // Rust ExtraEe: ONNX Conv Extra (3×5,group=3) → isp.ee
             if (tryRustExtraEe(ops, i)) { changed = true; continue; }
-            // Rust Display: Mul(scale≈1) → isp.display
             if (tryRustDisplay(ops, i)) { changed = true; continue; }
         }
 
@@ -2537,7 +2566,7 @@ public:
         VLOG(1) << "[IspFusion] === Pass 1: Standard → ISP Extra ops ===";
         Pass1_ToExtra::instance()->onExecute(net);
 
-        VLOG(1) << "[IspFusion] === Pass 2: Extra chain → fused Extra ===";
+        VLOG(1) << "[IspFusion] === Pass 2: MACRO-FUSION — Extra chain → fused Extra ===";
         Pass2_FuseExtra::instance()->onExecute(net);
 
         VLOG(1) << "[IspFusion] Complete: " << net->oplists.size() << " ops";
