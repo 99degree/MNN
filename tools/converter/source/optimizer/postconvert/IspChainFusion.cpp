@@ -80,6 +80,7 @@ static void addSpirv(MNN::ExtraT* extra, const char* type) {
         {"isp.demosaic_bilinear", g_demosaic_interp_spv, g_demosaic_interp_spv_len},
         {"isp.demosaic_mhc",     g_demosaic_mhc_spv,     g_demosaic_mhc_spv_len},
         {"isp.grayscale",       g_grayscale_spv,       g_grayscale_spv_len},
+        {"isp.argb_convert",    g_argb_convert_spv,    g_argb_convert_spv_len},
         {"isp.pyramid",         g_pyramid_spv,         g_pyramid_spv_len},
         {"isp.warp",             g_warp_spv,             g_warp_spv_len},
 
@@ -585,6 +586,9 @@ public:
 
             // ── Rust Display: detect Mul(scale≈1) → isp.display (identity gamma) ──
             if (tryRustDisplay(ops, i)) { changed = true; continue; }
+
+            // ── R7b: Conv(1×1,3→4,ARGB weights)[+Clip] → isp.argb_convert ──
+            if (tryArgbConvert(ops, i)) { changed = true; continue; }
         }
 
         ops.erase(std::remove_if(ops.begin(), ops.end(),
@@ -1272,6 +1276,88 @@ private:
         addSpirv(ex, "isp.grayscale");
         ops[i]->main.value = ex;
         VLOG(2) << "[P1] R7: grayscale at " << i;
+        return true;
+    }
+
+    // R7b: Conv(1×1,3→4,ARGB weights) [+Clip] → isp.argb_convert
+    // Detects the DisplayBlock's format conversion Conv that scales RGB to [0,255]
+    // and arranges as ARGB channels. The weights follow the pattern:
+    //   oc0(A)=0·R, oc1(R)=255·R, oc2(G)=255·G, oc3(B)=255·B
+    // with bias=[255,0,0,0] (alpha bias).
+    // This is a lightweight alternative to isp.display when only format
+    // conversion is needed (no gamma, no BCS).
+    bool tryArgbConvert(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (ops[i]->type != MNN::OpType_Convolution) return false;
+        auto* c = ops[i]->main.AsConvolution2D();
+        if (!c || !c->common) return false;
+        if (c->common->kernelX != 1 || c->common->kernelY != 1) return false;
+        if (c->common->outputCount != 4 || c->common->inputCount != 3) return false;
+        if ((int)c->weight.size() < 12) return false;
+        // Check ARGB conversion weight pattern:
+        // Row 0 (A output): 0, 0, 0
+        // Row 1 (R output): 255, 0, 0
+        // Row 2 (G output): 0, 255, 0
+        // Row 3 (B output): 0, 0, 255
+        const float expected[12] = {
+            0.0f, 0.0f, 0.0f,     // A = 0*R + 0*G + 0*B
+            255.0f, 0.0f, 0.0f,   // R = 255*R
+            0.0f, 255.0f, 0.0f,   // G = 255*G
+            0.0f, 0.0f, 255.0f,   // B = 255*B
+        };
+        for (int k = 0; k < 12; k++) {
+            if (std::abs(c->weight[k] - expected[k]) > 0.5f) return false;
+        }
+        // Check bias: alpha=255, RGB=0
+        if ((int)c->bias.size() >= 4) {
+            if (std::abs(c->bias[0] - 255.0f) > 0.5f) return false; // A bias
+            for (int k = 1; k < 4; k++) {
+                if (std::abs(c->bias[k]) > 0.5f) return false; // RGB biases
+            }
+        }
+        // Check if next op is Clip(0, 255) — consume it if present
+        bool has_clip = false;
+        if (i + 1 < (int)ops.size() && ops[i + 1] &&
+            (ops[i + 1]->type == MNN::OpType_ReLU || ops[i + 1]->type == MNN::OpType_ReLU6)) {
+            if (isChain(ops[i].get(), ops[i + 1].get())) {
+                has_clip = true;
+            }
+        }
+        ops[i]->type = MNN::OpType_Extra;
+        ops[i]->main.type = MNN::OpParameter_Extra;
+        auto* ex = new MNN::ExtraT();
+        ex->type = "isp.argb_convert";
+        // Output is [1, 4, H, W] — ARGB as 4 channels
+        addAttr(ex, "output_shape", [&](MNN::AttributeT* a) {
+            a->tensor.reset(new MNN::BlobT);
+            a->tensor->dataType = MNN::DataType_DT_INT32;
+            a->tensor->int32s = {1, 4, mH, mW};
+        });
+        addAttr(ex, "global_size", [&](MNN::AttributeT* a) {
+            a->tensor.reset(new MNN::BlobT);
+            a->tensor->dataType = MNN::DataType_DT_INT32;
+            a->tensor->int32s = {mW, mH, 1};
+        });
+        addAttr(ex, "group_size", [&](MNN::AttributeT* a) {
+            a->tensor.reset(new MNN::BlobT);
+            a->tensor->dataType = MNN::DataType_DT_INT32;
+            a->tensor->int32s = {16, 16, 1};
+        });
+        addAttr(ex, "optimized_dispatch", [&](MNN::AttributeT* a) { a->b = true; });
+        std::vector<float> u = {float(mW), float(mH), 0, 0, 0, 0, 0, 0};
+        addAttr(ex, "const", [&](MNN::AttributeT* a) {
+            a->i = 0; a->tensor.reset(new MNN::BlobT);
+            a->tensor->dataType = MNN::DataType_DT_FLOAT;
+            a->tensor->float32s = u; a->b = false;
+        });
+        addNamedFloats(ex, "argb_convert", {255.0f});
+        setEngine(ex);
+        addSpirv(ex, "isp.argb_convert");
+        ops[i]->main.value = ex;
+        if (has_clip) {
+            ops[i]->outputIndexes[0] = ops[i + 1]->outputIndexes[0];
+            ops[i + 1].reset(); i += 1;
+        }
+        VLOG(2) << "[P1] R7b: argb_convert at " << i << (has_clip ? " + clip" : "");
         return true;
     }
 
