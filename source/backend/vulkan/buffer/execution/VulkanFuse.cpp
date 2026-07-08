@@ -9,6 +9,9 @@
 #include <stdio.h>
 #include <cstring>
 #include <cstdint>
+// Explicitly include buffer backend's VulkanBackend.hpp (has getPipelineFactory/getBuffer)
+// to avoid image/backend shadowing it.
+#include "../backend/VulkanBackend.hpp"
 #include "VulkanBasicExecution.hpp"
 #include "VulkanBuffer.hpp"
 #include "VulkanFuse.hpp"

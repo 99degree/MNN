@@ -551,12 +551,13 @@ public:
             // ── R7: Conv(1×1,3→1ch,luminance) → isp.grayscale ──
             if (tryGrayscale(ops, i)) { changed = true; continue; }
 
+            // ── R1c: Full packed-int32 unpack chain → isp.unpack_packed ──
+            // Must run BEFORE R1b to intercept the full chain before R1b consumes just the Conv
+            if (tryUnpackPackedChain(ops, i)) { changed = true; continue; }
             // ── R1: Cast + Conv(2×2,stride=2,4ch) → isp.unpack_blc ──
             if (tryUnpack(ops, i)) { changed = true; continue; }
             // ── R1b: Rust packed-int16 + Conv → isp.unpack_blc ──
             if (tryUnpackRust(ops, i)) { changed = true; continue; }
-            // ── R1c: Full packed-int32 unpack chain → isp.unpack_packed ──
-            if (tryUnpackPackedChain(ops, i)) { changed = true; continue; }
 
             // ── R2: CCM Conv(1×1,4→3ch) → isp.demosaic_ccm ──
             if (tryDemosaic(ops, i)) { changed = true; continue; }
@@ -917,55 +918,54 @@ private:
         if (!ops[i] || ops[i]->type != MNN::OpType_Convolution) return false;
         auto* conv = ops[i]->main.AsConvolution2D();
         if (!conv || !conv->common) return false;
-        // Match unpack Conv: kernel 2×1 (or 2×sw), stride 2×1, 4ch output, 2ch input (after Stack)
+        // Match unpack Conv: kernel 1×2, stride 1×2, 4ch output, 2ch input (after Stack)
         if (conv->common->kernelY != 2 || conv->common->kernelX != 1) return false;
         if (conv->common->strideY != 2 || conv->common->strideX != 1) return false;
         if (conv->common->outputCount != 4 || conv->common->group != 1) return false;
-        if (conv->common->inputCount != 2) return false;  // stacked even+odd
 
-        // Check that the Conv's input comes from a Concat (Stack)
-        int stackIdx = -1;
+        // Check that the Conv's input comes from a Concat (Stack) somewhere in the chain.
+        // traceTensor follows ConvertTensor chains backward; we also check the raw input.
+        bool hasCat = false;
+        int catOp = -1;
         for (int inIdx : ops[i]->inputIndexes) {
-            int producer = traceTensor(inIdx, ops);
-            if (producer >= 0 && producer < (int)ops.size() &&
-                ops[producer] && ops[producer]->type == MNN::OpType_Concat) {
-                stackIdx = producer;
-                break;
+            // Check direct producer
+            for (int j = 0; j < (int)ops.size(); j++) {
+                if (!ops[j]) continue;
+                for (int ji : ops[j]->outputIndexes) {
+                    if (ji == inIdx && ops[j]->type == MNN::OpType_Concat) {
+                        hasCat = true;
+                        catOp = j;
+                        break;
+                    }
+                }
+                if (hasCat) break;
             }
+            if (hasCat) break;
         }
-        if (stackIdx < 0) return false;
+        if (!hasCat) return false;
 
-        // Scan backward to find Mod feeding into the Cast→Stack chain
-        // The pattern is: Mod→Cast→Div→Cast→Div→Div→Stack→Conv
-        // We just need to verify Mod exists and extract sensor_max from the Div constants
+        // Replace the Conv with isp.unpack_packed Extra.
+        int W = mW, H = mH;
+        int inW = mInW, inH = mInH;
         float sensorMax = 65535.0f;
-        bool foundMod = false;
-        for (int j = stackIdx - 1; j >= 0 && j >= stackIdx - 10; j--) {
-            if (!ops[j]) continue;
-            if (ops[j]->type == MNN::OpType_BinaryOp &&
-                isBinaryType(ops[j].get(), MNN::BinaryOpOperation_MOD)) {
-                foundMod = true;
-            }
-            // Extract sensor_max from Div const
-            if (ops[j]->type == MNN::OpType_BinaryOp &&
-                isBinaryType(ops[j].get(), MNN::BinaryOpOperation_DIV)) {
-                for (int inIdx : ops[j]->inputIndexes) {
-                    int prov = traceTensor(inIdx, ops);
-                    if (prov >= 0 && prov < (int)ops.size() &&
-                        ops[prov] && ops[prov]->type == MNN::OpType_Const) {
-                        auto* blb = ops[prov]->main.AsBlob();
-                        if (blb && !blb->float32s.empty() && blb->float32s[0] > 100.0f) {
-                            sensorMax = blb->float32s[0];
+        // Try to extract sensor_max from a Div const in the preceding ops
+        for (int j = catOp - 1; j >= std::max(0, catOp - 10); j--) {
+            if (!ops[j] || ops[j]->type != MNN::OpType_BinaryOp) continue;
+            if (!isBinaryType(ops[j].get(), MNN::BinaryOpOperation_DIV)) continue;
+            for (int inIdx : ops[j]->inputIndexes) {
+                for (int k = 0; k < (int)ops.size(); k++) {
+                    if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
+                    for (int co : ops[k]->outputIndexes) {
+                        if (co == inIdx) {
+                            auto* blb = ops[k]->main.AsBlob();
+                            if (blb && !blb->float32s.empty() && blb->float32s[0] > 100.0f) {
+                                sensorMax = blb->float32s[0];
+                            }
                         }
                     }
                 }
             }
         }
-        if (!foundMod) return false;  // Not a packed-int32 pattern
-
-        // Replace the Conv with isp.unpack_packed Extra
-        int W = mW, H = mH;  // output dims
-        int inW = mInW, inH = mInH;  // input dims
         std::vector<float> u = {float(W), float(H), float(inW/2), float(inH),
                                 sensorMax, 0, 0, 0};
 
@@ -976,7 +976,7 @@ private:
         setEngine(ex);
         addSpirv(ex, "isp.unpack_packed");
         ops[i]->main.value = ex;
-        VLOG(1) << "[P1] R1c: unpack_packed at " << i << " sensorMax=" << sensorMax;
+        VLOG(2) << "[P1] R1c: unpack_packed at " << i << " sensorMax=" << sensorMax;
         return true;
     }
 
