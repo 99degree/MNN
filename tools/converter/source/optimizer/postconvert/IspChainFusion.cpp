@@ -1330,11 +1330,12 @@ private:
         ops[i]->main.type = MNN::OpParameter_Extra;
         auto* ex = new MNN::ExtraT();
         ex->type = "isp.argb_convert";
-        // Output is [1, H, W, 1] INT32 — ARGB8888 packed as single 32-bit per pixel
+        // Output is [1, 4, H, W] float — ARGB channels scaled to [0,255]
+        // Must match the original Conv(3→4) output shape so the graph output tensor is compatible.
         addAttr(ex, "output_shape", [&](MNN::AttributeT* a) {
             a->tensor.reset(new MNN::BlobT);
             a->tensor->dataType = MNN::DataType_DT_INT32;
-            a->tensor->int32s = {1, mH, mW, 1};
+            a->tensor->int32s = {1, 4, mH, mW};
         });
         addAttr(ex, "global_size", [&](MNN::AttributeT* a) {
             a->tensor.reset(new MNN::BlobT);
@@ -1361,7 +1362,7 @@ private:
             ops[i]->outputIndexes[0] = ops[i + 1]->outputIndexes[0];
             ops[i + 1].reset(); i += 1;
         }
-        VLOG(2) << "[P1] R7b: argb_convert at " << i << (has_clip ? " + clip" : "");
+        VLOG(2) << "[P1] R7b: argb_convert at " << i << " output=[1,1," << mH << "," << mW << "]" << (has_clip ? " + clip" : "");
         return true;
     }
 
