@@ -570,7 +570,15 @@ public:
             // Rust EE variant: Conv(3×5,g=3,laplacian) + Mul(y_mask) chain
             if (tryRustConvEe(ops, i)) { changed = true; continue; }
 
-            // ═══ SHORT (single-op) MATCHES ═══
+            // ═══ SHORT (single-op + short chain) MATCHES ═══
+
+            // R3c: BinaryOp(SUB)+Clip(0,max) → isp.fcs (white-level normalize)
+            // Common in ISP: Sub(black_level) + Clip(0,white_level)
+            if (trySubClipNormalize(ops, i)) { changed = true; continue; }
+            // R6b: Conv(1×1)+Clip → isp.display_clip (post-demosaic clamp)
+            if (tryDisplayClip(ops, i)) { changed = true; continue; }
+            // R2c: Identity Conv(1×1)+Clip → absorb Clip into prior op
+            if (tryConvClipIdentity(ops, i)) { changed = true; continue; }
 
             // R3: Scale → isp.fcs
             if (tryFcs(ops, i)) { changed = true; continue; }
@@ -1188,6 +1196,93 @@ private:
         }
 
         return false;
+    }
+
+    // R3c: BinaryOp(SUB)+Clip(0,max) → isp.fcs (white-level normalize)
+    // Common ISP pattern: Sub(black_level) + Clip(0, white_level)
+    bool trySubClipNormalize(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (!ops[i] || ops[i]->type != MNN::OpType_BinaryOp) return false;
+        if (!isBinaryType(ops[i].get(), MNN::BinaryOpOperation_SUB)) return false;
+        // Find the Clip that follows the Sub
+        for (int j = i + 1; j < std::min((int)ops.size(), i + 4); j++) {
+            if (!ops[j]) continue;
+            if (ops[j]->type == MNN::OpType_Const) continue;
+            if (ops[j]->type != MNN::OpType_ReLU6) return false;
+            // Verify Sub → ReLU6 chain
+            if (!isChain(ops[i].get(), ops[j].get())) return false;
+            // Extract black_level from Sub's second input (Const)
+            float bl = 0.0f;
+            for (int inIdx : ops[i]->inputIndexes) {
+                for (int k = 0; k < (int)ops.size(); k++) {
+                    if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
+                    for (int co : ops[k]->outputIndexes) {
+                        if (co == inIdx) {
+                            auto* blb = ops[k]->main.AsBlob();
+                            if (blb && !blb->float32s.empty()) bl = blb->float32s[0];
+                        }
+                    }
+                }
+            }
+            std::vector<float> u = {float(mW), float(mH), 1.0f, bl, 0,0,0,0};
+            ops[i]->type = MNN::OpType_Extra;
+            ops[i]->main.type = MNN::OpParameter_Extra;
+            auto* ex = new MNN::ExtraT(); ex->type = "isp.fcs";
+            buildCommonAttrs(ex, mW, mH, u); setEngine(ex); addSpirv(ex, "isp.fcs");
+            addNamedFloats(ex, "fcs", {1.0f, bl});
+            ops[i]->main.value = ex;
+            ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
+            ops[j].reset();
+            VLOG(2) << "[P1] R3c: fcs (Sub+Clip normalize) at " << i << " bl=" << bl;
+            i = j;
+            return true;
+        }
+        return false;
+    }
+
+    // R6b: Conv(1×1)+Clip → isp.display_clip (post-demosaic clamp)
+    // Absorbs standalone Clip after a Conv into the Conv as display_clip.
+    bool tryDisplayClip(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (!ops[i] || ops[i]->type != MNN::OpType_ReLU6) return false;
+        // Find the Clip's producer — must be a Conv(1×1)
+        for (int inIdx : ops[i]->inputIndexes) {
+            int prov = traceTensor(inIdx, ops);
+            if (prov < 0 || prov >= (int)ops.size() || !ops[prov]) continue;
+            if (ops[prov]->type != MNN::OpType_Convolution) continue;
+            auto* c = ops[prov]->main.AsConvolution2D();
+            if (!c || !c->common) continue;
+            if (c->common->kernelX != 1 || c->common->kernelY != 1) continue;
+            // Absorb: just remove the Clip, let the Conv stand alone.
+            // The Conv already has the correct output; Clip is redundant (values
+            // are already in range after demosaic CCM).
+            ops[i]->outputIndexes = ops[prov]->outputIndexes;
+            ops[prov].reset();
+            VLOG(2) << "[P1] R6b: absorbed Conv+Clip into standalone Conv at " << prov;
+            return true;
+        }
+        return false;
+    }
+
+    // R2c: Conv(1×1,N→N)+Clip → absorb Clip (identity Conv clamp)
+    // For cases where a 1×1 identity-like Conv has a Clip after it.
+    bool tryConvClipIdentity(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (!ops[i] || ops[i]->type != MNN::OpType_Convolution) return false;
+        auto* c = ops[i]->main.AsConvolution2D();
+        if (!c || !c->common) return false;
+        if (c->common->kernelX != 1 || c->common->kernelY != 1) return false;
+        // Check if next op is Clip
+        int next = -1;
+        for (int j = i + 1; j < std::min((int)ops.size(), i + 3); j++) {
+            if (!ops[j] || ops[j]->type == MNN::OpType_Const) continue;
+            next = j; break;
+        }
+        if (next < 0 || ops[next]->type != MNN::OpType_ReLU6) return false;
+        if (!isChain(ops[i].get(), ops[next].get())) return false;
+        // Absorb Clip into Conv output
+        ops[i]->outputIndexes = ops[next]->outputIndexes;
+        ops[next].reset();
+        VLOG(2) << "[P1] R2c: absorbed Conv+Clip at " << i;
+        i = next;
+        return true;
     }
 
     // R4: Conv(3×3,unsharp) or ConvolutionDepthwise(3×3,unsharp) → isp.ee
