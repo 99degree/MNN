@@ -543,60 +543,55 @@ public:
 
         for (int i = 0; i < (int)ops.size(); i++) {
             if (!ops[i]) continue;
-            // ── R8: Conv(2×2,stride=2,identity,oc=ic) → isp.pyramid ──
-            if (tryPyramid(ops, i)) { changed = true; continue; }
-            // ── Rwarp: Extra(isp.warp) → mark detected ──
-            if (tryWarp(ops, i)) { changed = true; continue; }
 
-            // ── R7: Conv(1×1,3→1ch,luminance) → isp.grayscale ──
-            if (tryGrayscale(ops, i)) { changed = true; continue; }
+            // ═══ LONGEST CHAIN FIRST (prevents short rules from consuming ops) ═══
 
-            // ── R1c: Full packed-int32 unpack chain → isp.unpack_packed ──
-            // Must run BEFORE R1b to intercept the full chain before R1b consumes just the Conv
+            // R1c: Full packed-int32 chain (~8 ops) → isp.unpack_packed
+            // Skips if demosaic follows (lets R1+R10 handle for better fusion)
             if (tryUnpackPackedChain(ops, i)) { changed = true; continue; }
-            // ── R1: Cast + Conv(2×2,stride=2,4ch) → isp.unpack_blc ──
+            // R1: Cast + Conv(2×2,stride=2,4ch) → isp.unpack_blc
             if (tryUnpack(ops, i)) { changed = true; continue; }
-            // ── R1b: Rust packed-int16 + Conv → isp.unpack_blc ──
+            // R1b: Rust packed-int16 + Conv → isp.unpack_blc
             if (tryUnpackRust(ops, i)) { changed = true; continue; }
 
-            // ── R2: CCM Conv(1×1,4→3ch) → isp.demosaic_ccm ──
-            if (tryDemosaic(ops, i)) { changed = true; continue; }
-
-            // ── R2b: Conv(4×4,stride=1,1ch→3ch) → isp.demosaic_interp ──
-            if (tryDemosaicInterp(ops, i)) { changed = true; continue; }
-
-            // ── R3: Scale → isp.fcs ──
-            if (tryFcs(ops, i)) { changed = true; continue; }
-
-            // ── R4: Conv(3×3,unsharp) → isp.ee ──
-            if (tryEe(ops, i)) { changed = true; continue; }
-
-            // ── Rust EE variant: Conv(3×5,g=3,laplacian) + Mul(y_mask) chain → isp.ee ──
-            if (tryRustConvEe(ops, i)) { changed = true; continue; }
-
-            // ── R5: Pool(AVG,3×3)+Sub+Mul+Add → isp.ldci ──
+            // R5: Pool+Sub+Mul+Add+Clip (~5 ops) → isp.ldci
             if (tryLdci(ops, i)) { changed = true; continue; }
-
-            // ── Rust LDCI variant: ReduceMean(H,W)+Sub+Mul+Mul+Add+Clip → isp.ldci ──
+            // Rust LDCI variant: ReduceMean+Sub+Mul+Mul+Add+Clip (~5 ops)
             if (tryRustReduceLdci(ops, i)) { changed = true; continue; }
 
-            // ── R6: BinaryOp(POW)[+Clip] → isp.display ──
-            if (tryDisplay(ops, i)) { changed = true; continue; }
+            // ═══ MEDIUM CHAIN: 1–2 ops ═══
 
-            // ── Rust FCS/EE matching: Conv(3×5,g=3,laplacian) → isp.fcs/isp.ee ──
-            if (tryRustConvFcs(ops, i)) { changed = true; continue; }
+            // R2: Conv(1×1,4→3ch) → isp.demosaic_ccm
+            if (tryDemosaic(ops, i)) { changed = true; continue; }
+            // R2b: Conv(4×4,stride=1,1ch→3ch) → isp.demosaic_interp
+            if (tryDemosaicInterp(ops, i)) { changed = true; continue; }
+            // R4: Conv(3×3,unsharp) → isp.ee
+            if (tryEe(ops, i)) { changed = true; continue; }
+            // Rust EE variant: Conv(3×5,g=3,laplacian) + Mul(y_mask) chain
+            if (tryRustConvEe(ops, i)) { changed = true; continue; }
 
-            // ── Rust EE: detect ONNX Conv Extra (3×5,group=3) → isp.ee ──
-            if (tryRustExtraEe(ops, i)) { changed = true; continue; }
+            // ═══ SHORT (single-op) MATCHES ═══
 
-            // ── Rust Display: detect Mul(scale≈1) → isp.display (identity gamma) ──
-            if (tryRustDisplay(ops, i)) { changed = true; continue; }
-
-            // ── R7b: Conv(1×1,3→4,ARGB weights)[+Clip] → isp.argb_convert ──
+            // R3: Scale → isp.fcs
+            if (tryFcs(ops, i)) { changed = true; continue; }
+            // R7b: Conv(1×1,3→4,ARGB weights)[+Clip] → isp.argb_convert
             if (tryArgbConvert(ops, i)) { changed = true; continue; }
-
-            // ── R7c: Conv(1×1,3→3,BT.601 YUV weights)[+Clip] → isp.yuv420_convert ──
+            // R7c: Conv(1×1,3→3,BT.601 YUV weights)[+Clip] → isp.yuv420_convert
             if (tryYuv420Convert(ops, i)) { changed = true; continue; }
+            // R7: Conv(1×1,3→1ch,luminance) → isp.grayscale
+            if (tryGrayscale(ops, i)) { changed = true; continue; }
+            // R6: BinaryOp(POW)[+Clip] → isp.display
+            if (tryDisplay(ops, i)) { changed = true; continue; }
+            // R8: Conv(2×2,stride=2,identity,oc=ic) → isp.pyramid
+            if (tryPyramid(ops, i)) { changed = true; continue; }
+            // Rwarp: Extra(isp.warp) → mark detected
+            if (tryWarp(ops, i)) { changed = true; continue; }
+            // Rust FCS/EE: Conv(3×5,g=3) → isp.fcs/isp.ee
+            if (tryRustConvFcs(ops, i)) { changed = true; continue; }
+            // Rust ExtraEe: ONNX Conv Extra (3×5,group=3) → isp.ee
+            if (tryRustExtraEe(ops, i)) { changed = true; continue; }
+            // Rust Display: Mul(scale≈1) → isp.display
+            if (tryRustDisplay(ops, i)) { changed = true; continue; }
         }
 
         ops.erase(std::remove_if(ops.begin(), ops.end(),
@@ -913,22 +908,22 @@ private:
 
     // R1c: Full packed-int32 unpack chain → isp.unpack_packed
     // Matches: Mod+Cast+Div+Cast+Div+Div+Stack+Conv → single GPU dispatch
-    // This eliminates 10+ unfused standard ops from the unpack pipeline.
+    // CRITICAL: Skips if the Conv's output feeds into a demosaic_ccm Conv (1×1,4→3ch)
+    // within the next few ops, because R1+R10 would produce a better fusion
+    // (isp.unpack_demosaic = unpack+demosaic+ccm in one shader).
     bool tryUnpackPackedChain(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         if (!ops[i] || ops[i]->type != MNN::OpType_Convolution) return false;
         auto* conv = ops[i]->main.AsConvolution2D();
         if (!conv || !conv->common) return false;
-        // Match unpack Conv: kernel 1×2, stride 1×2, 4ch output, 2ch input (after Stack)
+        // Match unpack Conv: kernel 1×2, stride 1×2, 4ch output
         if (conv->common->kernelY != 2 || conv->common->kernelX != 1) return false;
         if (conv->common->strideY != 2 || conv->common->strideX != 1) return false;
         if (conv->common->outputCount != 4 || conv->common->group != 1) return false;
 
         // Check that the Conv's input comes from a Concat (Stack) somewhere in the chain.
-        // traceTensor follows ConvertTensor chains backward; we also check the raw input.
         bool hasCat = false;
         int catOp = -1;
         for (int inIdx : ops[i]->inputIndexes) {
-            // Check direct producer
             for (int j = 0; j < (int)ops.size(); j++) {
                 if (!ops[j]) continue;
                 for (int ji : ops[j]->outputIndexes) {
@@ -944,11 +939,31 @@ private:
         }
         if (!hasCat) return false;
 
+        // CRITICAL: Check if a demosaic Conv(1×1,4→3ch) follows anywhere after.
+        // If so, skip R1c — let R1+R10 produce isp.unpack_demosaic instead.
+        // Note: traceTensor only follows ConvertTensor; pipeline blocks (Identity,
+        // Resize) sit between unpack Conv and demosaic Conv, so we scan all remaining
+        // Convs and use proximity + kernel shape as heuristic.
+        bool demosaicFollows = false;
+        for (int j = i + 1; j < (int)ops.size(); j++) {
+            if (!ops[j] || ops[j]->type != MNN::OpType_Convolution) continue;
+            auto* c2 = ops[j]->main.AsConvolution2D();
+            if (c2 && c2->common &&
+                c2->common->kernelX == 1 && c2->common->kernelY == 1 &&
+                c2->common->outputCount == 3 && c2->common->group == 1) {
+                demosaicFollows = true;
+                break;
+            }
+        }
+        if (demosaicFollows) {
+            VLOG(2) << "[P1] R1c: skip (demosaic Conv follows)";
+            return false;
+        }
+
         // Replace the Conv with isp.unpack_packed Extra.
         int W = mW, H = mH;
         int inW = mInW, inH = mInH;
         float sensorMax = 65535.0f;
-        // Try to extract sensor_max from a Div const in the preceding ops
         for (int j = catOp - 1; j >= std::max(0, catOp - 10); j--) {
             if (!ops[j] || ops[j]->type != MNN::OpType_BinaryOp) continue;
             if (!isBinaryType(ops[j].get(), MNN::BinaryOpOperation_DIV)) continue;
