@@ -82,6 +82,7 @@ static void addSpirv(MNN::ExtraT* extra, const char* type) {
         {"isp.grayscale",       g_grayscale_spv,       g_grayscale_spv_len},
         {"isp.argb_convert",    g_argb_convert_spv,    g_argb_convert_spv_len},
         {"isp.yuv420_convert",  g_yuv420_convert_spv,  g_yuv420_convert_spv_len},
+        {"isp.unpack_packed",   g_unpack_packed_spv,   g_unpack_packed_spv_len},
         {"isp.pyramid",         g_pyramid_spv,         g_pyramid_spv_len},
         {"isp.warp",             g_warp_spv,             g_warp_spv_len},
 
@@ -554,6 +555,8 @@ public:
             if (tryUnpack(ops, i)) { changed = true; continue; }
             // ── R1b: Rust packed-int16 + Conv → isp.unpack_blc ──
             if (tryUnpackRust(ops, i)) { changed = true; continue; }
+            // ── R1c: Full packed-int32 unpack chain → isp.unpack_packed ──
+            if (tryUnpackPackedChain(ops, i)) { changed = true; continue; }
 
             // ── R2: CCM Conv(1×1,4→3ch) → isp.demosaic_ccm ──
             if (tryDemosaic(ops, i)) { changed = true; continue; }
@@ -904,6 +907,76 @@ private:
             ops[i]->main.value = ex;
             VLOG(2) << "[P1] R1b: unpack_blc (Rust pattern) at " << i;
         }
+        return true;
+    }
+
+    // R1c: Full packed-int32 unpack chain → isp.unpack_packed
+    // Matches: Mod+Cast+Div+Cast+Div+Div+Stack+Conv → single GPU dispatch
+    // This eliminates 10+ unfused standard ops from the unpack pipeline.
+    bool tryUnpackPackedChain(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (!ops[i] || ops[i]->type != MNN::OpType_Convolution) return false;
+        auto* conv = ops[i]->main.AsConvolution2D();
+        if (!conv || !conv->common) return false;
+        // Match unpack Conv: kernel 2×1 (or 2×sw), stride 2×1, 4ch output, 2ch input (after Stack)
+        if (conv->common->kernelY != 2 || conv->common->kernelX != 1) return false;
+        if (conv->common->strideY != 2 || conv->common->strideX != 1) return false;
+        if (conv->common->outputCount != 4 || conv->common->group != 1) return false;
+        if (conv->common->inputCount != 2) return false;  // stacked even+odd
+
+        // Check that the Conv's input comes from a Concat (Stack)
+        int stackIdx = -1;
+        for (int inIdx : ops[i]->inputIndexes) {
+            int producer = traceTensor(inIdx, ops);
+            if (producer >= 0 && producer < (int)ops.size() &&
+                ops[producer] && ops[producer]->type == MNN::OpType_Concat) {
+                stackIdx = producer;
+                break;
+            }
+        }
+        if (stackIdx < 0) return false;
+
+        // Scan backward to find Mod feeding into the Cast→Stack chain
+        // The pattern is: Mod→Cast→Div→Cast→Div→Div→Stack→Conv
+        // We just need to verify Mod exists and extract sensor_max from the Div constants
+        float sensorMax = 65535.0f;
+        bool foundMod = false;
+        for (int j = stackIdx - 1; j >= 0 && j >= stackIdx - 10; j--) {
+            if (!ops[j]) continue;
+            if (ops[j]->type == MNN::OpType_BinaryOp &&
+                isBinaryType(ops[j].get(), MNN::BinaryOpOperation_MOD)) {
+                foundMod = true;
+            }
+            // Extract sensor_max from Div const
+            if (ops[j]->type == MNN::OpType_BinaryOp &&
+                isBinaryType(ops[j].get(), MNN::BinaryOpOperation_DIV)) {
+                for (int inIdx : ops[j]->inputIndexes) {
+                    int prov = traceTensor(inIdx, ops);
+                    if (prov >= 0 && prov < (int)ops.size() &&
+                        ops[prov] && ops[prov]->type == MNN::OpType_Const) {
+                        auto* blb = ops[prov]->main.AsBlob();
+                        if (blb && !blb->float32s.empty() && blb->float32s[0] > 100.0f) {
+                            sensorMax = blb->float32s[0];
+                        }
+                    }
+                }
+            }
+        }
+        if (!foundMod) return false;  // Not a packed-int32 pattern
+
+        // Replace the Conv with isp.unpack_packed Extra
+        int W = mW, H = mH;  // output dims
+        int inW = mInW, inH = mInH;  // input dims
+        std::vector<float> u = {float(W), float(H), float(inW/2), float(inH),
+                                sensorMax, 0, 0, 0};
+
+        ops[i]->type = MNN::OpType_Extra;
+        ops[i]->main.type = MNN::OpParameter_Extra;
+        auto* ex = new MNN::ExtraT(); ex->type = "isp.unpack_packed";
+        buildCommonAttrs(ex, W, H, u);
+        setEngine(ex);
+        addSpirv(ex, "isp.unpack_packed");
+        ops[i]->main.value = ex;
+        VLOG(1) << "[P1] R1c: unpack_packed at " << i << " sensorMax=" << sensorMax;
         return true;
     }
 
@@ -2358,6 +2431,20 @@ public:
         Pass2_FuseExtra::instance()->onExecute(net);
 
         VLOG(1) << "[IspFusion] Complete: " << net->oplists.size() << " ops";
+        // Debug: dump all op types
+        for (size_t i = 0; i < net->oplists.size(); i++) {
+            auto& op = net->oplists[i];
+            if (op && op->type == MNN::OpType_Extra) {
+                auto* ex = op->main.AsExtra();
+                fprintf(stderr, "  [%zu] Extra(%s)", i, ex->type.c_str());
+                for (auto& a : ex->attr) {
+                    if (a && a->key == "optimized_dispatch") fprintf(stderr, " od=%d", a->b ? 1 : 0);
+                }
+                fprintf(stderr, "\n");
+            } else if (op) {
+                fprintf(stderr, "  [%zu] %s\n", i, MNN::EnumNamesOpType()[op->type]);
+            }
+        }
         return true;
     }
 };
