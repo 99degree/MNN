@@ -160,6 +160,56 @@ public:
     }
 };
 
+// ── isp.ai::Vignetting → isp.vignetting Extra op ──
+class IspVignetting : public OnnxExtraManager::Transform {
+public:
+    virtual EXPRP onExecute(EXPRP expr) const override {
+        auto op = expr->get();
+        auto newVar = createVulkanFuseOp(expr, op, "vignetting");
+        return newVar->expr().first;
+    }
+};
+
+// ── isp.ai::AutoContrast → isp.auto_contrast Extra op ──
+class IspAutoContrast : public OnnxExtraManager::Transform {
+public:
+    virtual EXPRP onExecute(EXPRP expr) const override {
+        auto op = expr->get();
+        auto newVar = createVulkanFuseOp(expr, op, "auto_contrast");
+        return newVar->expr().first;
+    }
+};
+
+// ── isp.ai::Colorspace → isp.colorspace Extra op ──
+class IspColorspace : public OnnxExtraManager::Transform {
+public:
+    virtual EXPRP onExecute(EXPRP expr) const override {
+        auto op = expr->get();
+        auto newVar = createVulkanFuseOp(expr, op, "colorspace");
+        return newVar->expr().first;
+    }
+};
+
+// ── isp.ai::WaveletDenoise → isp.wavelet_denoise Extra op ──
+class IspWaveletDenoise : public OnnxExtraManager::Transform {
+public:
+    virtual EXPRP onExecute(EXPRP expr) const override {
+        auto op = expr->get();
+        auto newVar = createVulkanFuseOp(expr, op, "wavelet_denoise");
+        return newVar->expr().first;
+    }
+};
+
+// ── isp.ai::Bilateral → isp.bilateral Extra op ──
+class IspBilateral : public OnnxExtraManager::Transform {
+public:
+    virtual EXPRP onExecute(EXPRP expr) const override {
+        auto op = expr->get();
+        auto newVar = createVulkanFuseOp(expr, op, "bilateral");
+        return newVar->expr().first;
+    }
+};
+
 // ── Static registration ──
 static bool gReg = []() {
     auto mgr = OnnxExtraManager::get();
@@ -171,6 +221,11 @@ static bool gReg = []() {
     mgr->insert("Display", std::make_shared<IspDisplay>());
     mgr->insert("FcsDisplay", std::make_shared<IspFcsDisplay>());
     mgr->insert("EeLdci", std::make_shared<IspEeLdci>());
+    mgr->insert("Vignetting", std::make_shared<IspVignetting>());
+    mgr->insert("AutoContrast", std::make_shared<IspAutoContrast>());
+    mgr->insert("Colorspace", std::make_shared<IspColorspace>());
+    mgr->insert("WaveletDenoise", std::make_shared<IspWaveletDenoise>());
+    mgr->insert("Bilateral", std::make_shared<IspBilateral>());
     return true;
 }();
 

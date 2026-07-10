@@ -105,7 +105,12 @@ static void addSpirv(MNN::ExtraT* extra, const char* type) {
         {"isp.unpack_packed",   g_unpack_packed_spv,   g_unpack_packed_spv_len},
         {"isp.pyramid",         g_pyramid_spv,         g_pyramid_spv_len},
         {"isp.warp",             g_warp_spv,             g_warp_spv_len},
-
+        // New post-processing shaders
+        {"isp.vignetting",       g_vignetting_spv,       g_vignetting_spv_len},
+        {"isp.auto_contrast",    g_auto_contrast_spv,    g_auto_contrast_spv_len},
+        {"isp.colorspace",       g_colorspace_spv,       g_colorspace_spv_len},
+        {"isp.wavelet_denoise",  g_wavelet_denoise_spv,  g_wavelet_denoise_spv_len},
+        {"isp.bilateral",        g_bilateral_spv,        g_bilateral_spv_len},
     };
     for (auto& m : map) {
         if (strcmp(type, m.type) == 0) {
@@ -628,6 +633,8 @@ public:
             if (tryYuv420Convert(ops, i)) { changed = true; continue; }
             // R7: Conv(1×1,3→1ch) → isp.grayscale
             if (tryGrayscale(ops, i)) { changed = true; continue; }
+            // R7d: Log+Mul+Exp → isp.gamma (GammaBlock)
+            // if (tryGamma(ops, i)) { changed = true; continue; }
             // R6: Pow+ReLU6 → isp.display
             if (tryDisplay(ops, i)) { changed = true; continue; }
             // R8: Conv(2×2,stride=2) → isp.pyramid
@@ -638,6 +645,11 @@ public:
             if (tryRustConvFcs(ops, i)) { changed = true; continue; }
             if (tryRustExtraEe(ops, i)) { changed = true; continue; }
             if (tryRustDisplay(ops, i)) { changed = true; continue; }
+            // New post-processing ops
+            // R13: Mul(input, gain_map) → isp.vignetting
+            if (tryVignetting(ops, i)) { changed = true; continue; }
+            // R14: Add → Sub → Mul → Add chain → isp.auto_contrast
+            if (tryAutoContrast(ops, i)) { changed = true; continue; }
         }
 
         ops.erase(std::remove_if(ops.begin(), ops.end(),
@@ -2192,7 +2204,210 @@ private:
         VLOG(2) << "[P1] Rust Display at " << i;
         return true;
     }
-};
+
+// ── New Post-Processing ISP Op Rules ──
+
+    // R13: Vignetting — Mul(input, gain_map)
+    // Detect: Mul with second input being a Constant (gain_map)
+    bool tryVignetting(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (!isBinaryType(ops[i].get(), MNN::BinaryOpOperation_MUL)) return false;
+        
+        // Check if one input is a Constant (gain_map)
+        bool hasGainMap = false;
+        int gainMapIdx = -1;
+        for (int inIdx : ops[i]->inputIndexes) {
+            for (int j = 0; j < (int)ops.size(); j++) {
+                if (!ops[j] || ops[j]->type != MNN::OpType_Const) continue;
+                for (int outIdx : ops[j]->outputIndexes) {
+                    if (outIdx == inIdx) {
+                        auto* blb = ops[j]->main.AsBlob();
+                        if (blb && blb->float32s.size() > 100) {  // gain_map is large
+                            hasGainMap = true;
+                            gainMapIdx = j;
+                        }
+                    }
+                }
+            }
+        }
+        if (!hasGainMap || gainMapIdx < 0) return false;
+        
+        // Extract gain map data
+        auto* blb = ops[gainMapIdx]->main.AsBlob();
+        std::vector<float> gainMap(blb->float32s.begin(), blb->float32s.end());
+        
+        // Create isp.vignetting Extra op
+        ops[i]->type = MNN::OpType_Extra;
+        ops[i]->main.type = MNN::OpParameter_Extra;
+        auto* ex = new MNN::ExtraT();
+        ex->type = "isp.vignetting";
+        std::vector<float> u = {float(mW), float(mH), 1.0f, 0, 0, 0, 0, 0};
+        buildCommonAttrs(ex, mW, mH, u);
+        // Store gain_map as tensor attribute
+        auto* gainAttr = new MNN::AttributeT();
+        gainAttr->key = "gain_map";
+        gainAttr->tensor.reset(new MNN::BlobT());
+        gainAttr->tensor->dataType = 0;  // float
+        gainAttr->tensor->float32s = gainMap;
+        ex->attr.push_back(std::unique_ptr<MNN::AttributeT>(gainAttr));
+        setEngine(ex);
+        addSpirv(ex, "isp.vignetting");
+        ops[i]->main.value = ex;
+        
+        // Remove the gain_map Const op
+        ops[gainMapIdx].reset();
+        
+        VLOG(2) << "[P1] R13: vignetting at " << i << " gain_map_size=" << gainMap.size();
+        return true;
+    }
+    
+    // R14: Auto Contrast — Add → Sub → Mul → Add chain
+    // Detect: shadow_lift + contrast stretch
+    bool tryAutoContrast(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        // Look for Add(input, lift) → Sub(x, 0.5) → Mul(x, contrast) → Add(x, 0.5)
+        if (!isBinaryType(ops[i].get(), MNN::BinaryOpOperation_ADD)) return false;
+        
+        float lift = 0.0f, contrast = 1.0f;
+        int add1Idx = i;
+        
+        // Check if first Add has a Const input (lift value)
+        for (int inIdx : ops[i]->inputIndexes) {
+            for (int j = 0; j < (int)ops.size(); j++) {
+                if (!ops[j] || ops[j]->type != MNN::OpType_Const) continue;
+                for (int outIdx : ops[j]->outputIndexes) {
+                    if (outIdx == inIdx) {
+                        auto* blb = ops[j]->main.AsBlob();
+                        if (blb && !blb->float32s.empty()) {
+                            lift = blb->float32s[0];
+                        }
+                    }
+                }
+            }
+        }
+        
+        // Look for Sub(x, 0.5) after Add
+        int subIdx = -1;
+        for (int j = i + 1; j < std::min((int)ops.size(), i + 3); j++) {
+            if (!ops[j] || ops[j]->type != MNN::OpType_BinaryOp) continue;
+            if (isBinaryType(ops[j].get(), MNN::BinaryOpOperation_SUB)) {
+                if (isChain(ops[i].get(), ops[j].get())) {
+                    subIdx = j;
+                }
+            }
+            break;
+        }
+        if (subIdx < 0) return false;
+        
+        // Look for Mul(x, contrast) after Sub
+        int mulIdx = -1;
+        for (int j = subIdx + 1; j < std::min((int)ops.size(), subIdx + 3); j++) {
+            if (!ops[j] || ops[j]->type != MNN::OpType_BinaryOp) continue;
+            if (isBinaryType(ops[j].get(), MNN::BinaryOpOperation_MUL)) {
+                if (isChain(ops[subIdx].get(), ops[j].get())) {
+                    mulIdx = j;
+                    // Extract contrast from Const input
+                    for (int inIdx : ops[j]->inputIndexes) {
+                        for (int k = 0; k < (int)ops.size(); k++) {
+                            if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
+                            for (int outIdx : ops[k]->outputIndexes) {
+                                if (outIdx == inIdx) {
+                                    auto* blb = ops[k]->main.AsBlob();
+                                    if (blb && !blb->float32s.empty()) {
+                                        contrast = blb->float32s[0];
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            break;
+        }
+        if (mulIdx < 0) return false;
+        
+        // Create isp.auto_contrast Extra op
+        ops[mulIdx]->type = MNN::OpType_Extra;
+        ops[mulIdx]->main.type = MNN::OpParameter_Extra;
+        auto* ex = new MNN::ExtraT();
+        ex->type = "isp.auto_contrast";
+        std::vector<float> u = {float(mW), float(mH), lift, contrast, 0, 0, 0, 0};
+        buildCommonAttrs(ex, mW, mH, u);
+        addNamedFloats(ex, "auto_contrast", {lift, contrast});
+        setEngine(ex);
+        addSpirv(ex, "isp.auto_contrast");
+        ops[mulIdx]->main.value = ex;
+        
+        // Remove consumed ops
+        ops[i].reset();      // Add
+        ops[subIdx].reset(); // Sub
+        
+        VLOG(2) << "[P1] R14: auto_contrast at " << mulIdx << " lift=" << lift << " contrast=" << contrast;
+        i = mulIdx;
+        return true;
+    }
+
+/* R7d commented out until GammaBlock ONNX pattern fixed
+   // R7d: Log+Mul+Exp → isp.gamma
+    // GammaBlock pattern: Log(x) * inv_gamma → Exp(result)
+    bool tryGamma(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (!ops[i] || ops[i]->type != MNN::OpType_BinaryOp) return false;
+        if (!isBinaryType(ops[i].get(), MNN::BinaryOpOperation_Log)) return false;
+        // Find next Mul (should be scaling by inv_gamma)
+        int mulIdx = -1;
+        for (int j = i + 1; j < std::min((int)ops.size(), i + 3); j++) {
+            if (!ops[j] || ops[j]->type == MNN::OpType_Const) continue;
+            if (ops[j]->type == MNN::OpType_BinaryOp &&
+                isBinaryType(ops[j].get(), MNN::BinaryOpOperation_MUL)) {
+                if (!isChain(ops[i].get(), ops[j].get())) return false;
+                mulIdx = j;
+            }
+            break;
+        }
+        if (mulIdx < 0) return false;
+        // Find next Exp (should consume Mul's output)
+        for (int k = mulIdx + 1; k < std::min((int)ops.size(), mulIdx + 3); k++) {
+            if (!ops[k] || ops[k]->type == MNN::OpType_Const) continue;
+            if (ops[k]->type == MNN::OpType_UnaryOp &&
+                isUnaryType(ops[k].get(), MNN::UnaryOpOperation_EXP)) {
+                if (!isChain(ops[mulIdx].get(), ops[k].get())) return false;
+                // Extract inv_gamma from Mul's second input
+                float inv_g = 0.0f;
+                for (int inIdx : ops[mulIdx]->inputIndexes) {
+                    for (int j = 0; j < (int)ops.size(); j++) {
+                        if (!ops[j] || ops[j]->type != MNN::OpType_Const) continue;
+                        for (int outIdx : ops[j]->outputIndexes) {
+                            if (outIdx == inIdx) {
+                                auto* blb = ops[j]->main.AsBlob();
+                                if (blb && !blb->float32s.empty()) inv_g = blb->float32s[0];
+                            }
+                        }
+                    }
+                }
+                float gamma = (inv_g > 0) ? (1.0f / inv_g) : 2.2f;
+                // Replace Mul with Gamma Extra
+                ops[mulIdx]->type = MNN::OpType_Extra;
+                ops[mulIdx]->main.type = MNN::OpParameter_Extra;
+                ops[mulIdx]->type = MNN::OpType_Extra;
+                ops[mulIdx]->main.type = MNN::OpParameter_Extra;
+                auto* ex = new MNN::ExtraT();
+                ex->type = "isp.gamma";
+                std::vector<float> u = {float(mW), float(mH), gamma, 0, 0,0,0,0};
+                buildCommonAttrs(ex, mW, mH, u);
+                addNamedFloats(ex, "gamma", {gamma});
+                setEngine(ex);
+                addSpirv(ex, "isp.gamma");
+                ops[mulIdx]->main.value = ex;
+                ops[mulIdx]->outputIndexes = ops[k]->outputIndexes;
+                ops[k].reset();
+                ops[i].reset(); // Remove Log
+                VLOG(2) << "[P1] R7d: Log+Mul+Exp → gamma at " << mulIdx << " gamma=" << gamma;
+                i = k;
+                return true;
+            }
+            break;
+        }
+        return false;
+    }
+*/};
 
 // ═══════════════════════════════════════════════════════════════════
 //  Pass 2: ISP Extra chain → fused Extra
