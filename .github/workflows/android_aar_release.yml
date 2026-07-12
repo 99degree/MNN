@@ -157,7 +157,11 @@ jobs:
           QNN_3RD_PARTY="source/backend/qnn/3rdParty"
           mkdir -p "${QNN_3RD_PARTY}/include"
           mkdir -p "${QNN_3RD_PARTY}/lib"
-          cp -r "${EXTRACTED_QNN_DIR}/include/"* "${QNN_3RD_PARTY}/include/"
+          if [ -d "${EXTRACTED_QNN_DIR}/include/QNN" ]; then
+            cp -r "${EXTRACTED_QNN_DIR}/include/QNN/"* "${QNN_3RD_PARTY}/include/"
+          else
+            cp -r "${EXTRACTED_QNN_DIR}/include/"* "${QNN_3RD_PARTY}/include/"
+          fi
 
           # Determine lib source dir (jniLibs or lib)
           SOURCE_LIBS="${EXTRACTED_QNN_DIR}/jniLibs"
