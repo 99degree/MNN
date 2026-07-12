@@ -264,3 +264,4 @@ MNN refers to the following projects:
 - [libjpeg](https://github.com/libjpeg-turbo/libjpeg-turbo)
 - [opencv](https://github.com/opencv/opencv)
 - [onnxruntime](https://github.com/microsoft/onnxruntime)
+# Rebuild trigger
