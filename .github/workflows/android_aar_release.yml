@@ -234,7 +234,7 @@ jobs:
             -DMNN_BUILD_DEMO=OFF \
             -DNATIVE_LIBRARY_OUTPUT=. \
             -DNATIVE_INCLUDE_OUTPUT=. \
-            --verbose
+            -DCMAKE_VERBOSE_MAKEFILE=ON
 
             ninja -v
           else
@@ -274,7 +274,7 @@ jobs:
             -DMNN_BUILD_DEMO=OFF \
             -DNATIVE_LIBRARY_OUTPUT=. \
             -DNATIVE_INCLUDE_OUTPUT=. \
-            --verbose
+            -DCMAKE_VERBOSE_MAKEFILE=ON
 
             make -j$(nproc) VERBOSE=1
           fi
@@ -323,7 +323,7 @@ jobs:
             -DMNN_BUILD_DEMO=OFF \
             -DNATIVE_LIBRARY_OUTPUT=. \
             -DNATIVE_INCLUDE_OUTPUT=. \
-            --verbose
+            -DCMAKE_VERBOSE_MAKEFILE=ON
 
             ninja -v
           else
@@ -363,7 +363,7 @@ jobs:
             -DMNN_BUILD_DEMO=OFF \
             -DNATIVE_LIBRARY_OUTPUT=. \
             -DNATIVE_INCLUDE_OUTPUT=. \
-            --verbose
+            -DCMAKE_VERBOSE_MAKEFILE=ON
 
             make -j$(nproc) VERBOSE=1
           fi
