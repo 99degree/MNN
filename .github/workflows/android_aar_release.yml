@@ -135,6 +135,10 @@ jobs:
       - name: Download and setup QNN SDK
         run: |
           set -x
+          # Define QNN 3rdParty directory (used throughout the workflow
+          QNN_3RD_PARTY="source/backend/qnn/3rdParty"
+          mkdir -p "${QNN_3RD_PARTY}/include"
+          mkdir -p "${QNN_3RD_PARTY}/lib"
           echo "Downloading QNN SDK from ${QNN_LIBS_URL}..."
           mkdir -p $HOME/build_qnn_temp
           QNN_ZIP="$HOME/build_qnn_temp/qnn_sdk.zip"
