@@ -39,6 +39,6 @@ endif()
 
 target_include_directories(MNN_QNN PRIVATE ${CMAKE_CURRENT_LIST_DIR}/backend/)
 target_include_directories(MNN_QNN PRIVATE ${CMAKE_CURRENT_LIST_DIR}/convertor/)
-target_include_directories(MNN_QNN PRIVATE ${_QNN_ROOT}/include/QNN/)
+target_include_directories(MNN_QNN PRIVATE ${_QNN_ROOT}/include/)
 # 在 MSVC / Windows 上 __fp16 不可用，需要使用 3rd_party/half 提供软件 fp16 转换。
 target_include_directories(MNN_QNN PRIVATE ${CMAKE_SOURCE_DIR}/3rd_party/half)
