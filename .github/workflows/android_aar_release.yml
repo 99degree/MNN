@@ -136,12 +136,12 @@ jobs:
         run: |
           set -x
           echo "Downloading QNN SDK from ${QNN_LIBS_URL}..."
-          mkdir -p build_qnn_temp
-          QNN_ZIP="build_qnn_temp/qnn_sdk.zip"
+          mkdir -p $HOME/build_qnn_temp
+          QNN_ZIP="$HOME/build_qnn_temp/qnn_sdk.zip"
           curl -fL --retry 3 --retry-delay 2 -o "${QNN_ZIP}" "${QNN_LIBS_URL}"
 
           echo "Extracting QNN SDK..."
-          QNN_TMP="build_qnn_temp/extracted"
+          QNN_TMP="$HOME/build_qnn_temp/extracted"
           mkdir -p "${QNN_TMP}"
           unzip -q "${QNN_ZIP}" -d "${QNN_TMP}"
 
