@@ -145,7 +145,7 @@ jobs:
           unzip -q "${QNN_ZIP}" -d "${QNN_TMP}"
 
           # Find the include directory (handles nested top-level dir)
-          INCLUDE_DIR=$(find "${QNN_TMP}" -type d -name "include" | head -1)
+          INCLUDE_DIR=$(find "${QNN_TMP}" -type d -name "include" ! -path "*/__MACOSX/*" | head -1)
           if [ -z "${INCLUDE_DIR}" ]; then
             echo "ERROR: Failed to find 'include' directory in QNN SDK archive"
             exit 1
