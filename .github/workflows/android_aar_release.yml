@@ -166,10 +166,14 @@ jobs:
           mkdir -p "${QNN_3RD_PARTY}/include"
           mkdir -p "${QNN_3RD_PARTY}/lib"
           if [ -d "${EXTRACTED_QNN_DIR}/include/QNN" ]; then
-            cp -r "${EXTRACTED_QNN_DIR}/include/QNN/"* "${QNN_3RD_PARTY}/include/"
+            echo "=== Copying QNN headers from QNN subdirectory ==="
+            cp -rv "${EXTRACTED_QNN_DIR}/include/QNN/"* "${QNN_3RD_PARTY}/include/"
           else
-            cp -r "${EXTRACTED_QNN_DIR}/include/"* "${QNN_3RD_PARTY}/include/"
+            echo "=== Copying QNN headers from include root ==="
+            cp -rv "${EXTRACTED_QNN_DIR}/include/"* "${QNN_3RD_PARTY}/include/"
           fi
+          echo "=== Debug: Copied headers ==="
+          find "${QNN_3RD_PARTY}/include" -type f -name "*.h" | head -20
 
           # Determine lib source dir (jniLibs or lib)
           SOURCE_LIBS="${EXTRACTED_QNN_DIR}/jniLibs"
