@@ -531,8 +531,9 @@ IF (NOT MNN_SKIPBUILD_GEOMETRY)
 ENDIF()
 
 # Utils
-FILE(GLOB MNN_Utils_SRC ${CMAKE_CURRENT_LIST_DIR}/source/utils/*)
+SET(MNN_Utils_SRC ${CMAKE_CURRENT_LIST_DIR}/apps/frameworks/sherpa-mnn/sherpa-mnn/csrc/MNNUtils.cc ${CMAKE_CURRENT_LIST_DIR}/source/utils/InitNet.cpp ${CMAKE_CURRENT_LIST_DIR}/source/utils/JNIHelper.cpp ${CMAKE_CURRENT_LIST_DIR}/source/utils/JNIHelper.hpp)
 add_library(MNNUtils STATIC ${MNN_Utils_SRC})
+target_include_directories(MNNUtils PUBLIC ${CMAKE_CURRENT_LIST_DIR}/apps/frameworks/sherpa-mnn)
 list(APPEND MNN_STATIC_LIBS MNNUtils)
 list(APPEND MNN_TARGETS MNNUtils)
 mnn_apply_build_flags(MNNUtils)

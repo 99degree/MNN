@@ -43,7 +43,8 @@ IF(MNN_BUILD_CONVERTER)
      target_link_libraries(MNNConvertDeps PRIVATE MNNUtils)
      add_dependencies(MNNConvertDeps MNN)
   ELSE()
-    add_library(MNNConvertDeps STATIC ${COMMON_SRC} ${MNN_CONVERTER_BACKENDS_OBJECTS} ${CMAKE_CURRENT_LIST_DIR}/../../3rd_party/flatbuffers/src/util.cpp MNNUtils)
+    add_library(MNNConvertDeps STATIC ${COMMON_SRC} ${MNN_CONVERTER_BACKENDS_OBJECTS} ${CMAKE_CURRENT_LIST_DIR}/../../3rd_party/flatbuffers/src/util.cpp)
+target_link_libraries(MNNConvertDeps PUBLIC MNNUtils)
   ENDIF()
   
   
