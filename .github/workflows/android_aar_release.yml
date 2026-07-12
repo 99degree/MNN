@@ -134,6 +134,7 @@ jobs:
       # ============================================================
       - name: Download and setup QNN SDK
         run: |
+          set -x
           echo "Downloading QNN SDK from ${QNN_LIBS_URL}..."
           mkdir -p build_qnn_temp
           QNN_ZIP="build_qnn_temp/qnn_sdk.zip"
@@ -144,6 +145,9 @@ jobs:
           mkdir -p "${QNN_TMP}"
           unzip -q "${QNN_ZIP}" -d "${QNN_TMP}"
 
+          echo "=== Debug: Listing extracted contents ==="
+          find "${QNN_TMP}" -type f -name "*.h" | head -20
+
           # Find the include directory (handles nested top-level dir)
           INCLUDE_DIR=$(find "${QNN_TMP}" -type d -name "include" ! -path "*/__MACOSX/*" | head -1)
           if [ -z "${INCLUDE_DIR}" ]; then
@@ -152,6 +156,10 @@ jobs:
           fi
           EXTRACTED_QNN_DIR=$(dirname "${INCLUDE_DIR}")
           echo "QNN SDK extracted to: ${EXTRACTED_QNN_DIR}"
+
+          echo "=== Debug: Found include dir: ${INCLUDE_DIR} ==="
+          echo "=== Debug: QNN directory structure ==="
+          find "${EXTRACTED_QNN_DIR}/include" -type f -name "*.h" | head -20
 
           # Copy to 3rdParty directory (as expected by MNN's cmake)
           QNN_3RD_PARTY="source/backend/qnn/3rdParty"
@@ -222,9 +230,18 @@ jobs:
             -DMNN_BUILD_TOOLS=OFF \
             -DMNN_BUILD_DEMO=OFF \
             -DNATIVE_LIBRARY_OUTPUT=. \
-            -DNATIVE_INCLUDE_OUTPUT=.
+            -DNATIVE_INCLUDE_OUTPUT=. \
+            --verbose
 
-          make -j$(nproc)
+          # Use ninja if available, otherwise fall back to make
+          if command -v ninja >/dev/null 2>&1; then
+            echo "Using ninja for faster build..."
+            cmake ../../ -G Ninja
+            ninja -v
+          else
+            echo "Using make..."
+            make -j$(nproc) VERBOSE=1
+          fi
 
       # ========== Build armeabi-v7a with all backends ==========
       - name: Build native libs (armeabi-v7a)
@@ -266,9 +283,18 @@ jobs:
             -DMNN_BUILD_TOOLS=OFF \
             -DMNN_BUILD_DEMO=OFF \
             -DNATIVE_LIBRARY_OUTPUT=. \
-            -DNATIVE_INCLUDE_OUTPUT=.
+            -DNATIVE_INCLUDE_OUTPUT=. \
+            --verbose
 
-          make -j$(nproc)
+          # Use ninja if available, otherwise fall back to make
+          if command -v ninja >/dev/null 2>&1; then
+            echo "Using ninja for faster build..."
+            cmake ../../ -G Ninja
+            ninja -v
+          else
+            echo "Using make..."
+            make -j$(nproc) VERBOSE=1
+          fi
 
       # ========== Collect and package AAR ==========
       - name: Package AAR
