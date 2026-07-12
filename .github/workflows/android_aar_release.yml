@@ -230,8 +230,7 @@ jobs:
             -DMNN_BUILD_TOOLS=OFF \
             -DMNN_BUILD_DEMO=OFF \
             -DNATIVE_LIBRARY_OUTPUT=. \
-            -DNATIVE_INCLUDE_OUTPUT=. \
-            --verbose
+            -DNATIVE_INCLUDE_OUTPUT=.
 
           # Use ninja if available, otherwise fall back to make
           if command -v ninja >/dev/null 2>&1; then
@@ -284,7 +283,6 @@ jobs:
             -DMNN_BUILD_DEMO=OFF \
             -DNATIVE_LIBRARY_OUTPUT=. \
             -DNATIVE_INCLUDE_OUTPUT=. \
-            --verbose
 
           # Use ninja if available, otherwise fall back to make
           if command -v ninja >/dev/null 2>&1; then
