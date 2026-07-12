@@ -190,6 +190,15 @@ jobs:
             exit 1
           fi
 
+          # Copy headers to 3rdParty include directory
+          if [ -d "${EXTRACTED_QNN_DIR}/include/QNN" ]; then
+            echo "=== Copying QNN headers from QNN subdirectory ==="
+            cp -rv "${EXTRACTED_QNN_DIR}/include/QNN/"* "${QNN_3RD_PARTY}/include/"
+          else
+            echo "=== Copying QNN headers from include root ==="
+            cp -rv "${EXTRACTED_QNN_DIR}/include/"* "${QNN_3RD_PARTY}/include/"
+          fi
+
           echo "=== Debug: Copied headers ==="
           find "${QNN_3RD_PARTY}/include" -type f -name "*.h" | head -20
 
