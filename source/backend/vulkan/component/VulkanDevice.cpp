@@ -877,3 +877,4 @@ void VulkanDevice::checkInt8(const std::vector<VkExtensionProperties>& available
 }
 
 } // namespace MNN
+// CI test Mon Jul 13 03:50:23 HKT 2026
