@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       AAR_NAME: MNN-Android
-      QNN_LIBS_URL: http://meta.alicdn.com/data/mnn/libs/qnn_inc_libs_2_37.zip
+      QNN_LIBS_URL: https://meta.alicdn.com/data/mnn/libs/qnn_inc_libs_2_37.zip
     steps:
       - name: Checkout
         uses: actions/checkout@v4
