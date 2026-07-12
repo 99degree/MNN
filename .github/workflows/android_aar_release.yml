@@ -172,8 +172,8 @@ jobs:
 
           # Compute absolute path and export
           QNN_SDK_ROOT_PATH="$(cd "${QNN_3RD_PARTY}" && pwd)"
-          echo "QNN_SDK_ROOT=${QNN_SDK_ROOT}" >> $GITHUB_ENV
-          echo "QNN SDK root set to: ${QNN_SDK_ROOT}"
+          echo "QNN_SDK_ROOT=${QNN_SDK_ROOT_PATH}" >> $GITHUB_ENV
+          echo "QNN SDK root set to: ${QNN_SDK_ROOT_PATH}"
 
           echo "=== QNN 3rdParty structure ==="
           find "${QNN_3RD_PARTY}" -type f | head -20
@@ -198,7 +198,7 @@ jobs:
             -DMNN_ARM82=ON \
             -DMNN_NNAPI=ON \
             -DMNN_QNN=ON \
-            -DQNN_SDK_ROOT=$QNN_SDK_ROOT \
+            -DQNN_SDK_ROOT=$QNN_SDK_ROOT_PATH \
             -DMNN_JNI=ON \
             -DMNN_BUILD_OPENCV=ON \
             -DMNN_IMGCODECS=ON \
@@ -242,7 +242,7 @@ jobs:
             -DMNN_ARM82=OFF \
             -DMNN_NNAPI=ON \
             -DMNN_QNN=ON \
-            -DQNN_SDK_ROOT=$QNN_SDK_ROOT \
+            -DQNN_SDK_ROOT=$QNN_SDK_ROOT_PATH \
             -DMNN_JNI=ON \
             -DMNN_BUILD_OPENCV=ON \
             -DMNN_IMGCODECS=ON \
