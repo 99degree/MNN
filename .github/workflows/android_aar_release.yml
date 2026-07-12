@@ -138,12 +138,29 @@ jobs:
           echo "Downloading QNN SDK from ${QNN_LIBS_URL}..."
           mkdir -p $HOME/build_qnn_temp
           QNN_ZIP="$HOME/build_qnn_temp/qnn_sdk.zip"
-          curl -fL --retry 3 --retry-delay 2 -o "${QNN_ZIP}" "${QNN_LIBS_URL}"
+          # Retry download up to 5 times with exponential backoff
+          for i in 1 2 3 4 5; do
+            echo "Download attempt $i/5..."
+            if curl -fL --retry 3 --retry-delay 5 -o "${QNN_ZIP}" "${QNN_LIBS_URL}"; then
+              echo "Download successful"
+              break
+            else
+              echo "Download attempt $i failed, retrying in 10 seconds..."
+              sleep 10
+            fi
+            if [ $i -eq 5 ]; then
+              echo "ERROR: Failed to download QNN SDK after 5 attempts"
+              exit 1
+            fi
+          done
 
           echo "Extracting QNN SDK..."
           QNN_TMP="$HOME/build_qnn_temp/extracted"
           mkdir -p "${QNN_TMP}"
           unzip -q "${QNN_ZIP}" -d "${QNN_TMP}"
+
+          # Sync to ensure files are written to disk
+          sync
 
           echo "=== Debug: Listing extracted contents ==="
           find "${QNN_TMP}" -type f -name "*.h" | head -20
@@ -152,6 +169,8 @@ jobs:
           INCLUDE_DIR=$(find "${QNN_TMP}" -type d -name "include" ! -path "*/__MACOSX/*" | head -1)
           if [ -z "${INCLUDE_DIR}" ]; then
             echo "ERROR: Failed to find 'include' directory in QNN SDK archive"
+            echo "=== Debug: Full extracted structure ==="
+            find "${QNN_TMP}" -type f | head -50
             exit 1
           fi
           EXTRACTED_QNN_DIR=$(dirname "${INCLUDE_DIR}")
@@ -161,17 +180,12 @@ jobs:
           echo "=== Debug: QNN directory structure ==="
           find "${EXTRACTED_QNN_DIR}/include" -type f -name "*.h" | head -20
 
-          # Copy to 3rdParty directory (as expected by MNN's cmake)
-          QNN_3RD_PARTY="source/backend/qnn/3rdParty"
-          mkdir -p "${QNN_3RD_PARTY}/include"
-          mkdir -p "${QNN_3RD_PARTY}/lib"
-          if [ -d "${EXTRACTED_QNN_DIR}/include/QNN" ]; then
-            echo "=== Copying QNN headers from QNN subdirectory ==="
-            cp -rv "${EXTRACTED_QNN_DIR}/include/QNN/"* "${QNN_3RD_PARTY}/include/"
-          else
-            echo "=== Copying QNN headers from include root ==="
-            cp -rv "${EXTRACTED_QNN_DIR}/include/"* "${QNN_3RD_PARTY}/include/"
+          # Verify QnnInterface.h exists
+          if [ ! -f "${EXTRACTED_QNN_DIR}/include/QNN/QnnInterface.h" ] && [ ! -f "${EXTRACTED_QNN_DIR}/include/QnnInterface.h" ]; then
+            echo "ERROR: QnnInterface.h not found in extracted SDK"
+            exit 1
           fi
+
           echo "=== Debug: Copied headers ==="
           find "${QNN_3RD_PARTY}/include" -type f -name "*.h" | head -20
 
