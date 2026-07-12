@@ -10,6 +10,7 @@
 #define VulkanDevice_hpp
 
 #include <memory>
+#include <mutex>
 #include <vector>
 #include "core/NonCopyable.hpp"
 #include "backend/vulkan/component/VulkanInstance.hpp"
