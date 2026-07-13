@@ -419,6 +419,9 @@ jobs:
           cp -v build_android/arm64-v8a/source/backend/vulkan/libMNN_Vulkan.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No libMNN_Vulkan.so"
           cp -v build_android/arm64-v8a/source/backend/opencl/libMNN_CL.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No libMNN_CL.so"
           cp -v build_android/arm64-v8a/source/backend/opengl/libMNN_GL.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No libMNN_GL.so"
+          cp -v build_android/arm64-v8a/tools/converter/libMNNConvertDeps.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No libMNNConvertDeps.so"
+          cp -v build_android/arm64-v8a/tools/converter/mnnconvert ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No mnnconvert binary"
+          cp -v build_android/arm64-v8a/tools/converter/convertToStaticModel ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No convertToStaticModel binary"
 
           # QNN SDK runtime libraries (Qualcomm Hexagon DSP etc.)
           QNN_LIB_DIR="source/backend/qnn/3rdParty/lib"
