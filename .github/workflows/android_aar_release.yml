@@ -446,6 +446,8 @@ jobs:
           cp -v build_android/armeabi-v7a/tools/audio/libMNNAudio.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No libMNNAudio.so"
           cp -v build_android/armeabi-v7a/source/backend/qnn/libMNN_QNN.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No libMNN_QNN.so"
           cp -v build_android/armeabi-v7a/source/backend/vulkan/libMNN_Vulkan.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No libMNN_Vulkan.so"
+          cp -v build_android/armeabi-v7a/source/backend/opencl/libMNN_CL.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No libMNN_CL.so"
+          cp -v build_android/armeabi-v7a/tools/converter/libMNNConvertDeps.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No libMNNConvertDeps.so"
 
           if [ -d "${QNN_LIB_DIR}/armeabi-v7a" ]; then
             cp -v ${QNN_LIB_DIR}/armeabi-v7a/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No QNN SDK armv7 libs"
