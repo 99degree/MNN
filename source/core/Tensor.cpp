@@ -169,56 +169,27 @@ Tensor* Tensor::clone(const Tensor* src, bool deepCopy) {
 
 
 bool Tensor::copyFromHostTensor(const Tensor* hostTensor) {
-    auto* src = hostTensor->buffer().host;
-    auto* dst = buffer().host;
-    if (dst && src) {
-        // Both have host memory, do direct copy
-        ::memcpy(dst, src, size());
-        return true;
-    }
-    if (!src) return false;
-    if (!dst) {
-        // GPU tensor - copy via backend
-        auto des = TensorUtils::getDescribeOrigin(this);
-        if (des && des->getBackend()) {
-            des->getBackend()->onCopyBuffer(hostTensor, this);
-            return true;
-        }
+    auto bn = mDescribe->getBackend();
+    if (nullptr == bn) {
         return false;
     }
-    ::memcpy(dst, src, size());
+    auto hostbn = hostTensor->mDescribe->getBackend();
+    std::shared_ptr<Tensor> tmpTensor;
+    if (nullptr != hostbn && hostbn->type() != bn->type() && hostbn->type() != MNN_FORWARD_CPU) {
+        tmpTensor.reset(new Tensor(hostTensor, hostTensor->getDimensionType()));
+        hostTensor->copyToHostTensor(tmpTensor.get());
+        hostTensor = tmpTensor.get();
+    }
+    bn->onCopyBuffer(hostTensor, this);
     return true;
 }
 
 bool Tensor::copyToHostTensor(Tensor* hostTensor) const {
-    auto* src = buffer().host;
-    auto* dst = hostTensor->buffer().host;
-    if (dst && src) {
-        // Both have host memory, do direct copy
-        ::memcpy(dst, src, size());
-        return true;
-    }
-    // Allocate host memory if dst is null
-    if (!dst) {
-        size_t sizeBytes = hostTensor->size();
-        dst = (uint8_t*)MNNMemoryAllocAlign(sizeBytes, MNN_MEMORY_ALIGN_DEFAULT);
-        if (!dst) return false;
-        hostTensor->buffer().host = dst;
-        // Mark as own memory with a custom flag (bit 2)
-        hostTensor->buffer().flags |= 4;
-    }
-    if (!src) {
-        // GPU tensor - copy via backend
-        auto des = TensorUtils::getDescribeOrigin(this);
-        if (des && des->getBackend()) {
-            auto* be = des->getBackend();
-            be->onCopyBuffer(this, hostTensor);
-            return true;
-        }
-        // No backend - can't copy
+    auto bn = mDescribe->getBackend();
+    if (nullptr == bn) {
         return false;
     }
-    ::memcpy(dst, src, size());
+    bn->onCopyBuffer(this, hostTensor);
     return true;
 }
 

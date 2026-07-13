@@ -591,9 +591,6 @@ static ErrorCode _createExecutions(Schedule::PipelineInfo& mInfo, const std::str
                     if (mInfo.first.reportError) {
                         MNN_ERROR("Create execution error : %d\n", iter.op->type());
                     }
-                    fprintf(stderr, "[TRACE] NOT_SUPPORT @ _createExecutions: op_type=%d name=%s\n",
-                        iter.op->type(),
-                        iter.op->name() ? iter.op->name()->c_str() : "?");
                     return NOT_SUPPORT;
                 }
             }
@@ -1242,22 +1239,10 @@ ErrorCode Pipeline::executeCallBack(const TensorCallBackWithInfo& before, const 
             auto cmdP = buffer.command[cmdIndex];
             auto& cmd = *cmdP;
             if (nullptr == cmd.info.get()) {
-                // Lightweight fallback: construct a temporary UnitInfo on-the-fly
-                // so callbacks work even when pipeline was encoded in release mode.
-                UnitInfo tmpInfo;
-                tmpInfo.setUp(cmd, 0, info.op, 0);
-                auto run = before(cmd.workInputs, &tmpInfo);
-                if (run) {
-                    auto code = cmd.execution->onExecute(cmd.workInputs, cmd.workOutputs);
-                    if (NO_ERROR != code) {
-                        _exitExecute();
-                        return code;
-                    }
-                }
-                auto stop = !(after(cmd.workOutputs, &tmpInfo));
-                if (stop) {
+                auto code = cmd.execution->onExecute(cmd.workInputs, cmd.workOutputs);
+                if (NO_ERROR != code) {
                     _exitExecute();
-                    return CALL_BACK_STOP;
+                    return code;
                 }
                 continue;
             }
