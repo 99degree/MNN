@@ -512,7 +512,8 @@ jobs:
           name: arm64-v8a-libs
           path: build_android/arm64-v8a
 
-      - name: Create AAR structure
+      - name: package_aar
+        id: package_aar
         env:
           AAR_DIR: aar_build
           AAR_NAME: MNN-Android
