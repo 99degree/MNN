@@ -487,6 +487,32 @@ jobs:
           echo "=== armeabi-v7a contents ==="
           ls -lh ${AAR_DIR}/jni/armeabi-v7a/
 
+      # ========== Upload armv7 artifacts ==========
+      - name: Upload armeabi-v7a artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: armeabi-v7a-libs
+          path: |
+            build_android/armeabi-v7a/*.so
+            build_android/armeabi-v7a/source/jni/*.so
+            build_android/armeabi-v7a/tools/cv/*.so
+            build_android/armeabi-v7a/tools/audio/*.so
+            build_android/armeabi-v7a/source/backend/qnn/*.so
+            build_android/armeabi-v7a/source/backend/vulkan/*.so
+            build_android/armeabi-v7a/source/backend/opencl/*.so
+            build_android/armeabi-v7a/source/backend/opengl/*.so
+            build_android/armeabi-v7a/tools/converter/*.so
+            build_android/armeabi-v7a/tools/converter/mnnconvert
+            build_android/armeabi-v7a/tools/converter/convertToStaticModel
+          retention-days: 7
+
+      # ========== Download arm64 artifacts ==========
+      - name: Download arm64-v8a artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: arm64-v8a-libs
+          path: build_android/arm64-v8a
+
           # -------- Create AAR structure --------
           # AndroidManifest.xml (required for AAR)
           cat > ${AAR_DIR}/AndroidManifest.xml << 'EOF'
