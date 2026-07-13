@@ -190,13 +190,14 @@ jobs:
             exit 1
           fi
 
-          # Copy headers to 3rdParty include directory
+          # Copy headers to 3rdParty include/QNN/ directory (CMake expects include/QNN/)
+          mkdir -p "${QNN_3RD_PARTY}/include/QNN"
           if [ -d "${EXTRACTED_QNN_DIR}/include/QNN" ]; then
             echo "=== Copying QNN headers from QNN subdirectory ==="
-            cp -rv "${EXTRACTED_QNN_DIR}/include/QNN/"* "${QNN_3RD_PARTY}/include/"
+            cp -rv "${EXTRACTED_QNN_DIR}/include/QNN/"* "${QNN_3RD_PARTY}/include/QNN/"
           else
             echo "=== Copying QNN headers from include root ==="
-            cp -rv "${EXTRACTED_QNN_DIR}/include/"* "${QNN_3RD_PARTY}/include/"
+            cp -rv "${EXTRACTED_QNN_DIR}/include/"* "${QNN_3RD_PARTY}/include/QNN/"
           fi
 
           echo "=== Debug: Copied headers ==="
