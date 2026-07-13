@@ -23,7 +23,7 @@ if (MNN_SEP_BUILD)
     endif()
     list(APPEND MNN_DEPS diffusion)
 else()
-    add_library(diffusion OBJECT ${SRCS})
+    add_library(diffusion STATIC ${SRCS})
 endif()
 
 if (MNN_BUILD_LLM)
