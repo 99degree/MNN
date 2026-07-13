@@ -26,7 +26,7 @@
 #include "caffeConverter.hpp"
 #include "liteConverter.hpp"
 #include "onnxConverter.hpp"
-#include "onnxOpConverter.hpp"
+#include "../onnx/onnxOpConverter.hpp"
 #include "tensorflowConverter.hpp"
 #include "torchConverter.hpp"
 #include "writeFb.hpp"
