@@ -311,6 +311,25 @@ jobs:
             make -j$(nproc) VERBOSE=1
           fi
 
+      # ========== Upload arm64 artifacts ==========
+      - name: Upload arm64-v8a artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: arm64-v8a-libs
+          path: |
+            build_android/arm64-v8a/*.so
+            build_android/arm64-v8a/source/jni/*.so
+            build_android/arm64-v8a/tools/cv/*.so
+            build_android/arm64-v8a/tools/audio/*.so
+            build_android/arm64-v8a/source/backend/qnn/*.so
+            build_android/arm64-v8a/source/backend/vulkan/*.so
+            build_android/arm64-v8a/source/backend/opencl/*.so
+            build_android/arm64-v8a/source/backend/opengl/*.so
+            build_android/arm64-v8a/tools/converter/*.so
+            build_android/arm64-v8a/tools/converter/mnnconvert
+            build_android/arm64-v8a/tools/converter/convertToStaticModel
+          retention-days: 7
+
       # ========== Build armeabi-v7a with all backends ==========
       - name: Build native libs (armeabi-v7a)
         run: |
