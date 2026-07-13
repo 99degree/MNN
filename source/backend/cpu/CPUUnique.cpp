@@ -6,7 +6,7 @@
 //  Copyright © 2018 Alibaba. All rights reserved.
 //
 
-#include <map>
+#include <unordered_map>
 #include "backend/cpu/CPUUnique.hpp"
 namespace MNN {
 
@@ -17,14 +17,13 @@ ErrorCode CPUUnique::onExecute(const std::vector<Tensor*>& inputs, const std::ve
     int outputSize = 0;
     auto eleSize = input->elementSize();
     if (outputs.size() <= 2) {
-        std::map<int, int> idx_map;
+        std::unordered_map<int, int> idx_map;
         for (int i = 0; i < eleSize; ++i) {
             auto value = input->host<int32_t>()[i];
-            idx_map[value];
-        }
-        for (auto& kv : idx_map) {
-            kv.second = outputSize;
-            outputPtr[outputSize++] = kv.first;
+            if (idx_map.find(value) == idx_map.end()) {
+                outputPtr[outputSize] = value;
+                idx_map[value] = outputSize++;
+            }
         }
         if (outputs.size() > 1) {
             auto outIdx = outputs[1]->host<int>();
@@ -42,23 +41,20 @@ ErrorCode CPUUnique::onExecute(const std::vector<Tensor*>& inputs, const std::ve
             count = outputs[3]->host<int>();
             ::memset(count, 0, outputs[3]->usize());
         }
-        std::map<int, int> idx_map;
+        std::unordered_map<int, int> idx_map;
         for (int i = 0; i < eleSize; ++i) {
             auto value = input->host<int32_t>()[i];
-            idx_map[value];
-        }
-        for (auto& kv : idx_map) {
-            outIdx[outputSize] = -1;
-            kv.second = outputSize;
-            outputPtr[outputSize++] = kv.first;
-        }
-        for (int i = 0; i < eleSize; ++i) {
-            auto value = input->host<int32_t>()[i];
-            int pos = idx_map[value];
-            reverseIdx[i] = pos;
-            if (outIdx[pos] < 0) {
-                outIdx[pos] = i;
+            auto iter = idx_map.find(value);
+            int pos;
+            if (iter == idx_map.end()) {
+                outputPtr[outputSize] = value;
+                outIdx[outputSize] = i;
+                pos = outputSize;
+                idx_map[value] = outputSize++;
+            } else {
+                pos = iter->second;
             }
+            reverseIdx[i] = pos;
             if (nullptr != count) {
                 count[pos]++;
             }

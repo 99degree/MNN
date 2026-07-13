@@ -21,6 +21,13 @@
 #include <set>
 using namespace MNN::Express;
 using namespace MNN;
+
+// Also print to console (not just logcat) for terminal use
+#undef MNN_PRINT
+#undef MNN_ERROR
+#define MNN_PRINT(format, ...) do { fprintf(stdout, format, ##__VA_ARGS__); __android_log_print(ANDROID_LOG_INFO, "MNNJNI", format, ##__VA_ARGS__); } while(0)
+#define MNN_ERROR(format, ...) do { fprintf(stderr, format, ##__VA_ARGS__); __android_log_print(ANDROID_LOG_ERROR, "MNNJNI", format, ##__VA_ARGS__); } while(0)
+
 static std::string _getDataType(const halide_type_t& type) {
     switch (type.code) {
         case halide_type_float:

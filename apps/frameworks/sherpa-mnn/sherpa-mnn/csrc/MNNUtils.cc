@@ -98,7 +98,7 @@ MNN::Express::VARP View(MNN::Express::VARP v) {
 float ComputeSum(MNN::Express::VARP v, int32_t n /*= -1*/) {
   std::vector<int> shape = v->getInfo()->dim;
   auto size = static_cast<int32_t>(
-      std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<>()));
+      std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int>()));
   if (n != -1 && n < size && n > 0) {
     size = n;
   }
@@ -111,7 +111,7 @@ float ComputeSum(MNN::Express::VARP v, int32_t n /*= -1*/) {
 float ComputeMean(MNN::Express::VARP v, int32_t n /*= -1*/) {
   std::vector<int> shape = v->getInfo()->dim;
   auto size = static_cast<int32_t>(
-      std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<>()));
+      std::accumulate(shape.begin(), shape.end(), 1, std::multiplies<int>()));
 
   if (n != -1 && n < size && n > 0) {
     size = n;
