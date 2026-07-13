@@ -260,20 +260,20 @@ jobs:
             -DMNN_JNI=ON \
             -DMNN_BUILD_OPENCV=ON \
             -DMNN_IMGCODECS=ON \
-            -DMNN_BUILD_LLM=ON \
+            -DMNN_BUILD_LLM=OFF \
             -DMNN_SUPPORT_TRANSFORMER_FUSE=ON \
             -DMNN_LOW_MEMORY=ON \
             -DMNN_SUPPORT_BF16=ON \
             -DMNN_BUILD_AUDIO=ON \
-            -DMNN_BUILD_DIFFUSION=ON \
-            -DLLM_SUPPORT_VISION=ON \
-            -DLLM_SUPPORT_AUDIO=ON \
+            -DMNN_BUILD_DIFFUSION=OFF \
+            -DLLM_SUPPORT_VISION=OFF \
+            -DLLM_SUPPORT_AUDIO=OFF \
             -DMNN_BUILD_FOR_ANDROID_COMMAND=ON \
-            -DMNN_SEP_BUILD=OFF \
+            -DMNN_SEP_BUILD=ON \
             -DMNN_BUILD_SHARED_LIBS=ON \
             -DMNN_BUILD_BENCHMARK=OFF \
             -DMNN_BUILD_TEST=OFF \
-            -DMNN_BUILD_TOOLS=OFF \
+            -DMNN_BUILD_TOOLS=ON \
             -DMNN_BUILD_DEMO=OFF \
             -DNATIVE_LIBRARY_OUTPUT=. \
             -DNATIVE_INCLUDE_OUTPUT=. \
@@ -300,20 +300,20 @@ jobs:
             -DMNN_JNI=ON \
             -DMNN_BUILD_OPENCV=ON \
             -DMNN_IMGCODECS=ON \
-            -DMNN_BUILD_LLM=ON \
+            -DMNN_BUILD_LLM=OFF \
             -DMNN_SUPPORT_TRANSFORMER_FUSE=ON \
             -DMNN_LOW_MEMORY=ON \
             -DMNN_SUPPORT_BF16=ON \
             -DMNN_BUILD_AUDIO=ON \
-            -DMNN_BUILD_DIFFUSION=ON \
-            -DLLM_SUPPORT_VISION=ON \
-            -DLLM_SUPPORT_AUDIO=ON \
+            -DMNN_BUILD_DIFFUSION=OFF \
+            -DLLM_SUPPORT_VISION=OFF \
+            -DLLM_SUPPORT_AUDIO=OFF \
             -DMNN_BUILD_FOR_ANDROID_COMMAND=ON \
-            -DMNN_SEP_BUILD=OFF \
+            -DMNN_SEP_BUILD=ON \
             -DMNN_BUILD_SHARED_LIBS=ON \
             -DMNN_BUILD_BENCHMARK=OFF \
             -DMNN_BUILD_TEST=OFF \
-            -DMNN_BUILD_TOOLS=OFF \
+            -DMNN_BUILD_TOOLS=ON \
             -DMNN_BUILD_DEMO=OFF \
             -DNATIVE_LIBRARY_OUTPUT=. \
             -DNATIVE_INCLUDE_OUTPUT=. \
@@ -368,20 +368,20 @@ jobs:
             -DMNN_JNI=ON \
             -DMNN_BUILD_OPENCV=ON \
             -DMNN_IMGCODECS=ON \
-            -DMNN_BUILD_LLM=ON \
+            -DMNN_BUILD_LLM=OFF \
             -DMNN_SUPPORT_TRANSFORMER_FUSE=ON \
             -DMNN_LOW_MEMORY=ON \
             -DMNN_SUPPORT_BF16=ON \
             -DMNN_BUILD_AUDIO=ON \
-            -DMNN_BUILD_DIFFUSION=ON \
-            -DLLM_SUPPORT_VISION=ON \
-            -DLLM_SUPPORT_AUDIO=ON \
+            -DMNN_BUILD_DIFFUSION=OFF \
+            -DLLM_SUPPORT_VISION=OFF \
+            -DLLM_SUPPORT_AUDIO=OFF \
             -DMNN_BUILD_FOR_ANDROID_COMMAND=ON \
-            -DMNN_SEP_BUILD=OFF \
+            -DMNN_SEP_BUILD=ON \
             -DMNN_BUILD_SHARED_LIBS=ON \
             -DMNN_BUILD_BENCHMARK=OFF \
             -DMNN_BUILD_TEST=OFF \
-            -DMNN_BUILD_TOOLS=OFF \
+            -DMNN_BUILD_TOOLS=ON \
             -DMNN_BUILD_DEMO=OFF \
             -DNATIVE_LIBRARY_OUTPUT=. \
             -DNATIVE_INCLUDE_OUTPUT=. \
@@ -408,90 +408,26 @@ jobs:
             -DMNN_JNI=ON \
             -DMNN_BUILD_OPENCV=ON \
             -DMNN_IMGCODECS=ON \
-            -DMNN_BUILD_LLM=ON \
+            -DMNN_BUILD_LLM=OFF \
             -DMNN_SUPPORT_TRANSFORMER_FUSE=ON \
             -DMNN_LOW_MEMORY=ON \
             -DMNN_SUPPORT_BF16=ON \
             -DMNN_BUILD_AUDIO=ON \
-            -DMNN_BUILD_DIFFUSION=ON \
-            -DLLM_SUPPORT_VISION=ON \
-            -DLLM_SUPPORT_AUDIO=ON \
+            -DMNN_BUILD_DIFFUSION=OFF \
+            -DLLM_SUPPORT_VISION=OFF \
+            -DLLM_SUPPORT_AUDIO=OFF \
             -DMNN_BUILD_FOR_ANDROID_COMMAND=ON \
-            -DMNN_SEP_BUILD=OFF \
+            -DMNN_SEP_BUILD=ON \
             -DMNN_BUILD_SHARED_LIBS=ON \
             -DMNN_BUILD_BENCHMARK=OFF \
             -DMNN_BUILD_TEST=OFF \
-            -DMNN_BUILD_TOOLS=OFF \
+            -DMNN_BUILD_TOOLS=ON \
             -DMNN_BUILD_DEMO=OFF \
             -DNATIVE_LIBRARY_OUTPUT=. \
             -DNATIVE_INCLUDE_OUTPUT=. \
             -DCMAKE_VERBOSE_MAKEFILE=ON
 
             make -j$(nproc) VERBOSE=1
-          fi
-
-      # ========== Collect and package AAR ==========
-      # (handled by package_aar step after armv7 build)
-
-          # -------- Collect arm64-v8a .so files --------
-          echo "=== Collecting arm64-v8a native libs ==="
-          cp -v build_android/arm64-v8a/libMNN.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No libMNN.so"
-          cp -v build_android/arm64-v8a/source/jni/libmnncore.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No JNI libmnncore.so"
-          cp -v build_android/arm64-v8a/tools/cv/libMNNOpenCV.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No libMNNOpenCV.so"
-          cp -v build_android/arm64-v8a/tools/audio/libMNNAudio.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No libMNNAudio.so"
-          cp -v build_android/arm64-v8a/source/backend/qnn/libMNN_QNN.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No libMNN_QNN.so"
-          cp -v build_android/arm64-v8a/source/backend/vulkan/libMNN_Vulkan.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No libMNN_Vulkan.so"
-          cp -v build_android/arm64-v8a/source/backend/opencl/libMNN_CL.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No libMNN_CL.so"
-          cp -v build_android/arm64-v8a/source/backend/opengl/libMNN_GL.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No libMNN_GL.so"
-          cp -v build_android/arm64-v8a/tools/converter/libMNNConvertDeps.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No libMNNConvertDeps.so"
-          cp -v build_android/arm64-v8a/tools/converter/mnnconvert ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No mnnconvert binary"
-          cp -v build_android/arm64-v8a/tools/converter/convertToStaticModel ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No convertToStaticModel binary"
-
-          # QNN SDK runtime libraries (Qualcomm Hexagon DSP etc.)
-          QNN_LIB_DIR="source/backend/qnn/3rdParty/lib"
-          if [ -d "${QNN_LIB_DIR}/arm64-v8a" ]; then
-            cp -v ${QNN_LIB_DIR}/arm64-v8a/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No QNN SDK arm64 libs"
-          fi
-
-          # libc++_shared from NDK
-          LIBC_64=$(find $ANDROID_NDK -name "libc++_shared.so" | grep "aarch64-linux-android" | head -1)
-          if [ -n "$LIBC_64" ]; then
-            cp -v "$LIBC_64" ${AAR_DIR}/jni/arm64-v8a/
-          else
-            echo "WARNING: libc++_shared not found for arm64"
-          fi
-
-          # -------- Collect armeabi-v7a .so files --------
-          echo "=== Collecting armeabi-v7a native libs ==="
-
-          cp -v build_android/armeabi-v7a/libMNN.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No libMNN.so"
-          cp -v build_android/armeabi-v7a/source/jni/libmnncore.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No JNI libmnncore.so"
-          cp -v build_android/armeabi-v7a/tools/cv/libMNNOpenCV.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No libMNNOpenCV.so"
-          cp -v build_android/armeabi-v7a/tools/audio/libMNNAudio.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No libMNNAudio.so"
-          cp -v build_android/armeabi-v7a/source/backend/qnn/libMNN_QNN.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No libMNN_QNN.so"
-          cp -v build_android/armeabi-v7a/source/backend/vulkan/libMNN_Vulkan.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No libMNN_Vulkan.so"
-          cp -v build_android/armeabi-v7a/source/backend/opencl/libMNN_CL.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No libMNN_CL.so"
-          cp -v build_android/armeabi-v7a/tools/converter/libMNNConvertDeps.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No libMNNConvertDeps.so"
-
-          if [ -d "${QNN_LIB_DIR}/armeabi-v7a" ]; then
-            cp -v ${QNN_LIB_DIR}/armeabi-v7a/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No QNN SDK armv7 libs"
-          fi
-
-          LIBC_32=$(find $ANDROID_NDK -name "libc++_shared.so" | grep "arm-linux-androideabi" | head -1)
-          if [ -n "$LIBC_32" ]; then
-            cp -v "$LIBC_32" ${AAR_DIR}/jni/armeabi-v7a/
-          else
-            echo "WARNING: libc++_shared not found for arm32"
-          fi
-
-          # -------- Verify collected files --------
-          echo ""
-          echo "=== arm64-v8a contents ==="
-          ls -lh ${AAR_DIR}/jni/arm64-v8a/
-          echo ""
-          echo "=== armeabi-v7a contents ==="
-          ls -lh ${AAR_DIR}/jni/armeabi-v7a/
-
       # ========== Upload armv7 artifacts ==========
       - name: Upload armeabi-v7a artifacts
         uses: actions/upload-artifact@v4
@@ -598,12 +534,3 @@ jobs:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-# CI trigger
-# CI trigger
-# CI trigger
-# CI trigger
-# CI trigger
-# CI trigger
-# CI trigger
-# CI trigger
-# CI trigger
