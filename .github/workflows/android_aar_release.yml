@@ -36,6 +36,17 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Determine version
+        id: version
+        run: |
+          if [[ -n "${{ github.event.inputs.version }}" ]]; then
+            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          elif [[ -n "${GITHUB_REF##*/}" ]] && [[ "${GITHUB_REF##*/}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "VERSION=${GITHUB_REF##*/v}" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=3.5.1" >> $GITHUB_OUTPUT
+          fi
+
       # ============================================================
       # Android SDK & NDK Setup
       # ============================================================
