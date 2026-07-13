@@ -161,6 +161,54 @@ Base on MNN (Tensor compute engine), we provided a series of tools for inference
 - MNN-CV: An OpenCV-like library, but based on MNN and then much more lightweight.
 - MNN-Train: Support train MNN model.
 
+## Per‑Node Profiling Status
+
+| Capability | Status | Notes |
+|------------|--------|-------|
+| Aggregate info (MEMORY, FLOPS, THREADS) | ✅ Works (all models) | Via `getSessionInfo` / C‑API `MNN_GetSessionInfo` |
+| Per‑node callbacks – small model (1 op) | ✅ Works | Tested with `CallBackTest` (Identity) |
+| Per‑node callbacks – complex model | ❌ `COMPUTE_SIZE_ERROR` (3 / -103) | Returns after `Pipeline::encode(debug=true, …)` allocator failure |
+
+**Root cause**: `Pipeline::encode(debug=true, …)` creates a `UnitInfo` record for every operator. On large/complex ONNX-converted models the metadata allocation pressure triggers `DynamicAllocator::apply()` to flag `STATUS_ERROR_COMPUTE_SIZE`, which percolates up as `COMPUTE_SIZE_ERROR` (3 / -103). This is **not** caused by the profiling CMake flags (`-DMNN_PIPELINE_PROFILE`, `-DMNN_EXPR_ENABLE_PROFILER`) – it is a hard limitation of MNN's core debug‑encoding path (`Pipeline::encode` → `UnitInfo::setUp`).
+
+```
+Error chain (confirmed via Rust/C++ cross‑tests):
+  runSessionWithCallBackInfo
+  → Session::resize()          [debug=true]
+  → Pipeline::encode(true)     [creates UnitInfo for every op]
+  → allocMemory / _enterExecute
+  → DynamicAllocator::apply()  → STATUS_ERROR_COMPUTE_SIZE
+  → return COMPUTE_SIZE_ERROR  → caller sees -103
+```
+
+Simple models (≲ 100 ops) work because the allocator pressure stays below the threshold; complex ONNX-converted pipelines (thousands of ops with long names) exceed it.
+
+`runSession()` (non‑debug) does **not** enter the debug encoding path, so aggregate profiling works without issues on any model size.
+
+### Workarounds
+
+1. **Use aggregate profiling** – `getSessionInfo` returns total FLOPs, memory, thread count, and backend info. This is the recommended path. See `example_profiling.cpp`.
+2. **For small models** – `runSessionWithCallBackInfo` works when the operator count is low (< ~100 ops).
+3. **Source patch** – To fix for large models, modify MNN's core `Pipeline::encode` or adjust the allocator limits in the debug path, then rebuild from source.
+
+### 📦 Preparing for a Future Compatible MNN Build
+If you later obtain a version of `libMNN.so` that supports `runSessionWithCallBackInfo` in `Session_Debug` mode, you can easily replace the bundled library without rebuilding the entire project:
+
+1. Place the new `libMNN.so` anywhere on your filesystem.
+2. Run the helper script:
+   ```bash
+   ./replace_libMNN.sh /path/to/your/compatible/libMNN.so
+   ```
+   This copies the supplied library to `build_nodeprof/OFF/libMNN.so`, which is the location used by the profiling examples and the test suite.
+3. Re‑run any example or test; the new binary will be loaded via `LD_LIBRARY_PATH=build_nodeprof/OFF`.
+
+The script checks that the file exists and makes it executable. It provides a quick way to swap in a future compatible build while keeping the rest of the source unchanged.
+
+---
+### Vulkan Backend Support The repository now includes a pre‑built Vulkan‑enabled library (`build_vk/OFF/libMNN.so`). To build it yourself: ```bash cd /data/data/com.termux/files/home/MNN rm -rf build_vk && mkdir build_vk && cd build_vk cmake .. -DCMAKE_BUILD_TYPE=Release \\ -DMNN_VULKAN=ON \\ -DMNN_VULKAN_IMAGE=OFF \\ -DMNN_PIPELINE_PROFILE=ON \\ -DMNN_EXPR_ENABLE_PROFILER=ON \\ -DMNN_BUILD_SHARED_LIBS=ON \\ -DMNN_BUILD_TEST=OFF \\ -DMNN_SEP_BUILD=OFF make -j$(nproc) MNN ``` **Bundled Vulkan ICD & loader** For environments without a system Vulkan installation, the repo now includes: - `vulkan_icd/` – ICD JSON files + Vulkan loader library (`libvulkan.so`) + software rasterizer (`libvulkan_lvp.so`) To use them, set the environment variables before running any Vulkan test: ```bash export VK_ICD_FILENAMES="$(pwd)/vulkan_icd/lvp_icd.aarch64.json:$(pwd)/vulkan_icd/freedreno_icd.aarch64.json" export LD_LIBRARY_PATH="$(pwd)/vulkan_icd:$(pwd)/build_vk/OFF:$LD_LIBRARY_PATH" ``` Then run your executable; the Vulkan loader will use the bundled ICD files and libraries. **Quick helper** The `run_vulkan.sh` script sets these variables automatically: ```bash ./run_vulkan.sh ./your_executable [args...] ```
+
+---
+
 ## How to Discuss and Get Help From the MNN Community
 
 The group discussions are predominantly Chinese. But we welcome and will help English speakers.
@@ -216,3 +264,4 @@ MNN refers to the following projects:
 - [libjpeg](https://github.com/libjpeg-turbo/libjpeg-turbo)
 - [opencv](https://github.com/opencv/opencv)
 - [onnxruntime](https://github.com/microsoft/onnxruntime)
+# Rebuild trigger

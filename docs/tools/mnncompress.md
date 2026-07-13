@@ -1,3 +1,5 @@
+:orphan:
+
 # mnncompress 基于训练的模型压缩工具
 
 mnncompress 是基于主流训练框架TF/Pytorch的模型压缩工具，需要训练数据和对应的训练框架环境） ，提供了包括低秩分解、剪枝、量化等模型压缩算法的实现，并且MNN进一步实现了其中一些需要软件特殊实现的算法（如稀疏计算和量化）的底层计算过程，此工具箱需要配合MNN推理框架来使用。目前提供的能力如下表所示：
@@ -320,7 +322,7 @@ mnncompress 是基于主流训练框架TF/Pytorch的模型压缩工具，需要�
         quantizer.resume_wq_graph()
         train(quant_model, data, optimizer)
         test(quant_model, data)
-        if should_save_model:
+        if 触发模型保存条件：
             # 保存模型之前去掉插入的节点，恢复原模型结构
             quantizer.strip_wq_ops()
             # 保存模型，注意index，即模型和保存MNN模型压缩参数文件是一一对应的
@@ -399,7 +401,7 @@ mnncompress 是基于主流训练框架TF/Pytorch的模型压缩工具，需要�
         quantizer.resume_qat_graph()
         train(quant_model, data, optimizer)
         test(quant_model, data)
-        if should_save_model:
+        if 触发模型保存条件：
             # 保存模型之前去掉插入的节点，恢复原模型结构
             quantizer.strip_qat_ops()
             # 保存模型，注意index，即模型和保存MNN模型压缩参数文件是一一对应的

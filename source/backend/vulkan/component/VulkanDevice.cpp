@@ -219,6 +219,11 @@ VulkanDevice::VulkanDevice(std::shared_ptr<VulkanInstance> instance)
 
     // Query device properties.
     vkGetPhysicalDeviceProperties(mPhysicalDevice, &mDeviceProty);
+    // Cache GPU name for workgroup profile FFI queries.
+    extern char gCachedGpuName[256];
+    strncpy(gCachedGpuName, mDeviceProty.deviceName, 255);
+    gCachedGpuName[255] = '\0';
+    MNN_PRINT("[Vulkan] GPU detected: %s\n", gCachedGpuName);
     vkGetPhysicalDeviceMemoryProperties(mPhysicalDevice, &mMemoryProty);
     mLocalMemorySize = _getLocalMemorySize(mMemoryProty);
     mSubgroupInfo = _querySubgroupInfo(mPhysicalDevice);
@@ -872,3 +877,8 @@ void VulkanDevice::checkInt8(const std::vector<VkExtensionProperties>& available
 }
 
 } // namespace MNN
+// CI test Mon Jul 13 03:50:23 HKT 2026
+// CI verification Mon Jul 13 11:08:56 HKT 2026
+
+
+

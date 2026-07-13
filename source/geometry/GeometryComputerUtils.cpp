@@ -199,6 +199,8 @@ ErrorCode GeometryComputerUtils::shapeComputeAndGeometryTransform(
                 } else {
                     MNN_ERROR("Compute Shape Error for %d\n", info.op->type());
                 }
+                fprintf(stderr, "[TRACE] COMPUTE_SIZE_ERROR @ shapeCompute: op=%s type=%d\n",
+                    info.op->name() ? info.op->name()->c_str() : "?", info.op->type());
                 return COMPUTE_SIZE_ERROR;
             }
             // FIXME: Find better way to may compability for old model

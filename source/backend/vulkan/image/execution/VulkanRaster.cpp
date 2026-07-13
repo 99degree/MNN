@@ -235,7 +235,7 @@ ErrorCode VulkanRaster::onEncode(const std::vector<Tensor *> &___inputs, const s
 class VulkanRasterCreator : public VulkanBackend::Creator {
 public:
     virtual VulkanBasicExecution* onCreate(const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs, const MNN::Op* op, Backend* bn) const override {
-        if (outputs[0]->getType().bytes() < 4) {
+        if (outputs[0]->getType().bytes() < 2) {
             return nullptr;
         }
         return new VulkanRaster(bn);

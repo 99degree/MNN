@@ -41,6 +41,7 @@ extern void ___GeometrySlice___create__();
 extern void ___GeometryConcat___create__();
 extern void ___GeometryUnary___create__();
 extern void ___GeometryBinary___create__();
+extern void ___GeometryExtra___create__();
 
 void registerGeometryOps() {
 ___GeometryShape___create__();
@@ -83,5 +84,6 @@ ___GeometrySlice___create__();
 ___GeometryConcat___create__();
 ___GeometryUnary___create__();
 ___GeometryBinary___create__();
+___GeometryExtra___create__();
 }
 }

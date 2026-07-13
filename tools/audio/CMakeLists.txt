@@ -25,7 +25,7 @@ IF(MNN_BUILD_AUDIO)
       add_library(MNNAudio STATIC ${AUDIO_SRCS})
     ENDIF()
   ELSE()
-    add_library(MNNAudio OBJECT ${AUDIO_SRCS})
+    add_library(MNNAudio STATIC ${AUDIO_SRCS})
   ENDIF()
   # copy header files
   IF(CMAKE_SYSTEM_NAME MATCHES "^Android" AND NOT MNN_BUILD_FOR_ANDROID_COMMAND)

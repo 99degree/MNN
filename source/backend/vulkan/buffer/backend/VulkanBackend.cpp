@@ -8,6 +8,7 @@
 
 #include "VulkanBackend.hpp"
 #include <algorithm>
+#include <mutex>
 #include "core/Execution.hpp"
 #include "core/Macro.h"
 #include <MNN/Tensor.hpp>
@@ -15,7 +16,13 @@
 #include "component/VulkanDevice.hpp"
 #include "component/VulkanInstance.hpp"
 #include "execution/VulkanBasicExecution.hpp"
+#include "execution/VulkanFuse.hpp"
 //#define MNN_OPEN_TIME_TRACE
+
+// Forward declaration for VulkanFuse (defined in buffer/execution/VulkanFuse.cpp)
+namespace MNN {
+class VulkanFuse;
+}
 #include <MNN/AutoTime.hpp>
 // #define MNN_OP_SUPPORT_LOG
 
@@ -74,7 +81,12 @@ void _VKHalfToFloat(const int16_t* src, float* dst, size_t size) {
 
 static void _copyBufferToTensor(const Tensor* dest, const VulkanBuffer* source, size_t offset, bool half2float = false) {
     auto sourcePtr   = (const float*)source->map(offset);
-    if (half2float) {
+    auto typeBits = dest->getType().bits;
+    if (typeBits == 16) {
+        // Direct copy for fp16/int16 host tensors (no conversion)
+        auto elementCount = static_cast<size_t>(dest->elementSize());
+        ::memcpy(dest->host<uint16_t>(), sourcePtr, elementCount * sizeof(uint16_t));
+    } else if (half2float) {
         auto dstPtr = dest->host<float>();
         auto elementCount = static_cast<size_t>(dest->elementSize());
         HALF_TO_FLOAT(reinterpret_cast<const int16_t*>(sourcePtr), dstPtr, elementCount);
@@ -86,7 +98,12 @@ static void _copyBufferToTensor(const Tensor* dest, const VulkanBuffer* source, 
 
 static void _copyTensorToBuffer(const Tensor* source, const VulkanBuffer* dest, size_t offset, bool float2half = false) {
     auto destPtr = reinterpret_cast<uint8_t*>(dest->map(offset));
-    if (float2half) {
+    auto typeBits = source->getType().bits;
+    if (typeBits == 16) {
+        // Direct copy for fp16/int16 host tensors (no conversion)
+        auto elementCount = static_cast<size_t>(source->elementSize());
+        ::memcpy(destPtr, source->host<uint16_t>(), elementCount * sizeof(uint16_t));
+    } else if (float2half) {
         auto srcPtr = source->host<float>();
         auto elementCount = static_cast<size_t>(source->elementSize());
         FLOAT_TO_HALF(srcPtr, reinterpret_cast<int16_t*>(destPtr), elementCount);
@@ -210,13 +227,21 @@ std::pair<const VulkanBuffer*, size_t> VulkanBackend::getTensorBuffer(const Tens
 
 size_t VulkanBackend::getTensorSize(const Tensor* tensor) const {
     size_t alignElementSize = (size_t) UP_DIV(tensor->elementSize(), 4) * 4;
-    size_t bytes = ((tensor->getType().code == halide_type_float) && mUseFP16) ? sizeof(uint16_t) : sizeof(float);
+    size_t bytes;
+    auto typeBits = tensor->getType().bits;
+    if (typeBits == 16) {
+        bytes = sizeof(uint16_t);
+    } else if ((tensor->getType().code == halide_type_float) && mUseFP16) {
+        bytes = sizeof(uint16_t);
+    } else {
+        bytes = sizeof(float);
+    }
     size_t size = alignElementSize * bytes;
     return size;
 }
 
 Backend::MemObj* VulkanBackend::onAcquire(const Tensor* tensor, StorageType storageType) {
-    MNN_ASSERT(tensor->getType().code == halide_type_float || tensor->getType().code == halide_type_int);
+    MNN_ASSERT(tensor->getType().code == halide_type_float || tensor->getType().code == halide_type_int || tensor->getType().bits == 16);
     //FUNC_PRINT_ALL(tensor, p);
     auto alignSize = getTensorSize(tensor);
     auto MTensor     = const_cast<Tensor*>(tensor);
@@ -269,14 +294,19 @@ Execution* VulkanBackend::onCreate(const std::vector<Tensor*>& inputs, const std
     if (nullptr != op->name()) {
         name = op->name()->str();
     }
-    if (iter == creator->end()) {
+    // For OpType_Extra, use VulkanFuse directly (handles custom SPIR-V shaders)
+    std::shared_ptr<VulkanBasicExecution> originExecution;
+    if (op->type() == OpType_Extra) {
+        originExecution.reset((VulkanBasicExecution*)new VulkanFuse(op->main_as_Extra(), this, (int)inputs.size(), (int)outputs.size()));
+    } else if (iter == creator->end()) {
 #ifdef MNN_OP_SUPPORT_LOG
         MNN_PRINT("Vulkan don't support %d, %s: %s\n", op->type(), EnumNameOpType(op->type()),
                 name.c_str());
 #endif
         return nullptr;
+    } else {
+        originExecution.reset((VulkanBasicExecution*)iter->second->onCreate(inputs, outputs, op, this));
     }
-    std::shared_ptr<VulkanBasicExecution> originExecution ((VulkanBasicExecution*)iter->second->onCreate(inputs, outputs, op, this));
     if (nullptr == originExecution) {
 #ifdef MNN_OP_SUPPORT_LOG
         MNN_ERROR("Vulkan don't support for %s, type=%s, Special case\n", name.c_str(), EnumNameOpType(op->type()));
@@ -345,7 +375,10 @@ void VulkanBackend::_finish() const {
                                 /* .pSignalSemaphores    = */ nullptr};
     auto fenceReal           = mFence->get();
     mFence->reset();
-    CALL_VK(vkQueueSubmit(device().acquireDefaultDevQueue(), 1, &submit_info, fenceReal));
+    {
+        std::lock_guard<std::mutex> lock(device().queueMutex());
+        CALL_VK(vkQueueSubmit(device().acquireDefaultDevQueue(), 1, &submit_info, fenceReal));
+    }
 
     auto res = mFence->wait();
     MNN_VK_CHECK(res);
@@ -455,6 +488,10 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
 
     auto calculateCpSize = [this] (const Tensor* tensor) -> size_t {
             size_t eleSize = (size_t) tensor->elementSize();
+            auto typeBits = tensor->getType().bits;
+            if (typeBits == 16) {
+                return eleSize * sizeof(uint16_t);
+            }
             return (tensor->getType().code == halide_type_float && this->mUseFP16) ?
                 (eleSize * sizeof(uint16_t)) :
                 (eleSize * sizeof(float));
@@ -473,6 +510,15 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
             srcTensor = tempTensor.get();
         }
         size_t cpSize = calculateCpSize(srcTensor);
+        // Zero-copy: map GPU buffer directly (HOST_VISIBLE on UMA)
+        if (nullptr != buffer) {
+            void* gpuPtr = buffer->map((int)offset, (int)cpSize);
+            if (gpuPtr) {
+                ::memcpy(gpuPtr, srcTensor->host<float>(), cpSize);
+                buffer->unmap();
+                return;
+            }
+        }
         _requireHostBuffer(cpSize);
         _copyTensorToBuffer(srcTensor, mHostBuffer.get(), 0, srcTensor->getType().code == halide_type_float && mUseFP16);
         auto cmdbuffer = mCmdBufferForCopy;
@@ -498,10 +544,23 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
             });
             dstTensor = tempTensor.get();
         }
+        // Zero-copy path: if tensor buffer is HOST_VISIBLE, map directly
+        // instead of doing vkCmdCopyBuffer through mHostBuffer.
+        // This eliminates a GPU submission + barrier + intermediate buffer copy.
         size_t cpSize = calculateCpSize(dstTensor);
-        _requireHostBuffer(cpSize);
         auto buffer = reinterpret_cast<VulkanBuffer*>(srcTensor->deviceId());
         auto offset = TensorUtils::getDescribeOrigin(srcTensor)->offset;
+        if (nullptr != buffer) {
+            // Map GPU buffer directly (HOST_VISIBLE on UMA)
+            void* gpuPtr = buffer->map((int)offset, (int)cpSize);
+            if (gpuPtr) {
+                ::memcpy(dstTensor->host<float>(), gpuPtr, cpSize);
+                buffer->unmap();
+                return;
+            }
+        }
+        // Fallback: copy via mHostBuffer (non-UMA or older driver)
+        _requireHostBuffer(cpSize);
         auto cmdbuffer = mCmdBufferForCopy;
         cmdbuffer->begin(0);
         VkBufferCopy bufferCopy;

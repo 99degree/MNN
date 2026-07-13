@@ -33,6 +33,7 @@ enum SessionMode {
 | 8 | `Session_Backend_Fix` | 使用用户指定的后端，后端不支持时回退CPU |
 | 9 | `Session_Backend_Auto` | 根据算子类型自动选择后端 |
 
+---
 ### ErrorCode
 ```cpp
 enum ErrorCode {
@@ -61,6 +62,7 @@ enum ErrorCode {
 | 20 | `TENSOR_NOT_SUPPORT` | resize出错 |
 | 21 | `TENSOR_NEED_DIVIDE` | resize出错 |
 
+---
 ### SessionInfoCode
 ```cpp
 enum SessionInfoCode {
@@ -80,6 +82,7 @@ enum SessionInfoCode {
 | 3 | `RESIZE_STATUS` | resize的状态，数据是int类型，0表示就绪，1表示需要分配内存，2表示需要resize |
 |   | `ALL` | 以上所有信息 |
 
+---
 ### HintMode
 ```cpp
 enum HintMode {
@@ -93,12 +96,15 @@ enum HintMode {
 
 ## 成员函数
 
+---
 ### Interpreter
 该构造函数禁止使用，创建对象请使用`createFromFile`
 
+---
 ### ~Interpreter
 析构函数
 
+---
 ### createFromFile
 ```cpp
 static Interpreter* createFromFile(const char* file);
@@ -110,6 +116,7 @@ static Interpreter* createFromFile(const char* file);
 
 返回：创建成功则返回创建的解释器对象指针，失败就返回`nullptr`
 
+---
 ### createFromBuffer
 ```cpp
 static Interpreter* createFromBuffer(const void* buffer, size_t size)
@@ -122,6 +129,7 @@ static Interpreter* createFromBuffer(const void* buffer, size_t size)
 
 返回：创建成功则返回创建的解释器对象指针，失败就返回`nullptr`
 
+---
 ### destroy
 ```cpp
 static void destroy(Interpreter* net);
@@ -133,6 +141,7 @@ static void destroy(Interpreter* net);
 
 返回：`void`
 
+---
 ### setSessionMode
 ```cpp
 void setSessionMode(SessionMode mode);
@@ -146,6 +155,7 @@ void setSessionMode(SessionMode mode);
 
 返回：`void`
 
+---
 ### setCacheFile
 ```cpp
 void setCacheFile(const char* cacheFile, size_t keySize = 128);
@@ -160,6 +170,7 @@ void setCacheFile(const char* cacheFile, size_t keySize = 128);
 
 返回：`void`
 
+---
 ### setExternalFile
 ```cpp
 void setExternalFile(const char* file, size_t flag = 128);
@@ -174,6 +185,7 @@ void setExternalFile(const char* file, size_t flag = 128);
 
 返回：`void`
 
+---
 ### updateCacheFile
 ```cpp
 ErrorCode updateCacheFile(Session *session, int flag = 0);
@@ -188,6 +200,7 @@ ErrorCode updateCacheFile(Session *session, int flag = 0);
 
 返回：更新缓存的[错误码](Interpreter.html#errorcode)
 
+---
 ### setSessionHint
 ```cpp
 void setSessionHint(HintMode mode, int value);
@@ -202,6 +215,7 @@ void setSessionHint(HintMode mode, int value);
 
 返回：`void`
 
+---
 ### createRuntime
 ```cpp
 static RuntimeInfo createRuntime(const std::vector<ScheduleConfig>& configs);
@@ -216,6 +230,7 @@ typedef std::pair<std::map<MNNForwardType, std::shared_ptr<Runtime>>, std::share
 
 返回：创建的运行时信息，可以用于创建`Session`
 
+---
 ### createSession
 ```cpp
 Session* createSession(const ScheduleConfig& config);
@@ -231,6 +246,7 @@ Session* createSession(const ScheduleConfig& config, const RuntimeInfo& runtime)
 
 返回：创建的会话`Session`
 
+---
 ### createMultiPathSession
 ```cpp
 Session* createMultiPathSession(const std::vector<ScheduleConfig>& configs);
@@ -245,6 +261,7 @@ Session* createMultiPathSession(const std::vector<ScheduleConfig>& configs, cons
 
 返回：创建的会话`Session`
 
+---
 ### releaseSession
 ```cpp
 bool releaseSession(Session* session);
@@ -256,6 +273,7 @@ bool releaseSession(Session* session);
 
 返回：是否成功释放该`Session`
 
+---
 ### resizeSession
 ```cpp
 void resizeSession(Session* session);
@@ -269,6 +287,7 @@ void resizeSession(Session* session, int needRelloc);
 
 返回：`void`
 
+---
 ### releaseModel
 ```cpp
 void releaseModel();
@@ -280,6 +299,7 @@ void releaseModel();
 
 返回：`void`
 
+---
 ### getModelBuffer
 ```cpp
 std::pair<const void*, size_t> getModelBuffer() const;
@@ -291,6 +311,7 @@ std::pair<const void*, size_t> getModelBuffer() const;
 
 返回：内存数据指针和内存大小
 
+---
 ### getModelVersion
 ```cpp
 const char* getModelVersion() const;
@@ -302,6 +323,7 @@ const char* getModelVersion() const;
 
 返回：模型的版本信息，类似：`"2.0.0"`
 
+---
 ### updateSessionToModel
 ```cpp
 ErrorCode updateSessionToModel(Session* session);
@@ -313,6 +335,7 @@ ErrorCode updateSessionToModel(Session* session);
 
 返回：更新数据的[错误码](Interpreter.html#errorcode)
 
+---
 ### runSession
 ```cpp
 ErrorCode runSession(Session* session) const;
@@ -324,6 +347,7 @@ ErrorCode runSession(Session* session) const;
 
 返回：执行推理的[错误码](Interpreter.html#errorcode)
 
+---
 ### runSessionWithCallBack
 ```cpp
 ErrorCode runSessionWithCallBack(const Session* session, const TensorCallBack& before, const TensorCallBack& end, bool sync = false) const;
@@ -341,6 +365,7 @@ ErrorCode runSessionWithCallBack(const Session* session, const TensorCallBack& b
 
 返回：执行推理的[错误码](Interpreter.html#errorcode)
 
+---
 ### runSessionWithCallBackInfo
 ```cpp
 ErrorCode runSessionWithCallBackInfo(const Session* session, const TensorCallBackWithInfo& before,
@@ -359,6 +384,7 @@ ErrorCode runSessionWithCallBackInfo(const Session* session, const TensorCallBac
 
 返回：执行推理的[错误码](Interpreter.html#errorcode)
 
+---
 ### getSessionInput
 ```cpp
 Tensor* getSessionInput(const Session* session, const char* name);
@@ -371,6 +397,7 @@ Tensor* getSessionInput(const Session* session, const char* name);
 
 返回：输入Tensor对象
 
+---
 ### getSessionOutput
 ```cpp
 Tensor* getSessionOutput(const Session* session, const char* name);
@@ -383,6 +410,7 @@ Tensor* getSessionOutput(const Session* session, const char* name);
 
 返回：输出Tensor对象
 
+---
 ### getSessionInfo
 ```cpp
 bool getSessionInfo(const Session* session, SessionInfoCode code, void* ptr);
@@ -396,6 +424,7 @@ bool getSessionInfo(const Session* session, SessionInfoCode code, void* ptr);
 
 返回：是否支持获取`code`类型的信息
 
+---
 ### getSessionOutputAll
 ```cpp
 const std::map<std::string, Tensor*>& getSessionOutputAll(const Session* session) const;
@@ -407,6 +436,7 @@ const std::map<std::string, Tensor*>& getSessionOutputAll(const Session* session
 
 返回：所有的输出Tensor的名称和指针
 
+---
 ### getSessionInputAll
 ```cpp
 const std::map<std::string, Tensor*>& getSessionInputAll(const Session* session) const;
@@ -418,6 +448,7 @@ const std::map<std::string, Tensor*>& getSessionInputAll(const Session* session)
 
 返回：所有的输入Tensor的名称和指针
 
+---
 ### resizeTensor
 ```cpp
 void resizeTensor(Tensor* tensor, const std::vector<int>& dims);
@@ -431,6 +462,7 @@ void resizeTensor(Tensor* tensor, const std::vector<int>& dims);
 
 返回：`void`
 
+---
 ### getBackend
 ```cpp
 const Backend* getBackend(const Session* session, const Tensor* tensor) const;
@@ -443,6 +475,7 @@ const Backend* getBackend(const Session* session, const Tensor* tensor) const;
 
 返回：创建指定tensor的后端，可能为`nullptr`
 
+---
 ### bizCode
 ```cpp
 const char* bizCode() const;
@@ -454,6 +487,7 @@ const char* bizCode() const;
 
 返回：模型中的`bizCode`
 
+---
 ### uuid
 ```cpp
 const char* uuid() const;

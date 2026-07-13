@@ -5,6 +5,7 @@ class NeuralNetWorkOp
 
 ## 成员函数
 
+---
 ### _Input
 ```cpp
 MNN_PUBLIC VARP _Input(INTS shape = {}, Dimensionformat data_format = NC4HW4, halide_type_t dtype = halide_type_of<float>());
@@ -18,6 +19,7 @@ MNN_PUBLIC VARP _Input(INTS shape = {}, Dimensionformat data_format = NC4HW4, ha
 
 返回：变量
 
+---
 ### _Clone
 ```cpp
 MNN_PUBLIC VARP _Clone(VARP source, bool deepCopy = false);
@@ -31,6 +33,7 @@ MNN_PUBLIC VARP _Clone(VARP source, bool deepCopy = false);
 
 返回：与source类型相同的变量
 
+---
 ### _Scalar
 ```cpp
 MNN_PUBLIC VARP _Scalar(const void* ptr, halide_type_t type);
@@ -44,6 +47,7 @@ MNN_PUBLIC VARP _Scalar(const void* ptr, halide_type_t type);
 
 返回：标量类型
 
+---
 ### _Const
 ```cpp
 MNN_PUBLIC VARP _Const(float value, INTS shape = {}, Dimensionformat format = NHWC);
@@ -57,6 +61,7 @@ MNN_PUBLIC VARP _Const(float value, INTS shape = {}, Dimensionformat format = NH
 
 返回：一个不可变变量
 
+---
 ### _Const
 ```cpp
 MNN_PUBLIC VARP _Const(const void* ptr, INTS shape = {}, Dimensionformat format = NHWC,
@@ -72,6 +77,7 @@ MNN_PUBLIC VARP _Const(const void* ptr, INTS shape = {}, Dimensionformat format 
 
 返回：一个不可变变量
 
+---
 ### _TrainableParam
 ```cpp
 MNN_PUBLIC VARP _TrainableParam(float value, INTS dims, Dimensionformat format);
@@ -86,6 +92,7 @@ MNN_PUBLIC VARP _TrainableParam(float value, INTS dims, Dimensionformat format);
 
 返回：参数变量
 
+---
 ### _TrainableParam
 ```cpp
 MNN_PUBLIC VARP _TrainableParam(const void* ptr, INTS dims, Dimensionformat format,
@@ -102,6 +109,7 @@ MNN_PUBLIC VARP _TrainableParam(const void* ptr, INTS dims, Dimensionformat form
 
 返回：参数变量
 
+---
 ### _InnerProduct
 ```cpp
 MNN_PUBLIC VARP _InnerProduct(std::vector<float>&& weight, std::vector<float>&& bias, VARP x, INTS outputShape);
@@ -117,6 +125,7 @@ MNN_PUBLIC VARP _InnerProduct(std::vector<float>&& weight, std::vector<float>&& 
 
 返回：变量
 
+---
 ### _Conv
 ```cpp
 MNN_PUBLIC VARP _Conv(VARP weight, VARP bias, VARP x, PaddingMode pad = VALID, INTS stride = {1, 1},
@@ -137,6 +146,7 @@ MNN_PUBLIC VARP _Conv(VARP weight, VARP bias, VARP x, PaddingMode pad = VALID, I
 
 返回：卷积
 
+---
 ### _Conv
 ```cpp
 MNN_PUBLIC VARP _Conv(float weight, float bias, VARP x, INTS channel, INTS kernelSize, PaddingMode pad = VALID,
@@ -158,6 +168,7 @@ MNN_PUBLIC VARP _Conv(float weight, float bias, VARP x, INTS channel, INTS kerne
 
 返回：卷积
 
+---
 ### _Conv
 ```cpp
 MNN_PUBLIC VARP _Conv(std::vector<int8_t>&& weight, std::vector<float>&& bias, VARP x, INTS channel, INTS kernelSize,
@@ -183,6 +194,7 @@ MNN_PUBLIC VARP _Conv(std::vector<int8_t>&& weight, std::vector<float>&& bias, V
 
 返回：卷积
 
+---
 ### _Conv
 ```cpp
 MNN_PUBLIC VARP _Conv(std::vector<float>&& weight, std::vector<float>&& bias, VARP x, INTS channel, INTS kernelSize,
@@ -207,6 +219,7 @@ MNN_PUBLIC VARP _Conv(std::vector<float>&& weight, std::vector<float>&& bias, VA
 
 返回：卷积
 
+---
 ### _Deconv
 ```cpp
 MNN_PUBLIC VARP _Deconv(VARP weight, VARP bias, VARP x, PaddingMode pad = VALID, INTS stride = {1, 1},
@@ -227,6 +240,7 @@ MNN_PUBLIC VARP _Deconv(VARP weight, VARP bias, VARP x, PaddingMode pad = VALID,
 
 返回：转置卷积（反卷积）
 
+---
 ### _Deconv
 ```cpp
 MNN_PUBLIC VARP _Deconv(std::vector<float>&& weight, std::vector<float>&& bias, VARP x, INTS channel, INTS kernelSize,
@@ -251,6 +265,7 @@ PaddingMode pad, INTS stride = {1, 1}, INTS dilate = {1, 1}, int group = 1, INTS
 
 返回：转置卷积（反卷积）
 
+---
 ### _MaxPool
 ```cpp
 MNN_PUBLIC VARP _MaxPool(VARP x, INTS kernel, INTS stride = {1, 1}, PaddingMode pad = VALID, INTS pads= {0, 0});
@@ -267,6 +282,7 @@ MNN_PUBLIC VARP _MaxPool(VARP x, INTS kernel, INTS stride = {1, 1}, PaddingMode 
 
 返回：最大池化值
 
+---
 ### _AvePool
 ```cpp
 MNN_PUBLIC VARP _AvePool(VARP x, INTS kernel, INTS stride = {1, 1}, PaddingMode pad = VALID, INTS pads= {0, 0});
@@ -283,6 +299,7 @@ MNN_PUBLIC VARP _AvePool(VARP x, INTS kernel, INTS stride = {1, 1}, PaddingMode 
 
 返回：平均池化值
 
+---
 ### _Reshape
 ```cpp
 MNN_PUBLIC VARP _Reshape(VARP x, INTS shape, Dimensionformat original_format = NCHW);
@@ -296,6 +313,7 @@ MNN_PUBLIC VARP _Reshape(VARP x, INTS shape, Dimensionformat original_format = N
 
 返回：与' x '类型相同的变量
 
+---
 ### _Reshape
 ```cpp
 MNN_PUBLIC VARP _Reshape(VARP x, VARP shape);;
@@ -308,6 +326,7 @@ MNN_PUBLIC VARP _Reshape(VARP x, VARP shape);;
 
 返回：与' x '类型相同的变量
 
+---
 ### _Scale
 ```cpp
 MNN_PUBLIC VARP _Scale(VARP x, int channels, std::vector<float>&& scales, std::vector<float>&& bias);
@@ -323,6 +342,7 @@ MNN_PUBLIC VARP _Scale(VARP x, int channels, std::vector<float>&& scales, std::v
 
 返回：`x * scale + bias`的值
 
+---
 ### _Relu
 ```cpp
 MNN_PUBLIC VARP _Relu(VARP x, float slope = 0.0f);
@@ -336,6 +356,7 @@ MNN_PUBLIC VARP _Relu(VARP x, float slope = 0.0f);
 
 返回：与' x '类型相同的变量
 
+---
 ### _Relu6
 ```cpp
 MNN_PUBLIC VARP _Relu6(VARP x, float minValue = 0.0f, float maxValue = 6.0f);
@@ -350,6 +371,7 @@ MNN_PUBLIC VARP _Relu6(VARP x, float minValue = 0.0f, float maxValue = 6.0f);
 
 返回：与' x '类型相同的变量
 
+---
 ### _PRelu
 ```cpp
 MNN_PUBLIC VARP _PRelu(VARP x, std::vector<float> &&slopes);
@@ -363,6 +385,7 @@ MNN_PUBLIC VARP _PRelu(VARP x, std::vector<float> &&slopes);
 
 返回：与' x '类型相同的变量
 
+---
 ### _Softmax
 ```cpp
 MNN_PUBLIC VARP _Softmax(VARP logits, int axis = -1);
@@ -376,6 +399,7 @@ MNN_PUBLIC VARP _Softmax(VARP logits, int axis = -1);
 
 返回：与' x '类型相同的变量
 
+---
 ### _Softplus
 ```cpp
 MNN_PUBLIC VARP _Softplus(VARP features);
@@ -387,6 +411,7 @@ MNN_PUBLIC VARP _Softplus(VARP features);
 
 返回：与'features'类型相同的变量
 
+---
 ### _Softsign
 ```cpp
 MNN_PUBLIC VARP _Softsign(VARP features);
@@ -399,6 +424,7 @@ MNN_PUBLIC VARP _Softsign(VARP features);
 
 返回：与'features'类型相同的变量
 
+---
 ### _Split
 ```cpp
 MNN_PUBLIC std::vector<VARP> _Split(VARP value, INTS size_splits, int axis = 0);
@@ -413,6 +439,7 @@ MNN_PUBLIC std::vector<VARP> _Split(VARP value, INTS size_splits, int axis = 0);
 
 返回：变量列表
 
+---
 ### _Slice
 ```cpp
 MNN_PUBLIC VARP _Slice(VARP x, VARP starts, VARP sizes);
@@ -427,6 +454,7 @@ MNN_PUBLIC VARP _Slice(VARP x, VARP starts, VARP sizes);
 
 返回：切片数据
 
+---
 ### _StridedSlice
 ```cpp
 MNN_PUBLIC VARP _StridedSlice(VARP input, VARP begin, VARP end, VARP strided,
@@ -449,6 +477,7 @@ MNN_PUBLIC VARP _StridedSlice(VARP input, VARP begin, VARP end, VARP strided,
 
 返回：提取的片段
 
+---
 ### _StridedSliceWrite
 ```cpp
 MNN_PUBLIC VARP _StridedSliceWrite(VARP input, VARP begin, VARP end, VARP strided, VARP write,
@@ -472,6 +501,7 @@ MNN_PUBLIC VARP _StridedSliceWrite(VARP input, VARP begin, VARP end, VARP stride
 
 返回：提取的片段
 
+---
 ### _Concat
 ```cpp
 MNN_PUBLIC VARP _Concat(VARPS values, int axis);
@@ -485,6 +515,7 @@ MNN_PUBLIC VARP _Concat(VARPS values, int axis);
 
 返回：由输入变量连接而产生的变量
 
+---
 ### _Convert
 ```cpp
 MNN_PUBLIC VARP _Convert(VARP input, Dimensionformat format);
@@ -498,6 +529,7 @@ MNN_PUBLIC VARP _Convert(VARP input, Dimensionformat format);
 
 返回：一个变量，如果'input'已经是'format'，那么直接返回'input'，否则在'input'后面加上'format'变量
 
+---
 ### _Transpose
 ```cpp
 MNN_PUBLIC VARP _Transpose(VARP x, INTS perm);
@@ -511,6 +543,7 @@ MNN_PUBLIC VARP _Transpose(VARP x, INTS perm);
 
 返回：转置变量
 
+---
 ### _Transpose
 ```cpp
 MNN_PUBLIC VARP _Transpose(VARP x, VARP perm);
@@ -524,6 +557,7 @@ MNN_PUBLIC VARP _Transpose(VARP x, VARP perm);
 
 返回：转置变量
 
+---
 ### _ChannelShuffle
 ```cpp
 MNN_PUBLIC VARP _ChannelShuffle(VARP x, int group);
@@ -542,6 +576,7 @@ MNN_PUBLIC VARP _ChannelShuffle(VARP x, int group);
 
 返回：一个变量，如果'input'已经是'format'，那么直接返回'input'，否则在'input'后面加上'format'变量
 
+---
 ### _ChangeInputFormat
 ```cpp
 MNN_PUBLIC VARP _ChangeInputFormat(VARP input, Dimensionformat format);
@@ -555,6 +590,7 @@ MNN_PUBLIC VARP _ChangeInputFormat(VARP input, Dimensionformat format);
 
 返回：目标变量，如果'input'已经是'format'，那么直接返回'input'，否则在'input'之前加上一个'format'变量。
 
+---
 ### _Conv2DBackPropFilter
 ```cpp
 MNN_PUBLIC VARP _Conv2DBackPropFilter(VARP input, VARP inputGrad, INTS kernelSize, PaddingMode pad = VALID, INTS stride = {1, 1}, INTS dilate = {1, 1}, int group = 1, INTS pads = {0, 0});
@@ -574,6 +610,7 @@ MNN_PUBLIC VARP _Conv2DBackPropFilter(VARP input, VARP inputGrad, INTS kernelSiz
 
 返回：梯度
 
+---
 ### _PoolGrad
 ```cpp
 MNN_PUBLIC VARP _PoolGrad(VARP originInput, VARP originOutput, VARP inputGrad, INTS kernel, INTS stride, PoolingMode type, PaddingMode pad = VALID, INTS pads= {0, 0});
@@ -593,6 +630,7 @@ MNN_PUBLIC VARP _PoolGrad(VARP originInput, VARP originOutput, VARP inputGrad, I
 
 返回：池化的值
 
+---
 ### _ReverseSequence
 ```cpp
 MNN_PUBLIC VARP _ReverseSequence(VARP x, VARP y, int batchDim, int seqDim);
@@ -608,6 +646,7 @@ MNN_PUBLIC VARP _ReverseSequence(VARP x, VARP y, int batchDim, int seqDim);
 
 返回：反转序列的值
 
+---
 ### _Crop
 ```cpp
 MNN_PUBLIC VARP _Crop(VARP images, VARP size, int axis, INTS offset);
@@ -623,6 +662,7 @@ MNN_PUBLIC VARP _Crop(VARP images, VARP size, int axis, INTS offset);
 
 返回：NC4HW4格式的裁剪4-D变量
 
+---
 ### _Resize
 ```cpp
 MNN_PUBLIC VARP _Resize(VARP images, float xScale, float yScale);
@@ -637,6 +677,7 @@ MNN_PUBLIC VARP _Resize(VARP images, float xScale, float yScale);
 
 返回：NC4HW4格式的调整大小的4-D变量
 
+---
 ### _Pad
 ```cpp
 MNN_PUBLIC VARP _Pad(VARP x, VARP paddings, PadValueMode mode = CONSTANT);
@@ -651,6 +692,7 @@ MNN_PUBLIC VARP _Pad(VARP x, VARP paddings, PadValueMode mode = CONSTANT);
 
 返回：和x有相同的类型的变量
 
+---
 ### _ExpandDims
 ```cpp
 MNN_PUBLIC VARP _ExpandDims(VARP input, int axis);
@@ -660,10 +702,11 @@ MNN_PUBLIC VARP _ExpandDims(VARP input, int axis);
 
 参数：
 - `input` 输入变量
-- `axis` 一个int，指定在其上展开输入形状的维度索引，给定一个D维的输入，轴必须在范围 `[-(D+1), D]`（包括）
+- `axis` 一个int，指定在其上展开输入形状的维度索引，给定一个D维的输入，轴必须在范围[-(D+1)， D](包括)
 
 返回：具有与输入相同数据的变量，在轴指定的索引处插入额外的维度
 
+---
 ### _ExpandDims
 ```cpp
 MNN_PUBLIC VARP _ExpandDims(VARP input, VARP axis);
@@ -673,10 +716,11 @@ MNN_PUBLIC VARP _ExpandDims(VARP input, VARP axis);
 
 参数：
 - `input` 输入变量
-- `axis` 一个int，指定在其上展开输入形状的维度索引，给定一个D维的输入，轴必须在范围 `[-(D+1), D]`（包括）
+- `axis` 一个int，指定在其上展开输入形状的维度索引，给定一个D维的输入，轴必须在范围[-(D+1)， D](包括)
 
 返回：具有与输入相同数据的变量，在轴指定的索引处插入额外的维度
 
+---
 ### _Shape
 ```cpp
 MNN_PUBLIC VARP _Shape(VARP input, bool nchw = false);
@@ -690,6 +734,7 @@ MNN_PUBLIC VARP _Shape(VARP input, bool nchw = false);
 
 返回：Halide_Type_Int类型的变量
 
+---
 ### _Stack
 ```cpp
 MNN_PUBLIC VARP _Stack(VARPS values, int axis=0);
@@ -705,12 +750,13 @@ MNN_PUBLIC VARP _Stack(VARPS values, int axis=0);
 
 返回：一个与values相同类型的堆叠变量
 
+---
 ### _CropAndResize
 ```cpp
 MNN_PUBLIC VARP _CropAndResize(VARP image, VARP boxes, VARP box_ind, VARP crop_size, 
                                 InterpolationMethod method, float extrapolation_value = 0.0);
 ```
-从输入图像变量中提取作物，并使用双线性采样或最近邻采样(可能会改变长宽比)调整它们的大小，到由crop_size指定的通用输出大小。返回一个带有农作物的变量，该变量来自于框中边界框位置定义的输入图像位置。裁剪的盒子都被调整大小(双线性或最近邻插值)为固定大小 `[crop_height, crop_width]`。结果是一个4-D张量 `[num_boxes, crop_height, crop_width, depth]`（假设是NHWC格式）。
+从输入图像变量中提取作物，并使用双线性采样或最近邻采样(可能会改变长宽比)调整它们的大小，到由crop_size指定的通用输出大小。返回一个带有农作物的变量，该变量来自于框中边界框位置定义的输入图像位置。裁剪的盒子都被调整大小(双线性或最近邻插值)为固定大小= [crop_height, crop_width]。结果是一个4-D张量[num_boxes, crop_height, crop_width, depth](假设是NHWC格式)。
 
 
 参数：
@@ -723,6 +769,7 @@ MNN_PUBLIC VARP _CropAndResize(VARP image, VARP boxes, VARP box_ind, VARP crop_s
 
 返回：形状[num_boxes, crop_height, crop_width, depth]的4-D变量(假设NHWC格式)
 
+---
 ### _Fill
 ```cpp
 MNN_PUBLIC VARP _Fill(VARP dims, VARP value);
@@ -736,6 +783,7 @@ MNN_PUBLIC VARP _Fill(VARP dims, VARP value);
 
 返回：一个变量，类型与值相同
 
+---
 ### _Tile
 ```cpp
 MNN_PUBLIC VARP _Tile(VARP input, VARP multiples);
@@ -749,6 +797,7 @@ MNN_PUBLIC VARP _Tile(VARP input, VARP multiples);
 
 返回：一个变量，与输入的类型相同
 
+---
 ### _Gather
 ```cpp
 MNN_PUBLIC VARP _Gather(VARP params, VARP indices);
@@ -762,6 +811,7 @@ MNN_PUBLIC VARP _Gather(VARP params, VARP indices);
 
 返回：从索引给出的索引中收集的参数值
 
+---
 ### _GatherV2
 ```cpp
 MNN_PUBLIC VARP _GatherV2(VARP params, VARP indices, VARP axis = nullptr);
@@ -776,6 +826,7 @@ MNN_PUBLIC VARP _GatherV2(VARP params, VARP indices, VARP axis = nullptr);
 
 返回：从索引给出的索引收集的参数值
 
+---
 ### _Squeeze
 ```cpp
 MNN_PUBLIC VARP _Squeeze(VARP input, INTS axis = {});
@@ -789,6 +840,7 @@ MNN_PUBLIC VARP _Squeeze(VARP input, INTS axis = {});
 
 返回：一个变量，与输入的类型相同。包含与输入相同的数据，但删除了一个或多个大小为1的维度
 
+---
 ### _Unsqueeze
 ```cpp
 MNN_PUBLIC VARP _Unsqueeze(VARP input, INTS axis = {});
@@ -802,6 +854,7 @@ MNN_PUBLIC VARP _Unsqueeze(VARP input, INTS axis = {});
 
 返回：变换后的数据
 
+---
 ### _BatchToSpaceND
 ```cpp
 MNN_PUBLIC VARP _BatchToSpaceND(VARP input, VARP block_shape, VARP crops);
@@ -829,6 +882,7 @@ X = [[[[1,2,3]， [4,5,6]，
 
 返回：输出变量
 
+---
 ### _GatherND
 ```cpp
 MNN_PUBLIC VARP _GatherND(VARP params, VARP indices);
@@ -842,6 +896,7 @@ MNN_PUBLIC VARP _GatherND(VARP params, VARP indices);
 
 返回：一个变量，与参数有相同的类型
 
+---
 ### _GatherElements
 ```cpp
 MNN_PUBLIC VARP _GatherElements(VARP params, VARP indices);
@@ -855,6 +910,7 @@ MNN_PUBLIC VARP _GatherElements(VARP params, VARP indices);
 
 返回：一个变量，与参数有相同的类型
 
+---
 ### _GatherElements
 ```cpp
 MNN_PUBLIC VARP _GatherElements(VARP params, VARP indices, VARP axis);
@@ -869,6 +925,7 @@ MNN_PUBLIC VARP _GatherElements(VARP params, VARP indices, VARP axis);
 
 返回：一个变量，与参数有相同的类型
 
+---
 ### _Selu
 ```cpp
 MNN_PUBLIC VARP _Selu(VARP features, float scale, float alpha);
@@ -883,6 +940,7 @@ MNN_PUBLIC VARP _Selu(VARP features, float scale, float alpha);
 
 返回：一个变量，具有与功能相同的类型
 
+---
 ### _Size
 ```cpp
 MNN_PUBLIC VARP _Size(VARP input);
@@ -895,6 +953,7 @@ MNN_PUBLIC VARP _Size(VARP input);
 
 返回：一个变量，形状是()，类型是Halide_Type_Int
 
+---
 ### _Elu
 ```cpp
 MNN_PUBLIC VARP _Elu(VARP features, float alpha=1.0);
@@ -908,6 +967,7 @@ MNN_PUBLIC VARP _Elu(VARP features, float alpha=1.0);
 
 返回：一个变量，具有与功能相同的类型
 
+---
 ### _Threshold
 ```cpp
 MNN_PUBLIC VARP _Threshold(VARP features, float threshold);
@@ -921,6 +981,7 @@ MNN_PUBLIC VARP _Threshold(VARP features, float threshold);
 
 返回：一个变量，具有与功能相同的类型
 
+---
 ### _MatrixBandPart
 ```cpp
 MNN_PUBLIC VARP _MatrixBandPart(VARP input, VARP num_lower, VARP num_upper);
@@ -935,6 +996,7 @@ MNN_PUBLIC VARP _MatrixBandPart(VARP input, VARP num_lower, VARP num_upper);
 
 返回：将k变量的形状与输入相同，提取的带状张量
 
+---
 ### _Moments
 ```cpp
 MNN_PUBLIC std::vector<VARP> _Moments(VARP x, INTS axis, VARP shift, bool keepDims);
@@ -950,6 +1012,7 @@ MNN_PUBLIC std::vector<VARP> _Moments(VARP x, INTS axis, VARP shift, bool keepDi
 
 返回：均值和方差
 
+---
 ### _SetDiff1D
 ```cpp
 MNN_PUBLIC VARP _SetDiff1D(VARP x, VARP y);
@@ -963,6 +1026,7 @@ MNN_PUBLIC VARP _SetDiff1D(VARP x, VARP y);
 
 返回：Halide_Type_Int类型的1-D变量。值在x中存在，但在y中不存在
 
+---
 ### _SpaceToDepth
 ```cpp
 MNN_PUBLIC VARP _SpaceToDepth(VARP input, int block_size);
@@ -976,6 +1040,7 @@ MNN_PUBLIC VARP _SpaceToDepth(VARP input, int block_size);
 
 返回：一个变量。与输入的类型相同
 
+---
 ### _SpaceToBatchND
 ```cpp
 MNN_PUBLIC VARP _SpaceToBatchND(VARP input, VARP block_shape, VARP paddings);
@@ -990,6 +1055,7 @@ MNN_PUBLIC VARP _SpaceToBatchND(VARP input, VARP block_shape, VARP paddings);
 
 返回：一个变量。与输入的类型相同
 
+---
 ### _ZerosLike
 ```cpp
 MNN_PUBLIC VARP _ZerosLike(VARP input);
@@ -1002,6 +1068,7 @@ MNN_PUBLIC VARP _ZerosLike(VARP input);
 
 返回：一个所有元素都设为零的变量
 
+---
 ### _Unstack
 ```cpp
 MNN_PUBLIC std::vector<VARP> _Unstack(VARP value, int axis=0);
@@ -1018,6 +1085,7 @@ MNN_PUBLIC std::vector<VARP> _Unstack(VARP value, int axis=0);
 
 返回：从值中分离出来的变量对象列表
 
+---
 ### _Rank
 ```cpp
 MNN_PUBLIC VARP _Rank(VARP input);
@@ -1032,6 +1100,7 @@ MNN_PUBLIC VARP _Rank(VARP input);
 
 返回：Halide_Type_Int类型的0-D变量
 
+---
 ### _Range
 ```cpp
 MNN_PUBLIC VARP _Range(VARP start, VARP limit, VARP delta);
@@ -1046,6 +1115,7 @@ MNN_PUBLIC VARP _Range(VARP start, VARP limit, VARP delta);
 
 返回：数字序列
 
+---
 ### _DepthToSpace
 ```cpp
 MNN_PUBLIC VARP _DepthToSpace(VARP input, int block_size);
@@ -1059,6 +1129,7 @@ MNN_PUBLIC VARP _DepthToSpace(VARP input, int block_size);
 
 返回：一个变量。与输入的类型相同
 
+---
 ### _PriorBox
 ```cpp
 MNN_PUBLIC VARP _PriorBox(VARP feature, VARP image, 
@@ -1086,6 +1157,7 @@ SSD网络的priorbox层，人脸检测网络
 
 返回：一个变量
 
+---
 ### _Permute
 ```cpp
 MNN_PUBLIC VARP _Permute(VARP input, INTS dims);
@@ -1099,6 +1171,7 @@ SSD网络的交换层，用于置换索引轴顺序的
 
 返回：一个变量
 
+---
 ### _DetectionOutput
 ```cpp
 MNN_PUBLIC VARP _DetectionOutput(VARP location, VARP confidence, VARP priorbox, 
@@ -1127,6 +1200,7 @@ SSD网络的detectionoutput层，用于整合预选框、预选框偏移以及�
 
 返回：目标检测框、目标的label和得分
 
+---
 ### _DetectionPostProcess
 ```cpp
 MNN_PUBLIC  std::vector<VARP> _DetectionPostProcess(VARP encode_boxes, VARP class_predictions, VARP anchors, 
@@ -1153,6 +1227,7 @@ SSD网络的detectionpostprocess层，对于预测阶段，模型输出的结果
 
 返回：4个变量，detection_boxes, detection_class, detection_scores, num_detections
 
+---
 ### _Interp
 ```cpp
 MNN_PUBLIC VARP _Interp(VARPS xs, float widthScale, float heightScale, int outputWidth, int outputHeight, int resizeType, bool alignCorners);
@@ -1171,6 +1246,7 @@ MNN_PUBLIC VARP _Interp(VARPS xs, float widthScale, float heightScale, int outpu
 
 返回：离散数据的一维分段线性插值结果
 
+---
 ### _ZeroGrad
 ```cpp
 MNN_PUBLIC VARP _ZeroGrad(VARP x);
@@ -1183,6 +1259,7 @@ MNN_PUBLIC VARP _ZeroGrad(VARP x);
 
 返回：梯度为0的变量
 
+---
 ### _Conv
 ```cpp
 MNN_PUBLIC VARP _Conv(std::vector<int8_t>&& weight, std::vector<int>&& bias, std::vector<float>&& scale, VARP x, INTS channel, INTS kernelSize, PaddingMode pad, INTS stride, INTS dilate, int group, INTS pads, bool relu, int nbits = 8);
@@ -1207,6 +1284,7 @@ MNN_PUBLIC VARP _Conv(std::vector<int8_t>&& weight, std::vector<int>&& bias, std
 
 返回：卷积
 
+---
 ### _Conv
 ```cpp
 MNN_PUBLIC VARP _Conv(std::vector<int8_t>&& weight, std::vector<int>&& bias, std::vector<float>&& scale,
@@ -1239,6 +1317,7 @@ MNN_PUBLIC VARP _Conv(std::vector<int8_t>&& weight, std::vector<int>&& bias, std
 
 返回：卷积
 
+---
 ### _Conv
 ```cpp
 MNN_PUBLIC VARP _Conv(std::vector<int8_t>&& weight, std::vector<float>&& bias, std::vector<float>&& weightScale,
@@ -1275,6 +1354,7 @@ MNN_PUBLIC VARP _Conv(std::vector<int8_t>&& weight, std::vector<float>&& bias, s
 
 返回：卷积
 
+---
 ### _CosineSimilarity
 ```cpp
 MNN_PUBLIC VARP _CosineSimilarity(VARP input0, VARP input1, VARP inputDim);
@@ -1289,6 +1369,7 @@ MNN_PUBLIC VARP _CosineSimilarity(VARP input0, VARP input1, VARP inputDim);
 
 返回：和input0类型一致的数据
 
+---
 ### _GridSample
 ```cpp
 MNN_PUBLIC VARP _GridSample(VARP input, VARP grid, InterpolationMethod mode=BILINEAR, GridSamplePaddingMode paddingMode=GRID_SAMPLE_PADDING_ZEROS, bool alignCorners=false);
@@ -1305,6 +1386,7 @@ MNN_PUBLIC VARP _GridSample(VARP input, VARP grid, InterpolationMethod mode=BILI
 
 返回：网格数据
 
+---
 ### _FloatToInt8
 ```cpp
 MNN_PUBLIC VARP _FloatToInt8(VARP x, VARP scale, char minValue, char maxValue);
@@ -1320,6 +1402,7 @@ float类型转换为Int8类型
 
 返回：Int8类型数据
 
+---
 ### _FloatToInt8
 ```cpp
 MNN_PUBLIC VARP _FloatToInt8(VARP x, VARP scale, int8_t minValue, int8_t maxValue, int8_t zeroPoint);
@@ -1336,6 +1419,7 @@ float类型转换为Int8类型
 
 返回：Int8类型数据
 
+---
 ### _Int8ToFloat
 ```cpp
 MNN_PUBLIC VARP _Int8ToFloat(VARP x, VARP scale);
@@ -1349,6 +1433,7 @@ Int8转换为float类型
 
 返回：float类型数据
 
+---
 ### _Int8ToFloat
 ```cpp
 MNN_PUBLIC VARP _Int8ToFloat(VARP x, VARP scale, int8_t zeroPoint);
@@ -1363,6 +1448,7 @@ Int8转换为float类型
 
 返回：float类型数据
 
+---
 ### _Select
 ```cpp
 MNN_PUBLIC VARP _Select(VARP select, VARP input0, VARP input1);
@@ -1377,6 +1463,7 @@ MNN_PUBLIC VARP _Select(VARP select, VARP input0, VARP input1);
 
 返回：根据条件选中的元素
 
+---
 ### _TopKV2
 ```cpp
 MNN_PUBLIC std::vector<VARP> _TopKV2(VARP input0, VARP input1);
@@ -1391,6 +1478,7 @@ MNN_PUBLIC std::vector<VARP> _TopKV2(VARP input0, VARP input1);
 
 返回：值和索引
 
+---
 ### _ImageProcess
 ```cpp
 MNN_PUBLIC VARP _ImageProcess(VARP input, CV::ImageProcess::Config config, CV::Matrix matrix, int oh, int ow, int oc, int dtype, uint8_t padVal = 0);
@@ -1410,6 +1498,7 @@ MNN_PUBLIC VARP _ImageProcess(VARP input, CV::ImageProcess::Config config, CV::M
 
 返回：图像
 
+---
 ### _Where
 ```cpp
 MNN_PUBLIC VARP _Where(VARP x);
@@ -1422,6 +1511,7 @@ MNN_PUBLIC VARP _Where(VARP x);
 
 返回：索引
 
+---
 ### _Sort
 ```cpp
 MNN_PUBLIC VARP _Sort(VARP x, int axis = -1, bool arg = false, bool descend = false);
@@ -1437,6 +1527,7 @@ MNN_PUBLIC VARP _Sort(VARP x, int axis = -1, bool arg = false, bool descend = fa
 
 返回：排序结果
 
+---
 ### _Raster
 ```cpp
 MNN_PUBLIC VARP _Raster(const std::vector<VARP>& vars, const std::vector<int>& regions, const std::vector<int>& shape);
@@ -1451,6 +1542,7 @@ MNN_PUBLIC VARP _Raster(const std::vector<VARP>& vars, const std::vector<int>& r
 
 返回：光栅化的值
 
+---
 ### _Nms
 ```cpp
 MNN_PUBLIC VARP _Nms(VARP boxes, VARP scores, int maxDetections, float iouThreshold = -1, float scoreThreshold = -1);
@@ -1467,6 +1559,7 @@ MNN_PUBLIC VARP _Nms(VARP boxes, VARP scores, int maxDetections, float iouThresh
 
 返回：搜索局部极大值，抑制非极大值元素
 
+---
 ### _Im2Col
 ```cpp
 MNN_PUBLIC VARP _Im2Col(VARP x, INTS kernelSize, INTS dilate, INTS pads, INTS stride);
@@ -1483,6 +1576,7 @@ MNN_PUBLIC VARP _Im2Col(VARP x, INTS kernelSize, INTS dilate, INTS pads, INTS st
 
 返回：列块矩阵
 
+---
 ### _Col2Im
 ```cpp
 MNN_PUBLIC VARP _Col2Im(VARP x, VARP outputShape, INTS kernelSize, INTS dilate, INTS pads, INTS stride);
@@ -1499,6 +1593,8 @@ MNN_PUBLIC VARP _Col2Im(VARP x, VARP outputShape, INTS kernelSize, INTS dilate, 
 - `stride` 步长
 
 返回：原始矩阵
+
+
 
 
 

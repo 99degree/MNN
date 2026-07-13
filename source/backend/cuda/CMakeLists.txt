@@ -211,7 +211,7 @@ else()
     endif()
 
     set(MNN_CUDA_LIBS MNN_Cuda_Main PARENT_SCOPE)
-    add_library(MNN_CUDA OBJECT Register.cpp)
+    add_library(MNN_CUDA STATIC Register.cpp)
 endif()
 
 include_directories(

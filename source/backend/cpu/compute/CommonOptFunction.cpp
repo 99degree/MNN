@@ -48,19 +48,6 @@ extern void MNNSumByAxisLForMatmul_A_RVV(float* dest, int8_t* source, const floa
                                          SumByAxisParams sumParams);
 extern void MNNSumWeightInt8_RVV(float* kernelsum, int8_t* source, size_t outside, size_t reduceAxis, size_t hP,
                                  size_t lP);
-extern void generalIm2col_RVV(float* destOrigin, float const** sourceGroup, const int32_t* info, const int32_t* el,
-                              int LP, int pack);
-extern void MNNDynamicUpdateConvBiasScale_RVV(float* newbias, float* oldbias, float* weightKernelSum, float* inputBias,
-                                              size_t ocQuad);
-extern void MNNPackedMatMulFP32_RVV(float* C, const float* A, const float* B, const size_t* parameter,
-                                    const float* postParameters, const float* bias, const float* k, const float* b);
-extern void MNNPackedMatMulRemainFP32_RVV(float* C, const float* A, const float* B, size_t eSize,
-                                          const size_t* parameter, const float* postParameters, const float* bias,
-                                          const float* k, const float* b);
-extern void MNNPackForMatMul_B_RVV(float* destC, const float* sourceC, size_t h, size_t kernelsize, size_t ic,
-                                   bool transpose);
-extern void MNNQuantScaleFP32_RVV(float* absmax, float* quant_scale, float* dequant_scale, size_t thread, size_t batch);
-extern void MNNGetMatMulPackMode_RVV(int* eP, int* lP, int* hP);
 #endif
 
 #ifndef MNN_USE_SSE
@@ -4635,96 +4622,6 @@ namespace MNN {
 
 static CoreFunctions* gCoreFunction = nullptr;
 
-static void MNNRoPEComputeBasic(void* dst, const void* src, const void* cosEven, const void* cosOdd,
-                                const void* sinEven, const void* sinOdd, int numHead, int headDim, int ropeCutHeadDim) {
-    const int halfHeadDim = headDim / 2;
-    int ropeDim = ropeCutHeadDim;
-    if (ropeDim <= 0 || ropeDim > headDim) {
-        ropeDim = headDim;
-    }
-    ropeDim = (ropeDim / 2) * 2;
-    const int ropeHalfHeadDim = ropeDim / 2;
-
-    auto srcFloat = static_cast<const float*>(src);
-    auto dstFloat = static_cast<float*>(dst);
-    auto cosEvenFloat = static_cast<const float*>(cosEven);
-    auto cosOddFloat = static_cast<const float*>(cosOdd);
-    auto sinEvenFloat = static_cast<const float*>(sinEven);
-    auto sinOddFloat = static_cast<const float*>(sinOdd);
-    for (int j = 0; j < numHead; ++j) {
-        auto src0 = srcFloat + j * headDim;
-        auto src1 = src0 + halfHeadDim;
-        auto dst0 = dstFloat + j * headDim;
-        auto dst1 = dst0 + halfHeadDim;
-        int k = 0;
-        for (; k <= ropeHalfHeadDim - 4; k += 4) {
-            auto q0 = Vec4::load(src0 + k);
-            auto q1 = Vec4::load(src1 + k);
-            auto c0 = Vec4::load(cosEvenFloat + k);
-            auto c1 = Vec4::load(cosOddFloat + k);
-            auto s0 = Vec4::load(sinEvenFloat + k);
-            auto s1 = Vec4::load(sinOddFloat + k);
-            Vec4::save(dst0 + k, Vec4::fms(q0 * c0, q1, s0));
-            Vec4::save(dst1 + k, Vec4::fma(q1 * c1, q0, s1));
-        }
-        for (; k < ropeHalfHeadDim; ++k) {
-            auto q0 = src0[k];
-            auto q1 = src1[k];
-            dst0[k] = q0 * cosEvenFloat[k] - q1 * sinEvenFloat[k];
-            dst1[k] = q1 * cosOddFloat[k] + q0 * sinOddFloat[k];
-        }
-        if (ropeHalfHeadDim < halfHeadDim) {
-            ::memcpy(dst0 + ropeHalfHeadDim, src0 + ropeHalfHeadDim, (halfHeadDim - ropeHalfHeadDim) * sizeof(float));
-            ::memcpy(dst1 + ropeHalfHeadDim, src1 + ropeHalfHeadDim, (halfHeadDim - ropeHalfHeadDim) * sizeof(float));
-        }
-    }
-}
-
-template <int Pack>
-static void MNNNormPackedFloat(float* dest, const float* source, const float* gamma, const float* beta, float epsilon,
-                               size_t batch, size_t channels, bool RMSNorm) {
-    const size_t channelUnit = UP_DIV(channels, Pack);
-    for (size_t n = 0; n < batch; ++n) {
-        float mean = 0.0f;
-        if (!RMSNorm) {
-            float sum = 0.0f;
-            for (size_t c = 0; c < channels; ++c) {
-                const size_t cu = c / Pack;
-                const size_t cr = c - cu * Pack;
-                sum += source[(cu * batch + n) * Pack + cr];
-            }
-            mean = sum / static_cast<float>(channels);
-        }
-
-        float squareSum = 0.0f;
-        for (size_t c = 0; c < channels; ++c) {
-            const size_t cu = c / Pack;
-            const size_t cr = c - cu * Pack;
-            float v = source[(cu * batch + n) * Pack + cr];
-            float d = RMSNorm ? v : (v - mean);
-            squareSum += d * d;
-        }
-
-        const float invStd = 1.0f / std::sqrt(squareSum / static_cast<float>(channels) + epsilon);
-        for (size_t c = 0; c < channels; ++c) {
-            const size_t cu = c / Pack;
-            const size_t cr = c - cu * Pack;
-            const size_t index = (cu * batch + n) * Pack + cr;
-            float v = source[index];
-            float norm = RMSNorm ? (v * invStd) : ((v - mean) * invStd);
-            if (gamma && beta) {
-                norm = norm * gamma[c] + beta[c];
-            }
-            dest[index] = norm;
-        }
-        for (size_t c = channels; c < channelUnit * Pack; ++c) {
-            const size_t cu = c / Pack;
-            const size_t cr = c - cu * Pack;
-            dest[(cu * batch + n) * Pack + cr] = 0.0f;
-        }
-    }
-}
-
 void MNNCoreFunctionInit() {
     gCoreFunction = new CoreFunctions;
 
@@ -4735,7 +4632,6 @@ void MNNCoreFunctionInit() {
     gCoreFunction->MNNPackedMatMul = MNNPackedMatMul;
     gCoreFunction->MNNPackedMatMulRemain = MNNPackedMatMulRemain;
     gCoreFunction->MNNCountMaxMinValue = MNNCountMaxMinValue;
-    gCoreFunction->MNNNormPacked = MNNNormPackedFloat<4>;
 #ifdef MNN_USE_SPARSE_COMPUTE
     gCoreFunction->MNNGetSparseMatMulPackMode = MNNGetSparseMatMulPackMode;
     gCoreFunction->MNNAdjustOptimalSparseKernel = _MNNAdjustOptimalSparseKernel;
@@ -4772,7 +4668,9 @@ void MNNCoreFunctionInit() {
     gCoreFunction->MNNUnpackCUnitTransposeInt16 = MNNPackTransposeInt16;
 
     gCoreFunction->MNNAxByClampBroadcastUnit = MNNAxByClampBroadcastUnit;
+#ifndef MNN_MINIMAL_CPU
     gCoreFunction->MNNConvRunForLineDepthwise = MNNConvRunForLineDepthwise;
+#endif
     gCoreFunction->MNNMatrixAdd = MNNMatrixAdd;
     gCoreFunction->MNNMatrixSub = MNNMatrixSub;
     gCoreFunction->MNNStrassenMergeCFunction = MNNStrassenMergeCFunction;
@@ -4791,11 +4689,15 @@ void MNNCoreFunctionInit() {
     gCoreFunction->MNNAddC4WithStride = MNNAddC4WithStride;
     gCoreFunction->MNNCopyC4WithStride = MNNCopyC4WithStride;
 
+#ifndef MNN_MINIMAL_CPU
     gCoreFunction->chooseWinoSourceTransformPack = WinogradFunction::chooseWinoSourceTransformPack;
     gCoreFunction->chooseWinoSourceUnrollTransform = WinogradFunction::chooseSourceUnrollTransform;
     gCoreFunction->chooseWinoDestUnrollTransform = WinogradFunction::chooseWinoDestUnrollTransform;
+#endif
+#ifndef MNN_MINIMAL_CPU
     gCoreFunction->MNNDeconvRunForLineDepthwise = MNNDeconvRunForLineDepthwise;
     gCoreFunction->MNNDeconvRunForUnitDepthWise = MNNDeconvRunForUnitDepthWise;
+#endif
     gCoreFunction->MNNSoftmax = MNNSoftmax;
 #ifdef MNN_USE_NEON
     gCoreFunction->MNNDepthwiseConvFastKernel = MNNDepthwiseConvFastKernel;
@@ -4812,7 +4714,6 @@ void MNNCoreFunctionInit() {
     gCoreFunction->MNNQuantAttentionKey = MNNQuantAttentionKey;
     gCoreFunction->MNNQuantAttentionValue = MNNQuantAttentionValue;
 #endif // MNN_SUPPORT_TRANSFORMER_FUSE
-    gCoreFunction->MNNRoPECompute = MNNRoPEComputeBasic;
 
     gCoreFunction->MNNReluWithSlopeChannel = MNNReluWithSlopeChannel;
     gCoreFunction->MNNPoolingAvg = (decltype(gCoreFunction->MNNPoolingAvg))(poolingAvg<float, Vec4, 4>);
@@ -4862,9 +4763,9 @@ void MNNCoreFunctionInit() {
         if (!gCoreFunction->supportSME2) {
             gCoreFunction->smeCoreNumber = 0;
         }
-        MNN_PRINT("MNN_CPU_TARGET=%d effective ARM features: fp16=%d, i8sdot=%d, i8mm=%d, sme2=%d\n", target,
-                  gCoreFunction->supportFp16arith, gCoreFunction->supportSDot, gCoreFunction->supportI8mm,
-                  gCoreFunction->supportSME2);
+        MNN_PRINT("MNN_CPU_TARGET=%d effective ARM features: fp16=%d, i8sdot=%d, i8mm=%d, sme2=%d\n",
+                  target, gCoreFunction->supportFp16arith, gCoreFunction->supportSDot,
+                  gCoreFunction->supportI8mm, gCoreFunction->supportSME2);
     }
 #endif
     gCoreFunction->MNNSumByAxisLForMatmul_A = MNNSumByAxisLForMatmul_A;
@@ -4909,18 +4810,11 @@ void MNNCoreFunctionInit() {
         gCoreFunction->MNNSumByAxisLForMatmul_A = MNNSumByAxisLForMatmul_A_RVV;
         gCoreFunction->MNNReorderWeightInt4 = MNNReorderWeightInt4_RVV;
         gCoreFunction->MNNSumWeightInt8 = MNNSumWeightInt8_RVV;
-        gCoreFunction->MNNPackedMatMul = MNNPackedMatMulFP32_RVV;
-        gCoreFunction->MNNPackedMatMulRemain = MNNPackedMatMulRemainFP32_RVV;
-        gCoreFunction->MNNPackForMatMul_B = MNNPackForMatMul_B_RVV;
-        gCoreFunction->MNNGetMatMulPackMode = MNNGetMatMulPackMode_RVV;
 #ifdef MNN_LOW_MEMORY
         gCoreFunction->MNNAbsMax = MNNAbsMaxFP32_RVV;
         gCoreFunction->MNNDynamicQuant = MNNDynamicQuantFP32_RVV;
         gCoreFunction->MNNAsyQuantFunc = MNNAsyQuantFunc_RVV;
         gCoreFunction->MNNAsyQuantInfo = MNNAsyQuantInfo_FP32_RVV;
-        gCoreFunction->MNNGeneralIm2Col = generalIm2col_RVV;
-        gCoreFunction->MNNDynamicUpdateConvBiasScale = MNNDynamicUpdateConvBiasScale_RVV;
-        gCoreFunction->MNNQuantScale = MNNQuantScaleFP32_RVV;
 #endif
     }
 #endif
@@ -4954,7 +4848,9 @@ void MNNCoreFunctionInit() {
         gCoreFunction->int8MatmulRelatedFunctions.MNNSumWeightInt8 = gCoreFunction->MNNSumWeightInt8;
         gCoreFunction->int8MatmulRelatedFunctions.MNNGeneralIm2Col = gCoreFunction->MNNGeneralIm2Col;
     }
+#ifndef MNN_MINIMAL_CPU
     MNNCoreInt8FunctionInit();
+#endif
     MNNFunctionInit();
 }
 CoreFunctions* MNNGetCoreFunctions() {

@@ -3,7 +3,8 @@ file(GLOB MNN_ARM82_SRCS "${CMAKE_CURRENT_LIST_DIR}/*.cpp" "${CMAKE_CURRENT_LIST
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^armv7" OR ARCHS MATCHES "^armv7(;armv7s)?")
     file(GLOB MNN_ARM82_SRCS_ASM "${CMAKE_CURRENT_LIST_DIR}/asm/arm32/*")
-    add_library(MNN_Arm82 OBJECT ${MNN_ARM82_SRCS} ${MNN_ARM82_SRCS_ASM})
+    add_library(MNN_Arm82 STATIC ${MNN_ARM82_SRCS} ${MNN_ARM82_SRCS_ASM})
+    mnn_apply_build_flags(MNN_Arm82)
     target_compile_options(MNN_Arm82 PRIVATE -march=armv8.2-a+fp16 -mfpu=neon-fp-armv8 -mfloat-abi=softfp -DENABLE_ARMV82)
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^aarch64" OR ARCHS STREQUAL "arm64" OR ARCHS STREQUAL "ARM64")
     file(GLOB MNN_ARM82_SRCS_ASM "${CMAKE_CURRENT_LIST_DIR}/asm/arm64/*")
@@ -18,7 +19,8 @@ elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^aarch64" OR ARCHS STREQUAL "arm64" OR AR
     set_source_files_properties(${MNN_ARM82_SRCS} PROPERTIES COMPILE_OPTIONS "-march=armv8.2-a+fp16")
     set_source_files_properties(${MNN_ARM82_SRCS_ASM} PROPERTIES COMPILE_OPTIONS "-march=armv8.2-a+fp16")
 
-    add_library(MNN_Arm82 OBJECT ${MNN_ARM82_SRCS} ${MNN_ARM82_SRCS_ASM} ${MNN_SME2_SRCS_ASM_FP16})
+    add_library(MNN_Arm82 STATIC ${MNN_ARM82_SRCS} ${MNN_ARM82_SRCS_ASM} ${MNN_SME2_SRCS_ASM_FP16})
+    mnn_apply_build_flags(MNN_Arm82)
     if (MNN_LOW_MEMORY)
         target_compile_options(MNN_Arm82 PRIVATE -DMNN_LOW_MEMORY)
     endif()

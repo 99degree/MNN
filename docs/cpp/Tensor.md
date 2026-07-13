@@ -5,9 +5,8 @@ class Tensor
 
 ## 枚举类
 ### DimensionType
-用于创建张量的维度类型
-
 ```cpp
+用于创建张量的维度类型
 enum DimensionType {
     TENSORFLOW,
     CAFFE,
@@ -22,6 +21,7 @@ enum DimensionType {
 | 2 | `CAFFE_C4` | caffe网络类型，数据格式为NC4HW4 |
 
 
+---
 数据处理类型
 ### HandleDataType
 ```cpp
@@ -37,10 +37,10 @@ enum HandleDataType {
 | 1 | `HANDLE_STRING` | 字符串处理类型 |
 
 
+---
 ### MapType
-张量映射类型：读或写
-
 ```cpp
+张量映射类型：读或写
 enum MapType {
     MAP_TENSOR_WRITE   = 0,
     MAP_TENSOR_READ    = 1
@@ -54,6 +54,7 @@ enum MapType {
 
 ## 成员函数
 
+---
 ### Tensor
 构造函数
 ```cpp
@@ -67,6 +68,7 @@ Tensor(int dimSize = 4, DimensionType type = CAFFE);
 
 返回：具有维度大小和类型的张量
 
+---
 ### Tensor
 构造函数
 ```cpp
@@ -81,9 +83,11 @@ Tensor(const Tensor* tensor, DimensionType type = CAFFE, bool allocMemory = true
 
 返回：给定张量形状相同的张量
 
+---
 ### ~Tensor
 析构函数
 
+---
 ### createDevice
 ```cpp
 static Tensor* createDevice(const std::vector<int>& shape, halide_type_t type, DimensionType dimType = TENSORFLOW);
@@ -97,6 +101,7 @@ static Tensor* createDevice(const std::vector<int>& shape, halide_type_t type, D
 
 返回：具有形状、数据类型和维度类型的张量
 
+---
 ### createDevice
 ```cpp
 static Tensor* createDevice(const std::vector<int>& shape, DimensionType dimType = TENSORFLOW) {
@@ -111,6 +116,7 @@ static Tensor* createDevice(const std::vector<int>& shape, DimensionType dimType
 
 返回：具有形状、数据类型和维度类型的张量
 
+---
 ### create
 ```cpp
 static Tensor* create(const std::vector<int>& shape, halide_type_t type, void* data = NULL,
@@ -126,6 +132,7 @@ static Tensor* create(const std::vector<int>& shape, halide_type_t type, void* d
 
 返回：具有形状、数据类型、数据和维度类型的张量
 
+---
 ### create
 ```cpp
 static Tensor* create(const std::vector<int>& shape, void* data = NULL, DimensionType dimType = TENSORFLOW) {
@@ -141,6 +148,7 @@ static Tensor* create(const std::vector<int>& shape, void* data = NULL, Dimensio
 
 返回：具有形状、数据类型、数据和维度类型的张量
 
+---
 ### clone
 ```cpp
 static Tensor* clone(const Tensor* src, bool deepCopy = false);
@@ -153,6 +161,7 @@ static Tensor* clone(const Tensor* src, bool deepCopy = false);
 
 返回：拷贝的张量
 
+---
 ### destroy
 ```cpp
 static void destroy(Tensor* tensor);
@@ -164,6 +173,7 @@ static void destroy(Tensor* tensor);
 
 返回：`void`
 
+---
 ### copyFromHostTensor
 ```cpp
 bool copyFromHostTensor(const Tensor* hostTensor);
@@ -175,6 +185,7 @@ bool copyFromHostTensor(const Tensor* hostTensor);
 
 返回：DEVICE张量为真，HOST张量为假
 
+---
 ### copyToHostTensor
 ```cpp
 bool copyToHostTensor(Tensor* hostTensor) const;
@@ -186,6 +197,7 @@ bool copyToHostTensor(Tensor* hostTensor) const;
 
 返回：DEVICE张量为真，HOST张量为假
 
+---
 ### createHostTensorFromDevice
 ```cpp
 static Tensor* createHostTensorFromDevice(const Tensor* deviceTensor, bool copyData = true);
@@ -198,6 +210,7 @@ static Tensor* createHostTensorFromDevice(const Tensor* deviceTensor, bool copyD
 
 返回：HOST张量
 
+---
 ### getDimensionType
 ```cpp
 DimensionType getDimensionType() const;
@@ -208,6 +221,7 @@ DimensionType getDimensionType() const;
 
 返回：维度类型
 
+---
 ### getHandleDataType
 ```cpp
 HandleDataType getHandleDataType() const;
@@ -218,6 +232,7 @@ HandleDataType getHandleDataType() const;
 
 返回：处理数据类型
 
+---
 ### setType
 ```cpp
 void setType(int type);
@@ -229,6 +244,7 @@ void setType(int type);
 
 返回：`void`
 
+---
 ### getType
 ```cpp
 inline halide_type_t getType() const {
@@ -241,6 +257,7 @@ inline halide_type_t getType() const {
 
 返回：数据类型
 
+---
 ### host
 ```cpp
 template <typename T>
@@ -254,6 +271,7 @@ T* host() const {
 
 返回：“T”类型的数据点
 
+---
 ### deviceId
 ```cpp
 uint64_t deviceId() const {
@@ -266,6 +284,7 @@ uint64_t deviceId() const {
 
 返回：设备数据ID，ID的含义因后端而异
 
+---
 ### dimensions
 ```cpp
 int dimensions() const {
@@ -278,6 +297,7 @@ int dimensions() const {
 
 返回：维度
 
+---
 ### shape
 ```cpp
 std::vector<int> shape() const;
@@ -288,6 +308,7 @@ std::vector<int> shape() const;
 
 返回：维度的程度
 
+---
 ### size
 ```cpp
 int size() const;
@@ -298,6 +319,7 @@ int size() const;
 
 返回：存储数据所需的字节数
 
+---
 ### elementSize
 ```cpp
 inline int elementSize() const {
@@ -310,6 +332,7 @@ inline int elementSize() const {
 
 返回：存储数据所需的元素数量
 
+---
 ### width
 ```cpp
 inline int width() const {
@@ -325,6 +348,7 @@ inline int width() const {
 
 返回：张量宽度
 
+---
 ### height
 ```cpp
 inline int height() const {
@@ -340,6 +364,7 @@ inline int height() const {
 
 返回：张量高度
 
+---
 ### channel
 ```cpp
 inline int channel() const {
@@ -355,6 +380,7 @@ inline int channel() const {
 
 返回：张量通道
 
+---
 ### batch
 ```cpp
 inline int batch() const {
@@ -367,6 +393,7 @@ inline int batch() const {
 
 返回：张量批量
 
+---
 ### stride
 ```cpp
 inline int stride(int index) const {
@@ -380,6 +407,7 @@ inline int stride(int index) const {
 
 返回：张量的步幅
 
+---
 ### length
 ```cpp
 inline int length(int index) const {
@@ -393,6 +421,7 @@ inline int length(int index) const {
 
 返回：张量的长度
 
+---
 ### setStride
 ```cpp
 inline void setStride(int index, int stride) {
@@ -407,6 +436,7 @@ inline void setStride(int index, int stride) {
 
 返回：`void`
 
+---
 ### setLength
 ```cpp
 inline void setLength(int index, int length) {
@@ -421,6 +451,7 @@ inline void setLength(int index, int length) {
 
 返回：`void`
 
+---
 ### print
 ```cpp
 void print() const;
@@ -431,6 +462,7 @@ void print() const;
 
 返回：`void`
 
+---
 ### printShape
 ```cpp
 void printShape() const;
@@ -441,6 +473,7 @@ void printShape() const;
 
 返回：`void`
 
+---
 ### map
 ```cpp
 void* map(MapType mtype, DimensionType dtype);
@@ -453,6 +486,7 @@ GPU张量，以获得主机ptr
 
 返回：主机ptr
 
+---
 ### unmap
 ```cpp
 void unmap(MapType mtype, DimensionType dtype, void* mapPtr);
@@ -466,6 +500,7 @@ GPU张量
 
 返回：`void`
 
+---
 ### wait
 ```cpp
 int wait(MapType mtype, bool finish);

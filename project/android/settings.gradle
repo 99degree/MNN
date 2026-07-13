@@ -1,1 +1,2 @@
 rootProject.name = 'MNN'
+include ':demo:app'

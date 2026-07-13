@@ -306,6 +306,9 @@ std::unique_ptr<MNN::NetT> optimizeNetImpl(std::unique_ptr<MNN::NetT>& originNet
 
         "MoveUnaryOpBeforeReshape",
 
+        // ISP chain fusion: standard MNN ops → VulkanFuse Extra ops
+        "IspChainFusion",
+
     };
     if (ctx->is_training) {
         std::vector<std::string>::iterator iter = postConvertPass.begin();
@@ -376,6 +379,10 @@ std::unique_ptr<MNN::NetT> optimizeNetImpl(std::unique_ptr<MNN::NetT>& originNet
         "RemoveCopy",
         // Add tensor dimension format convert for NC4HW4 - NHWC / NC4HW4 - NCHW
         "AddTensorFormatConverter",
+
+        // Remove ConvertTensors inserted between ISP Extra ops
+        // (format conversion corrupts CHW planar data)
+        "RemoveExtraConvertTensor",
 
         // Turn group convolution to Slice - Convolution - Concat
         "TransformGroupConvolution",

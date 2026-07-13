@@ -4,6 +4,7 @@ class MathOp
 ```
 ## 成员函数
 
+---
 ### _Add
 ```cpp
 MNN_PUBLIC VARP _Add(VARP x, VARP y);
@@ -16,6 +17,7 @@ MNN_PUBLIC VARP _Add(VARP x, VARP y);
 
 返回：x相同的类型变量
 
+---
 ### _Subtract
 ```cpp
 MNN_PUBLIC VARP _Subtract(VARP x, VARP y);
@@ -28,6 +30,7 @@ MNN_PUBLIC VARP _Subtract(VARP x, VARP y);
 
 返回：x相同的类型变量
 
+---
 ### _Multiply
 ```cpp
 MNN_PUBLIC VARP _Multiply(VARP x, VARP y);
@@ -40,6 +43,7 @@ MNN_PUBLIC VARP _Multiply(VARP x, VARP y);
 
 返回：x相同的类型变量
 
+---
 ### _Divide
 ```cpp
 MNN_PUBLIC VARP _Divide(VARP x, VARP y);
@@ -52,6 +56,7 @@ MNN_PUBLIC VARP _Divide(VARP x, VARP y);
 
 返回：x相同的类型变量
 
+---
 ### _Pow
 ```cpp
 MNN_PUBLIC VARP _Pow(VARP x, VARP y);
@@ -64,6 +69,7 @@ MNN_PUBLIC VARP _Pow(VARP x, VARP y);
 
 返回：x相同的类型变量
 
+---
 ### _Minimum
 ```cpp
 MNN_PUBLIC VARP _Minimum(VARP x, VARP y);
@@ -76,6 +82,7 @@ MNN_PUBLIC VARP _Minimum(VARP x, VARP y);
 
 返回：x相同的类型变量
 
+---
 ### _Maximum
 ```cpp
 MNN_PUBLIC VARP _Maximum(VARP x, VARP y);
@@ -88,6 +95,7 @@ MNN_PUBLIC VARP _Maximum(VARP x, VARP y);
 
 返回：x相同的类型变量
 
+---
 ### _BiasAdd
 ```cpp
 MNN_PUBLIC VARP _BiasAdd(VARP value, VARP bias);
@@ -100,6 +108,7 @@ MNN_PUBLIC VARP _BiasAdd(VARP value, VARP bias);
 
 返回：value相同的类型变量
 
+---
 ### _Greater
 ```cpp
 MNN_PUBLIC VARP _Greater(VARP x, VARP y);
@@ -112,6 +121,7 @@ MNN_PUBLIC VARP _Greater(VARP x, VARP y);
 
 返回：true或者false
 
+---
 ### _GreaterEqual
 ```cpp
 MNN_PUBLIC VARP _GreaterEqual(VARP x, VARP y);
@@ -124,6 +134,7 @@ MNN_PUBLIC VARP _GreaterEqual(VARP x, VARP y);
 
 返回：true或者false
 
+---
 ### _Less
 ```cpp
 MNN_PUBLIC VARP _Less(VARP x, VARP y);
@@ -136,6 +147,7 @@ MNN_PUBLIC VARP _Less(VARP x, VARP y);
 
 返回：true或者false
 
+---
 ### _FloorDiv
 ```cpp
 MNN_PUBLIC VARP _FloorDiv(VARP x, VARP y);
@@ -149,6 +161,7 @@ MNN_PUBLIC VARP _FloorDiv(VARP x, VARP y);
 
 返回：x相同的类型变量
 
+---
 ### _SquaredDifference
 ```cpp
 MNN_PUBLIC VARP _SquaredDifference(VARP x, VARP y);
@@ -161,6 +174,7 @@ MNN_PUBLIC VARP _SquaredDifference(VARP x, VARP y);
 
 返回：x相同的类型变量
 
+---
 ### _Equal
 ```cpp
 MNN_PUBLIC VARP _Equal(VARP x, VARP y);
@@ -174,6 +188,7 @@ MNN_PUBLIC VARP _Equal(VARP x, VARP y);
 
 返回：true或者false
 
+---
 ### _LessEqual
 ```cpp
 MNN_PUBLIC VARP _LessEqual(VARP x, VARP y);
@@ -186,6 +201,7 @@ MNN_PUBLIC VARP _LessEqual(VARP x, VARP y);
 
 返回：true或者false
 
+---
 ### _FloorMod
 ```cpp
 MNN_PUBLIC VARP _FloorMod(VARP x, VARP y);
@@ -199,6 +215,7 @@ MNN_PUBLIC VARP _FloorMod(VARP x, VARP y);
 
 返回：x相同的类型变量
 
+---
 ### _Atan2
 ```cpp
 MNN_PUBLIC VARP _Atan2(VARP x, VARP y);
@@ -211,6 +228,7 @@ MNN_PUBLIC VARP _Atan2(VARP x, VARP y);
 
 返回：x相同的类型变量
 
+---
 ### _LogicalOr
 ```cpp
 MNN_PUBLIC VARP _LogicalOr(VARP x, VARP y);
@@ -223,6 +241,7 @@ MNN_PUBLIC VARP _LogicalOr(VARP x, VARP y);
 
 返回：true/false
 
+---
 ### _NotEqual
 ```cpp
 MNN_PUBLIC VARP _NotEqual(VARP x, VARP y);
@@ -235,6 +254,7 @@ MNN_PUBLIC VARP _NotEqual(VARP x, VARP y);
 
 返回：true/false
 
+---
 ### _BitwiseAnd
 ```cpp
 MNN_PUBLIC VARP _BitwiseAnd(VARP x, VARP y);
@@ -248,6 +268,7 @@ MNN_PUBLIC VARP _BitwiseAnd(VARP x, VARP y);
 
 返回：x相同的类型变量
 
+---
 ### _BitwiseOr
 ```cpp
 MNN_PUBLIC VARP _BitwiseOr(VARP x, VARP y);
@@ -260,6 +281,7 @@ MNN_PUBLIC VARP _BitwiseOr(VARP x, VARP y);
 
 返回：x相同的类型变量
 
+---
 ### _BitwiseXor
 ```cpp
 MNN_PUBLIC VARP _BitwiseXor(VARP x, VARP y);
@@ -273,6 +295,7 @@ MNN_PUBLIC VARP _BitwiseXor(VARP x, VARP y);
 
 返回：x相同的类型变量
 
+---
 ### _Sign
 ```cpp
 MNN_PUBLIC VARP _Sign(VARP a);
@@ -287,6 +310,7 @@ sign(x) = 1 if x>0
 
 返回：-1、0或者1
 
+---
 ### _Abs
 ```cpp
 MNN_PUBLIC VARP _Abs(VARP x);
@@ -301,6 +325,7 @@ x = MNN.abs(x) # (1.0, 2.0, 3.0)
 
 返回：一个大小相同的变量，类型与x的绝对值相同
 
+---
 ### _Negative
 ```cpp
 MNN_PUBLIC VARP _Negative(VARP x);
@@ -314,6 +339,7 @@ x = MNN.negative(x) #(1.0, 2.0， -3.0)
 
 返回：和x相同类型的变量
 
+---
 ### _Floor
 ```cpp
 MNN_PUBLIC VARP _Floor(VARP x);
@@ -325,6 +351,7 @@ MNN_PUBLIC VARP _Floor(VARP x);
 
 返回：和x相同类型的变量
 
+---
 ### _Round
 ```cpp
 MNN_PUBLIC VARP _Round(VARP x);
@@ -336,6 +363,7 @@ MNN_PUBLIC VARP _Round(VARP x);
 
 返回：Halide_Type_Float类型的变量
 
+---
 ### _Ceil
 ```cpp
 MNN_PUBLIC VARP _Ceil(VARP x);
@@ -347,6 +375,7 @@ MNN_PUBLIC VARP _Ceil(VARP x);
 
 返回：和x相同类型的变量
 
+---
 ### _Square
 ```cpp
 MNN_PUBLIC VARP _Square(VARP x);
@@ -358,6 +387,7 @@ MNN_PUBLIC VARP _Square(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _Sqrt
 ```cpp
 MNN_PUBLIC VARP _Sqrt(VARP x);
@@ -369,6 +399,7 @@ MNN_PUBLIC VARP _Sqrt(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _Rsqrt
 ```cpp
 MNN_PUBLIC VARP _Rsqrt(VARP x);
@@ -380,6 +411,7 @@ MNN_PUBLIC VARP _Rsqrt(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _Exp
 ```cpp
 MNN_PUBLIC VARP _Exp(VARP x);
@@ -391,6 +423,7 @@ MNN_PUBLIC VARP _Exp(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _Log
 ```cpp
 MNN_PUBLIC VARP _Log(VARP x);
@@ -402,6 +435,7 @@ MNN_PUBLIC VARP _Log(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _Sin
 ```cpp
 MNN_PUBLIC VARP _Sin(VARP x);
@@ -413,6 +447,7 @@ MNN_PUBLIC VARP _Sin(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _Sinh
 ```cpp
 MNN_PUBLIC VARP _Sinh(VARP x);
@@ -424,6 +459,7 @@ MNN_PUBLIC VARP _Sinh(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _Cos
 ```cpp
 MNN_PUBLIC VARP _Cos(VARP x);
@@ -435,6 +471,7 @@ MNN_PUBLIC VARP _Cos(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _Cosh
 ```cpp
 MNN_PUBLIC VARP _Cosh(VARP x);
@@ -447,6 +484,7 @@ MNN_PUBLIC VARP _Cosh(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _Tan
 ```cpp
 MNN_PUBLIC VARP _Tan(VARP x);
@@ -458,6 +496,7 @@ MNN_PUBLIC VARP _Tan(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _Asin
 ```cpp
 MNN_PUBLIC VARP _Asin(VARP x);
@@ -469,6 +508,7 @@ MNN_PUBLIC VARP _Asin(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _Asinh
 ```cpp
 MNN_PUBLIC VARP _Asinh(VARP x);
@@ -480,6 +520,7 @@ MNN_PUBLIC VARP _Asinh(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _Acos
 ```cpp
 MNN_PUBLIC VARP _Acos(VARP x);
@@ -491,6 +532,7 @@ MNN_PUBLIC VARP _Acos(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _Acosh
 ```cpp
 MNN_PUBLIC VARP _Acosh(VARP x);
@@ -502,6 +544,7 @@ MNN_PUBLIC VARP _Acosh(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _Atan
 ```cpp
 MNN_PUBLIC VARP _Atan(VARP x);
@@ -513,6 +556,7 @@ MNN_PUBLIC VARP _Atan(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _Atanh
 ```cpp
 MNN_PUBLIC VARP _Atanh(VARP x);
@@ -524,6 +568,7 @@ MNN_PUBLIC VARP _Atanh(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _Reciprocal
 ```cpp
 MNN_PUBLIC VARP _Reciprocal(VARP x);
@@ -535,6 +580,7 @@ MNN_PUBLIC VARP _Reciprocal(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _Log1p
 ```cpp
 MNN_PUBLIC VARP _Log1p(VARP x);
@@ -547,6 +593,7 @@ MNN_PUBLIC VARP _Log1p(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _Gelu
 ```cpp
 MNN_PUBLIC VARP _Gelu(VARP x);
@@ -559,6 +606,7 @@ MNN_PUBLIC VARP _Gelu(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _Tanh
 ```cpp
 MNN_PUBLIC VARP _Tanh(VARP x);
@@ -570,6 +618,7 @@ MNN_PUBLIC VARP _Tanh(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _Sigmoid
 ```cpp
 MNN_PUBLIC VARP _Sigmoid(VARP x);
@@ -581,6 +630,7 @@ MNN_PUBLIC VARP _Sigmoid(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _Erf
 ```cpp
 MNN_PUBLIC VARP _Erf(VARP x);
@@ -592,6 +642,7 @@ MNN_PUBLIC VARP _Erf(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _Erfc
 ```cpp
 MNN_PUBLIC VARP _Erfc(VARP x);
@@ -603,6 +654,7 @@ MNN_PUBLIC VARP _Erfc(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _Erfinv
 ```cpp
 MNN_PUBLIC VARP _Erfinv(VARP x);
@@ -614,6 +666,7 @@ x的逆函数的值
 
 返回：x相同类型的变量
 
+---
 ### _Expm1
 ```cpp
 MNN_PUBLIC VARP _Expm1(VARP x);
@@ -625,6 +678,7 @@ MNN_PUBLIC VARP _Expm1(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _Hardswish
 ```cpp
 MNN_PUBLIC VARP _Hardswish(VARP x);
@@ -636,6 +690,7 @@ MNN_PUBLIC VARP _Hardswish(VARP x);
 
 返回：x相同类型的变量
 
+---
 ### _ReduceSum
 ```cpp
 MNN_PUBLIC VARP _ReduceSum(VARP input_variable, INTS axis = {}, bool keepDims = false);
@@ -649,6 +704,7 @@ MNN_PUBLIC VARP _ReduceSum(VARP input_variable, INTS axis = {}, bool keepDims = 
 
 返回：简化后的变量，与input_variable具有相同的类型
 
+---
 ### _ReduceMean
 ```cpp
 MNN_PUBLIC VARP _ReduceMean(VARP input_variable, INTS axis = {}, bool keepDims = false);
@@ -662,6 +718,7 @@ MNN_PUBLIC VARP _ReduceMean(VARP input_variable, INTS axis = {}, bool keepDims =
 
 返回：简化后的变量，与input_variable具有相同的类型
 
+---
 ### _ReduceMax
 ```cpp
 MNN_PUBLIC VARP _ReduceMax(VARP input_variable, INTS axis = {}, bool keepDims = false);
@@ -675,6 +732,7 @@ MNN_PUBLIC VARP _ReduceMax(VARP input_variable, INTS axis = {}, bool keepDims = 
 
 返回：简化后的变量，与input_variable具有相同的类型
 
+---
 ### _ReduceMin
 ```cpp
 MNN_PUBLIC VARP _ReduceMin(VARP input_variable, INTS axis = {}, bool keepDims = false);
@@ -688,6 +746,7 @@ MNN_PUBLIC VARP _ReduceMin(VARP input_variable, INTS axis = {}, bool keepDims = 
 
 返回：简化后的变量，与input_variable具有相同的类型
 
+---
 ### _ReduceProd
 ```cpp
 MNN_PUBLIC VARP _ReduceProd(VARP input_variable, INTS axis = {}, bool keepDims = false);
@@ -701,6 +760,7 @@ MNN_PUBLIC VARP _ReduceProd(VARP input_variable, INTS axis = {}, bool keepDims =
 
 返回：简化后的变量，与input_variable具有相同的类型
 
+---
 ### _ReduceAny
 ```cpp
 MNN_PUBLIC VARP _ReduceAny(VARP input_variable, INTS axis = {}, bool keepDims = false);
@@ -714,6 +774,7 @@ MNN_PUBLIC VARP _ReduceAny(VARP input_variable, INTS axis = {}, bool keepDims = 
 
 返回：简化后的变量，与input_variable具有相同的类型
 
+---
 ### _ReduceAll
 ```cpp
 MNN_PUBLIC VARP _ReduceAll(VARP input_variable, INTS axis = {}, bool keepDims = false);
@@ -727,6 +788,7 @@ MNN_PUBLIC VARP _ReduceAll(VARP input_variable, INTS axis = {}, bool keepDims = 
 
 返回：简化后的变量，与input_variable具有相同的类型
 
+---
 ### _ReduceSumMutable
 ```cpp
 MNN_PUBLIC VARP _ReduceSumMutable(VARP input_variable, INTS axis = {}, bool keepDims = false);
@@ -740,6 +802,7 @@ MNN_PUBLIC VARP _ReduceSumMutable(VARP input_variable, INTS axis = {}, bool keep
 
 返回：简化后的变量，与input_variable具有相同的类型
 
+---
 ### _ReduceMeanMutable
 ```cpp
 MNN_PUBLIC VARP _ReduceMeanMutable(VARP input_variable, INTS axis = {}, bool keepDims = false);
@@ -753,6 +816,7 @@ MNN_PUBLIC VARP _ReduceMeanMutable(VARP input_variable, INTS axis = {}, bool kee
 
 返回：简化后的变量，与input_variable具有相同的类型
 
+---
 ### _ReduceMaxMutable
 ```cpp
 MNN_PUBLIC VARP _ReduceMaxMutable(VARP input_variable, INTS axis = {}, bool keepDims = false);
@@ -766,6 +830,7 @@ MNN_PUBLIC VARP _ReduceMaxMutable(VARP input_variable, INTS axis = {}, bool keep
 
 返回：简化后的变量，与input_variable具有相同的类型
 
+---
 ### _ReduceMinMutable
 ```cpp
 MNN_PUBLIC VARP _ReduceMinMutable(VARP input_variable, INTS axis = {}, bool keepDims = false);
@@ -779,6 +844,7 @@ MNN_PUBLIC VARP _ReduceMinMutable(VARP input_variable, INTS axis = {}, bool keep
 
 返回：简化后的变量，与input_variable具有相同的类型
 
+---
 ### _ReduceProdMutable
 ```cpp
 MNN_PUBLIC VARP _ReduceProdMutable(VARP input_variable, INTS axis = {}, bool keepDims = false);
@@ -792,6 +858,7 @@ MNN_PUBLIC VARP _ReduceProdMutable(VARP input_variable, INTS axis = {}, bool kee
 
 返回：简化后的变量，与input_variable具有相同的类型
 
+---
 ### _ReduceAnyMutable
 ```cpp
 MNN_PUBLIC VARP _ReduceAnyMutable(VARP input_variable, INTS axis = {}, bool keepDims = false);
@@ -805,6 +872,7 @@ MNN_PUBLIC VARP _ReduceAnyMutable(VARP input_variable, INTS axis = {}, bool keep
 
 返回：简化后的变量，与input_variable具有相同的类型
 
+---
 ### _ReduceAllMutable
 ```cpp
 MNN_PUBLIC VARP _ReduceAllMutable(VARP input_variable, INTS axis = {}, bool keepDims = false);
@@ -818,6 +886,7 @@ MNN_PUBLIC VARP _ReduceAllMutable(VARP input_variable, INTS axis = {}, bool keep
 
 返回：简化后的变量，与input_variable具有相同的类型
 
+---
 ### _Prod
 ```cpp
 MNN_PUBLIC VARP _Prod(VARP a, VARP b, std::vector<float> coeff);
@@ -831,6 +900,7 @@ MNN_PUBLIC VARP _Prod(VARP a, VARP b, std::vector<float> coeff);
 
 返回：元素积变量
 
+---
 ### _Sum
 ```cpp
 MNN_PUBLIC VARP _Sum(VARP a, VARP b, std::vector<float> coeff);
@@ -844,6 +914,7 @@ MNN_PUBLIC VARP _Sum(VARP a, VARP b, std::vector<float> coeff);
 
 返回：元素和
 
+---
 ### _Max
 ```cpp
 MNN_PUBLIC VARP _Max(VARP a, VARP b, std::vector<float> coeff);
@@ -857,6 +928,7 @@ MNN_PUBLIC VARP _Max(VARP a, VARP b, std::vector<float> coeff);
 
 返回：最大值
 
+---
 ### _Sub
 ```cpp
 MNN_PUBLIC VARP _Sub(VARP a, VARP b, std::vector<float> coeff);
@@ -870,6 +942,7 @@ MNN_PUBLIC VARP _Sub(VARP a, VARP b, std::vector<float> coeff);
 
 返回：下标元素
 
+---
 ### _EltwiseProdInt8
 ```cpp
 MNN_PUBLIC VARP _EltwiseProdInt8(VARP x, VARP y, 
@@ -898,6 +971,7 @@ MNN_PUBLIC VARP _EltwiseProdInt8(VARP x, VARP y,
 
 返回：VARP类型变量
 
+---
 ### _EltwiseSumInt8
 ```cpp
 MNN_PUBLIC VARP _EltwiseSumInt8(VARP x, VARP y, 
@@ -926,6 +1000,7 @@ MNN_PUBLIC VARP _EltwiseSumInt8(VARP x, VARP y,
 
 返回：VARP类型变量
 
+---
 ### _EltwiseSubInt8
 ```cpp
 MNN_PUBLIC VARP _EltwiseSubInt8(VARP x, VARP y, 
@@ -954,6 +1029,7 @@ MNN_PUBLIC VARP _EltwiseSubInt8(VARP x, VARP y,
 
 返回：VARP类型变量
 
+---
 ### _EltwiseMaxInt8
 ```cpp
 MNN_PUBLIC VARP _EltwiseMaxInt8(VARP x, VARP y, 
@@ -982,6 +1058,7 @@ MNN_PUBLIC VARP _EltwiseMaxInt8(VARP x, VARP y,
 
 返回：VARP类型变量
 
+---
 ### _Mod
 ```cpp
 MNN_PUBLIC VARP _Mod(VARP x, VARP y);
@@ -994,6 +1071,7 @@ MNN_PUBLIC VARP _Mod(VARP x, VARP y);
 
 返回：和x类型相同的变量
 
+---
 ### _Cast
 ```cpp
 VARP _Cast(VARP x) {
@@ -1007,6 +1085,7 @@ VARP _Cast(VARP x) {
 
 返回：与x形状相同，与dtype类型相同的变量
 
+---
 ### _Cast
 ```cpp
 MNN_PUBLIC VARP _Cast(VARP x, halide_type_t dtype);
@@ -1019,6 +1098,7 @@ MNN_PUBLIC VARP _Cast(VARP x, halide_type_t dtype);
 
 返回：与x形状相同，与dtype类型相同的变量
 
+---
 ### _MatMul
 ```cpp
 MNN_PUBLIC VARP _MatMul(VARP a, VARP b, bool tranposeA = false, bool tranposeB = false);
@@ -1033,6 +1113,7 @@ MNN_PUBLIC VARP _MatMul(VARP a, VARP b, bool tranposeA = false, bool tranposeB =
 
 返回：矩阵a * 矩阵b
 
+---
 ### _Normalize
 ```cpp
 MNN_PUBLIC VARP _Normalize(VARP x, int32_t acrossSpatial, int32_t channelShared, float eps, std::vector<float> scale);
@@ -1048,6 +1129,7 @@ MNN_PUBLIC VARP _Normalize(VARP x, int32_t acrossSpatial, int32_t channelShared,
 
 返回：x数据转换成指定的标准化的格式
 
+---
 ### _ArgMax
 ```cpp
 MNN_PUBLIC VARP _ArgMax(VARP input, int axis = 0);
@@ -1060,6 +1142,7 @@ MNN_PUBLIC VARP _ArgMax(VARP input, int axis = 0);
 
 返回：索引值
 
+---
 ### _ArgMin
 ```cpp
 MNN_PUBLIC VARP _ArgMin(VARP input, int axis = 0);
@@ -1072,6 +1155,7 @@ MNN_PUBLIC VARP _ArgMin(VARP input, int axis = 0);
 
 返回：索引值
 
+---
 ### _BatchMatMul
 ```cpp
 MNN_PUBLIC VARP _BatchMatMul(VARP x, VARP y, bool adj_x = false, bool adj_y = false);
@@ -1090,6 +1174,7 @@ C_o = r_y if adj_y else c_y
 
 返回：3-D或更高形状[…], r_o, c_o]
 
+---
 ### _UnravelIndex
 ```cpp
 MNN_PUBLIC VARP _UnravelIndex(VARP indices, VARP dims);
@@ -1102,6 +1187,7 @@ MNN_PUBLIC VARP _UnravelIndex(VARP indices, VARP dims);
 
 返回：索引
 
+---
 ### _ScatterNd
 ```cpp
 MNN_PUBLIC VARP _ScatterNd(VARP indices, VARP updates, VARP shape);
@@ -1115,6 +1201,7 @@ MNN_PUBLIC VARP _ScatterNd(VARP indices, VARP updates, VARP shape);
 
 返回：张量
 
+---
 ### _ScatterNd
 ```cpp
 MNN_PUBLIC VARP _ScatterNd(VARP indices, VARP updates, VARP shape, VARP input);
@@ -1129,6 +1216,7 @@ MNN_PUBLIC VARP _ScatterNd(VARP indices, VARP updates, VARP shape, VARP input);
 
 返回：张量
 
+---
 ### _ScatterNd
 ```cpp
 MNN_PUBLIC VARP _ScatterNd(VARP indices, VARP updates, VARP shape, int reduction);
@@ -1143,6 +1231,7 @@ MNN_PUBLIC VARP _ScatterNd(VARP indices, VARP updates, VARP shape, int reduction
 
 返回：张量
 
+---
 ### _ScatterNd
 ```cpp
 MNN_PUBLIC VARP _ScatterNd(VARP indices, VARP updates, VARP shape, VARP input, int reduction);
@@ -1158,6 +1247,7 @@ MNN_PUBLIC VARP _ScatterNd(VARP indices, VARP updates, VARP shape, VARP input, i
 
 返回：张量
 
+---
 ### _ScatterElements
 ```cpp
 MNN_PUBLIC VARP _ScatterElements(VARP data, VARP indices, VARP updates, int reduction = -1);
@@ -1172,6 +1262,7 @@ MNN_PUBLIC VARP _ScatterElements(VARP data, VARP indices, VARP updates, int redu
 
 返回：更新后的data
 
+---
 ### _ScatterElements
 ```cpp
 MNN_PUBLIC VARP _ScatterElements(VARP data, VARP indices, VARP updates, VARP axis, int reduction = -1);
@@ -1187,6 +1278,7 @@ MNN_PUBLIC VARP _ScatterElements(VARP data, VARP indices, VARP updates, VARP axi
 
 返回：更新后的data
 
+---
 ### _OneHot
 ```cpp
 MNN_PUBLIC VARP _OneHot(VARP indices, VARP depth, VARP onValue, VARP offValue, int axis = -1);
@@ -1202,6 +1294,7 @@ MNN_PUBLIC VARP _OneHot(VARP indices, VARP depth, VARP onValue, VARP offValue, i
 
 返回：编码数据
 
+---
 ### _BroadcastTo
 ```cpp
 MNN_PUBLIC VARP _BroadcastTo(VARP a, VARP shape);
@@ -1214,6 +1307,7 @@ MNN_PUBLIC VARP _BroadcastTo(VARP a, VARP shape);
 
 返回：矩阵
 
+---
 ### _LinSpace
 ```cpp
 MNN_PUBLIC VARP _LinSpace(VARP start, VARP stop, VARP num);
@@ -1227,6 +1321,7 @@ MNN_PUBLIC VARP _LinSpace(VARP start, VARP stop, VARP num);
 
 返回：等差数列
 
+---
 ### _RandomUnifom
 ```cpp
 MNN_PUBLIC VARP _RandomUnifom(VARP shape, halide_type_t dtype, float low = 0.0f, float high = 1.0f, int seed0 = 0, int seed1 = 0);
@@ -1243,6 +1338,7 @@ MNN_PUBLIC VARP _RandomUnifom(VARP shape, halide_type_t dtype, float low = 0.0f,
 
 返回：dtype类型的随机数
 
+---
 ### _CumSum
 ```cpp
 MNN_PUBLIC VARP _CumSum(VARP x, int axis, bool exclusive = false, bool reverse = false);
@@ -1257,6 +1353,7 @@ MNN_PUBLIC VARP _CumSum(VARP x, int axis, bool exclusive = false, bool reverse =
 
 返回：和x相同类型的变量
 
+---
 ### _CumProd
 ```cpp
 MNN_PUBLIC VARP _CumProd(VARP x, int axis);
@@ -1269,6 +1366,7 @@ MNN_PUBLIC VARP _CumProd(VARP x, int axis);
 
 返回：和x相同类型的变量
 
+---
 ### _Svd
 ```cpp
 MNN_PUBLIC VARPS _Svd(VARP x);
@@ -1280,6 +1378,7 @@ MNN_PUBLIC VARPS _Svd(VARP x);
 
 返回：和x相同类型的变量
 
+---
 ### _Histogram
 ```cpp
 MNN_PUBLIC VARP _Histogram(VARP x, int bin, int min, int max, int channel = -1);

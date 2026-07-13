@@ -28,7 +28,7 @@ const int pastLength = 101;
 #define GENERATE_TOKENS 128
 
 static KVMeta gMeta;
-static std::shared_ptr<Module> _makeAttentionModule(int attentionMode = 8, bool outputC4 = false) {
+static std::shared_ptr<Module> _makeAttentionModule(int attentionMode = 8) {
     auto Q = _Input();
     auto K = _Input();
     auto V = _Input();
@@ -38,7 +38,6 @@ static std::shared_ptr<Module> _makeAttentionModule(int attentionMode = 8, bool 
     attention->main.type = MNN::OpParameter_AttentionParam;
     attention->main.value = new MNN::AttentionParamT;
     attention->main.AsAttentionParam()->kv_cache = true;
-    attention->main.AsAttentionParam()->output_c4 = outputC4;
     auto o = Variable::create(Expr::create(attention.get(), {Q, K, V, mask}));
     auto buffer = Variable::save({o});
     MNN::ScheduleConfig config;
@@ -155,26 +154,6 @@ VARP vector_to_var(std::vector< std::vector< std::vector<float> > > & a) {
             }
         }
     }
-    var->unMap();
-    return var;
-}
-
-VARP vector_to_c4_value(std::vector< std::vector< std::vector<float> > > & a) {
-    int seqLen = a.size();
-    int kvNumHead = a[0].size();
-    int headDim = a[0][0].size();
-    int channel = kvNumHead * headDim;
-    std::vector<float> packed(((channel + 3) / 4) * seqLen * 4, 0.0f);
-    for (int s = 0; s < seqLen; ++s) {
-        for (int h = 0; h < kvNumHead; ++h) {
-            for (int d = 0; d < headDim; ++d) {
-                int c = h * headDim + d;
-                packed[(c / 4) * seqLen * 4 + s * 4 + (c % 4)] = a[s][h][d];
-            }
-        }
-    }
-    VARP var = _Input({seqLen, channel, 1, 1}, NC4HW4, halide_type_of<float>());
-    ::memcpy(var->writeMap<float>(), packed.data(), packed.size() * sizeof(float));
     var->unMap();
     return var;
 }
@@ -603,67 +582,5 @@ SpeedAttentionTest() = default;
 };
 
 MNNTestSuiteRegister(AttentionTest, "op/attention");
-
-class AttentionC4Test : public AttentionTest {
-public:
-    AttentionC4Test() = default;
-    virtual ~AttentionC4Test() = default;
-
-    bool compareC4Result(int seqLen) {
-        const float* resultPtr = Output->readMap<float>();
-        const int hidden = NumHead * HeadDim;
-        std::vector<float> actual(seqLen * hidden);
-        std::vector<float> expected(seqLen * hidden);
-        for (int i = 0; i < seqLen; ++i) {
-            for (int h = 0; h < NumHead; ++h) {
-                for (int d = 0; d < HeadDim; ++d) {
-                    int c = h * HeadDim + d;
-                    int c4Index = (c % 4) + 4 * i + 4 * seqLen * (c / 4);
-                    int logicalIndex = i * hidden + c;
-                    actual[logicalIndex] = resultPtr[c4Index];
-                    expected[logicalIndex] = expected_result[i][h][d];
-                }
-            }
-        }
-        if (!checkVectorByRelativeError<float>(actual.data(), expected.data(), actual.size(), 0.02f)) {
-            MNN_ERROR("AttentionC4Test failed!\n");
-            return false;
-        }
-        return true;
-    }
-
-    bool runOne(int seqLen, int precision) {
-        std::shared_ptr<NaiveAttention> naiveAttention(new NaiveAttention);
-        generateInput(seqLen, precision);
-        generateMask(seqLen, seqLen);
-        expected_result = naiveAttention->onExecute(query, key, value, mask, seqLen);
-
-        gMeta.previous = 0;
-        gMeta.remove = 0;
-        gMeta.add = seqLen;
-        auto attn = _makeAttentionModule(8, true);
-        Output = attn->onForward({Query, Key, Value, Mask})[0];
-        gMeta.sync();
-        if (!compareC4Result(seqLen)) {
-            return false;
-        }
-
-        auto valueC4 = vector_to_c4_value(value);
-        gMeta.previous = 0;
-        gMeta.remove = 0;
-        gMeta.add = seqLen;
-        auto attnValueC4 = _makeAttentionModule(8, true);
-        Output = attnValueC4->onForward({Query, Key, valueC4, Mask})[0];
-        gMeta.sync();
-        return compareC4Result(seqLen);
-    }
-
-    virtual bool run(int precision) {
-        srand(2024);
-        return runOne(10, precision) && runOne(32, precision);
-    }
-};
-
-MNNTestSuiteRegister(AttentionC4Test, "op/attention_c4");
 MNNTestSuiteRegister(SpeedAttentionTest, "speed/attention");
 #endif

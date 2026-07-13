@@ -26,6 +26,7 @@
 #include "caffeConverter.hpp"
 #include "liteConverter.hpp"
 #include "onnxConverter.hpp"
+#include "onnxOpConverter.hpp"
 #include "tensorflowConverter.hpp"
 #include "torchConverter.hpp"
 #include "writeFb.hpp"
@@ -164,6 +165,8 @@ bool Cli::initializeMNNConvertArgs(modelConfig &modelPath, int argc, char **argv
                                                       cxxopts::value<std::string>())("MNNModel", "MNN model, ex: *.mnn",
                                                                                      cxxopts::value<std::string>())(
         "fp16", "save Conv's weight/bias in half_float data type")(
+        "preserveInputType",
+        "keep int16/uint16/float16 input types instead of widening to 32-bit (default: widen to int32)")(
         "benchmarkModel",
         "Do NOT save big size data, such as Conv's weight,BN's gamma,beta,mean and variance etc. Only used to test the "
         "cost of the model")("bizCode", "MNN Model Flag, ex: MNN",
@@ -216,15 +219,12 @@ bool Cli::initializeMNNConvertArgs(modelConfig &modelPath, int argc, char **argv
         "convertMatmulToConv", "if 1, converter matmul with constant input to convolution. default: 1, range: {0, 1}",
         cxxopts::value<int>())("transformerFuse", "fuse key transformer op, like attention. default: false",
                                cxxopts::value<bool>())(
-        "transformerFuseC4",
-        "fuse LLM transformer tensors to C4 format for faster runtime. default: false, set 1 to enable",
-        cxxopts::value<int>())("groupConvNative", "keep native group convolution. default: false",
-                               cxxopts::value<bool>())("allowCustomOp", "allow custom op when convert. default: false",
-                                                       cxxopts::value<bool>())(
-        "useOriginRNNImpl",
-        "Don't use While Module to Implement LSTM or GRU, use origin OP, if open it, LSTM and "
-        "GRU can't be quantized or use other compress method",
-        cxxopts::value<bool>())("splitBlockQuant", "Split Block Quant Convolution")(
+        "groupConvNative", "keep native group convolution. default: false", cxxopts::value<bool>())(
+        "allowCustomOp", "allow custom op when convert. default: false",
+        cxxopts::value<bool>())("useOriginRNNImpl",
+                                "Don't use While Module to Implement LSTM or GRU, use origin OP, if open it, LSTM and "
+                                "GRU can't be quantized or use other compress method",
+                                cxxopts::value<bool>())("splitBlockQuant", "Split Block Quant Convolution")(
         "dumpPass",
         "Enable verbose output for each optimization pass, showing what changes each pass made (like LLVM's "
         "-debug-pass)");
@@ -361,6 +361,10 @@ bool Cli::initializeMNNConvertArgs(modelConfig &modelPath, int argc, char **argv
     if (result.count("fp16")) {
         modelPath.saveHalfFloat = true;
     }
+    // preserve input types (int16, uint16, float16) instead of widening to 32-bit
+    if (result.count("preserveInputType")) {
+        modelPath.preserveInputType = true;
+    }
     if (result.count("weightQuantAsymmetric")) {
         modelPath.weightQuantAsymmetric = result["weightQuantAsymmetric"].as<bool>();
     }
@@ -438,9 +442,6 @@ bool Cli::initializeMNNConvertArgs(modelConfig &modelPath, int argc, char **argv
     }
     if (result.count("transformerFuse")) {
         modelPath.transformerFuse = true;
-    }
-    if (result.count("transformerFuseC4")) {
-        modelPath.transformerFuseC4 = result["transformerFuseC4"].as<int>() != 0;
     }
     if (result.count("groupConvNative")) {
         modelPath.groupConvNative = true;
@@ -595,6 +596,10 @@ bool Cli::convertModel(modelConfig& modelPath) {
             parseRes = addBizCode(modelPath.modelFile, modelPath.bizCode, netT);
         }
     } else if (modelPath.model == modelConfig::ONNX) {
+        // Apply preserveInputType flag before ONNX conversion
+        if (modelPath.preserveInputType) {
+            onnxOpConverter::setPreserveInputType(true);
+        }
         parseRes = onnx2MNNNet(modelPath.modelFile, modelPath.bizCode, netT, metaOp.get(), inputNames);
     } else if (modelPath.model == modelConfig::TFLITE) {
         if (modelPath.mnn2json) {
@@ -652,9 +657,6 @@ bool Cli::convertModel(modelConfig& modelPath) {
             "FuseDupOp",
             "RemoveInvalidCast",
         };
-        if (modelPath.transformerFuseC4) {
-            expectedPass.insert(expectedPass.begin() + 1, "FuseTransformerC4");
-        }
     }
     if (modelPath.splitQuantBlock) {
         expectedPass.emplace_back("SplitBlockQuantConvolution");

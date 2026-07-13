@@ -38,6 +38,7 @@ public:
     // model source
     MODEL_SOURCE model;
     bool saveHalfFloat;
+    bool preserveInputType = false;
     bool forTraining = false;
     int weightQuantBits = 0;// If weightQuantBits > 0, it means the bit
     bool weightQuantAsymmetric = true;
@@ -59,7 +60,6 @@ public:
     bool convertMatmulToConv = true;
     bool useGeluApproximation = true;
     bool transformerFuse = false;
-    bool transformerFuseC4 = false;
     bool allowCustomOp = false;
     bool groupConvNative = false;
     std::string customOpLibs = "";

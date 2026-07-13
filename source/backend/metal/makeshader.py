@@ -2,17 +2,15 @@
 import sys
 import os
 import re
-import subprocess
-
 gOutputHeadFile = "AllShader.hpp"
 gOutputSourceFile = "AllShader.cpp"
-
 def findAllShader(path):
+    cmd = "find " + path + " -name \"*.metal\""
+    vexs = os.popen(cmd).read().split('\n')
     output = []
-    for root, dirs, files in os.walk(path):
-        for file in files:
-            if file.endswith(".metal"):
-                output.append(os.path.join(root, file))
+    for f in vexs:
+        if len(f)>1:
+            output.append(f)
     return output
 
 def getName(fileName):

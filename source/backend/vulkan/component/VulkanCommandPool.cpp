@@ -9,6 +9,7 @@
 #include "backend/vulkan/component/VulkanCommandPool.hpp"
 #include <string.h>
 #include <memory>
+#include <mutex>
 #include "backend/vulkan/component/VulkanFence.hpp"
 #include "backend/vulkan/component/VulkanImage.hpp"
 
@@ -38,7 +39,10 @@ std::shared_ptr<VulkanFence> VulkanCommandPool::submit(VkCommandBuffer buffer) c
                                 /* .pSignalSemaphores    = */ nullptr};
     auto fenceReal           = fence->get();
     auto queue               = mDevice.acquireDefaultDevQueue();
-    CALL_VK(vkQueueSubmit(queue, 1, &submit_info, fenceReal));
+    {
+        std::lock_guard<std::mutex> lock(mDevice.queueMutex());
+        CALL_VK(vkQueueSubmit(queue, 1, &submit_info, fenceReal));
+    }
     return fence;
 }
 

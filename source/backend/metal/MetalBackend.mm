@@ -86,7 +86,6 @@ MetalBackend::MetalBackend(const MetalRuntime* runtime, bool usefp16AsFp32, Back
     mRuntime = runtime;
     auto ctx = (__bridge MNNMetalContext *)runtime->context();
     mBufferPool.reset(runtime->createDynamicAllocator(0, false));
-    mExecutionBufferPool.reset(new EagerBufferAllocator(runtime->buffer(0)->root, 1024));
     mCurrentAllocator = mBufferPool.get();
     mUseFloatAsFp16 = usefp16AsFp32;
     mMemoryMode = mode;
@@ -270,10 +269,6 @@ Backend::MemObj* MetalBackend::onAcquire(const Tensor *_tensor, StorageType stor
             buffer = mCurrentAllocator->alloc(size, true);
             allocator = mCurrentAllocator;
         } break;
-        case Backend::DYNAMIC_IN_EXECUTION: {
-            buffer = mExecutionBufferPool->alloc(size, false);
-            allocator = mExecutionBufferPool.get();
-        } break;
         default:{
             break;
         }
@@ -296,9 +291,6 @@ Backend::MemObj* MetalBackend::onAcquire(const Tensor *_tensor, StorageType stor
 
 bool MetalBackend::onClearBuffer() {
     mCurrentAllocator->release(true);
-    if (mExecutionBufferPool.get() != nullptr) {
-        mExecutionBufferPool->release(true);
-    }
     if (nullptr != mRuntime->mStaticAllocatorRaw.get()) {
         mRuntime->mStaticAllocator->sync();
         mRuntime->mStaticAllocator = mRuntime->mStaticAllocatorRaw;
@@ -1084,7 +1076,6 @@ MetalRuntime::MetalRuntime(void* context) {
         mSimdGroupReduce = false;
         mSimdGroupMatrix = false;
     }
-    mMaxThreadSize = [[ctx device] maxThreadsPerThreadgroup].width;
     // Metal4 Support M1/A14 and later chips
 #ifdef MNN_METAL_TENSOR
     if (@available(iOS 13.0, macOS 10.15, *)) {

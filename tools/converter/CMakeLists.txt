@@ -21,6 +21,7 @@ IF(MNN_BUILD_CONVERTER)
   include_directories(${CMAKE_CURRENT_LIST_DIR}/include)
   include_directories(${CMAKE_CURRENT_LIST_DIR}/source/tflite/schema)
   include_directories(${CMAKE_CURRENT_BINARY_DIR})
+  include_directories(${CMAKE_CURRENT_LIST_DIR}/source/onnx)
   include(${CMAKE_CURRENT_LIST_DIR}/source/compression/CMakeLists.txt)
   include(${CMAKE_CURRENT_LIST_DIR}/source/tensorflow/CMakeLists.txt)
   include(${CMAKE_CURRENT_LIST_DIR}/source/onnx/CMakeLists.txt)
@@ -38,10 +39,12 @@ IF(MNN_BUILD_CONVERTER)
     ${CMAKE_CURRENT_LIST_DIR}/source/MNNConverter.cpp
   )
   IF(MNN_BUILD_SHARED_LIBS)
-     add_library(MNNConvertDeps SHARED ${COMMON_SRC} ${MNN_CONVERTER_BACKENDS_OBJECTS} ${CMAKE_CURRENT_LIST_DIR}/../../3rd_party/flatbuffers/src/util.cpp $<TARGET_OBJECTS:MNNUtils>)
+     add_library(MNNConvertDeps SHARED ${COMMON_SRC} ${MNN_CONVERTER_BACKENDS_OBJECTS} ${CMAKE_CURRENT_LIST_DIR}/../../3rd_party/flatbuffers/src/util.cpp)
+     target_link_libraries(MNNConvertDeps PRIVATE MNNUtils)
      add_dependencies(MNNConvertDeps MNN)
   ELSE()
     add_library(MNNConvertDeps STATIC ${COMMON_SRC} ${MNN_CONVERTER_BACKENDS_OBJECTS} ${CMAKE_CURRENT_LIST_DIR}/../../3rd_party/flatbuffers/src/util.cpp)
+target_link_libraries(MNNConvertDeps PUBLIC MNNUtils)
   ENDIF()
   
   
@@ -81,17 +84,15 @@ IF(MNN_BUILD_CONVERTER)
       ${COMMON_SRC}
       ${MNN_CONVERTER_BACKENDS_OBJECTS}
       ${CMAKE_CURRENT_LIST_DIR}/../../3rd_party/flatbuffers/src/util.cpp
-      $<TARGET_OBJECTS:MNNUtils>
     )
-    target_link_libraries(TestOnnxResize ${MNN_DEPS} ${Protobuf_LIBRARIES})
+    target_link_libraries(TestOnnxResize ${MNN_DEPS} ${Protobuf_LIBRARIES} MNNUtils)
     add_executable(TestOnnxEinsum
       ${CMAKE_CURRENT_LIST_DIR}/source/TestOnnxEinsum.cpp
       ${COMMON_SRC}
       ${MNN_CONVERTER_BACKENDS_OBJECTS}
       ${CMAKE_CURRENT_LIST_DIR}/../../3rd_party/flatbuffers/src/util.cpp
-      $<TARGET_OBJECTS:MNNUtils>
     )
-    target_link_libraries(TestOnnxEinsum ${MNN_DEPS} ${Protobuf_LIBRARIES})
+    target_link_libraries(TestOnnxEinsum ${MNN_DEPS} ${Protobuf_LIBRARIES} MNNUtils)
     add_executable(TestPassManager ${CMAKE_CURRENT_LIST_DIR}/source/TestPassManager.cpp)
     target_link_libraries(TestPassManager MNNConvertDeps)
     target_link_libraries(MNNConvert MNNConvertDeps)

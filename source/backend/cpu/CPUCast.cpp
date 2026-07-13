@@ -9,11 +9,23 @@
 #include "backend/cpu/CPUCast.hpp"
 #include "core/TensorUtils.hpp"
 #include "core/Macro.h"
+#ifndef MNN_MINIMAL_CPU
 #include "backend/cpu/compute/Int8FunctionsOpt.h"
+#endif
 #include "compute/CommonOptFunction.h"
 #include <cmath>
 
 namespace MNN {
+#ifdef MNN_MINIMAL_CPU
+// Minimal CPU stubs — int8 conversion is not supported
+ErrorCode CPUCastCreator::cast(const void* inputRaw, void* outputRaw, ConvertType type,
+                               int number, float scale, float zero, float min, float max, const CPUBackend* bn) {
+    return NOT_SUPPORT;
+}
+ErrorCode CPUCastCreator::cast(const Tensor* input, const Tensor* output, const CPUBackend* bn, ConvertType type) {
+    return NOT_SUPPORT;
+}
+#else
 ErrorCode CPUCastCreator::cast(const void* inputRaw, void* outputRaw, ConvertType type,
                                int number, float scale, float zero, float min, float max, const CPUBackend* bn) {
     auto pack = bn->functions()->pack;
@@ -63,6 +75,7 @@ ErrorCode CPUCastCreator::cast(const Tensor* input, const Tensor* output, const 
     }
     return NO_ERROR;
 }
+#endif
 
 template <typename srcT, typename dstT>
 class CastDataType : public Execution {

@@ -211,12 +211,12 @@ private:
 private:
     bool mOwner;
     std::shared_ptr<VulkanInstance> mInstance; ///< refer to Instance object used to create device
-    mutable std::mutex mQueueMutex; ///< serializes vkQueueSubmit across sessions
     uint32_t mQueueFamilyIndex;
     VkPhysicalDevice mPhysicalDevice;
     VkDevice mDevice;
     VkPhysicalDeviceProperties mDeviceProty;
     VkQueue mQueue;
+    mutable std::mutex mQueueMutex; ///< serializes vkQueueSubmit across sessions
     VkPhysicalDeviceMemoryProperties mMemoryProty;
     SubgroupInfo mSubgroupInfo{};
     uint32_t mLocalMemorySize = 0;

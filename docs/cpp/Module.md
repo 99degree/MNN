@@ -4,6 +4,7 @@ class Module
 ```
 
 ## 成员函数
+---
 ### Tensor
 构造函数
 ```cpp
@@ -15,12 +16,14 @@ Module() == default;
 
 返回：Module对象
 
+---
 ### ~Module
 析构函数
 ```cpp
 virtual ~Module() == default;
 ```
 
+---
 ### onForward
 ```cpp
 virtual std::vector<Express::VARP> onForward(const std::vector<Express::VARP>& inputs) = 0;
@@ -32,6 +35,7 @@ virtual std::vector<Express::VARP> onForward(const std::vector<Express::VARP>& i
 
 返回：前向传播输出变量
 
+---
 ### forward
 ```cpp
 Express::VARP forward(Express::VARP input);
@@ -43,6 +47,7 @@ Express::VARP forward(Express::VARP input);
 
 返回：前向传播输出变量
 
+---
 ### parameters
 ```cpp
 std::vector<Express::VARP> parameters() const;
@@ -53,6 +58,7 @@ std::vector<Express::VARP> parameters() const;
 
 返回：Module的参数
 
+---
 ### loadParameters
 ```cpp
 bool loadParameters(const std::vector<Express::VARP>& parameters);
@@ -64,6 +70,7 @@ bool loadParameters(const std::vector<Express::VARP>& parameters);
 
 返回：是否成功加载参数
 
+---
 ### setIsTraining
 ```cpp
 void setIsTraining(const bool isTraining);
@@ -75,6 +82,7 @@ void setIsTraining(const bool isTraining);
 
 返回：`void`
 
+---
 ### getIsTraining
 ```cpp
 bool getIsTraining();
@@ -85,6 +93,7 @@ bool getIsTraining();
 
 返回：Module是否为训练模式，是则返回true，不是返回false
 
+---
 ### clearCache
 ```cpp
 void clearCache();
@@ -95,6 +104,7 @@ void clearCache();
 
 返回：`void`
 
+---
 ### name
 ```cpp
 const std::string& name() const {
@@ -107,6 +117,7 @@ const std::string& name() const {
 
 返回：Module的名称
 
+---
 ### setName
 ```cpp
 void setName(std::string name) {
@@ -120,6 +131,7 @@ void setName(std::string name) {
 
 返回：`void`
 
+---
 ### type
 ```cpp
 const std::string type() const {
@@ -132,6 +144,7 @@ const std::string type() const {
 
 返回：Module的类型
 
+---
 ### setType
 ```cpp
 void setType(std::string type) {
@@ -145,6 +158,7 @@ void setType(std::string type) {
 
 返回：`void`
 
+---
 ### addParameter
 ```cpp
 int addParameter(Express::VARP parameter);
@@ -156,6 +170,7 @@ int addParameter(Express::VARP parameter);
 
 返回：添加前的参数数量
 
+---
 ### setParameter
 ```cpp
 void setParameter(Express::VARP parameter, int index);
@@ -168,6 +183,7 @@ void setParameter(Express::VARP parameter, int index);
 
 返回：`void`
 
+---
 ### createEmpty
 ```cpp
 static Module* createEmpty(const std::vector<Express::VARP>& parameters);
@@ -179,6 +195,7 @@ static Module* createEmpty(const std::vector<Express::VARP>& parameters);
 
 返回：创建的空的Module对象
 
+---
 ### load
 ```cpp
 static Module* load(const std::vector<std::string>& inputs, const std::vector<std::string>& outputs, const uint8_t* buffer, size_t length, const Config* config = nullptr);
@@ -194,6 +211,7 @@ static Module* load(const std::vector<std::string>& inputs, const std::vector<st
 
 返回：module对象
 
+---
 ### load
 ```cpp
 static Module* load(const std::vector<std::string>& inputs, const std::vector<std::string>& outputs, const char* fileName, const Config* config = nullptr);
@@ -208,6 +226,7 @@ static Module* load(const std::vector<std::string>& inputs, const std::vector<st
 
 返回：module对象
 
+---
 ### load
 ```cpp
 static Module* load(const std::vector<std::string>& inputs, const std::vector<std::string>& outputs, const char* fileName, const std::shared_ptr<MNN::Express::Executor::RuntimeManager> rtMgr, const Config* config = nullptr);
@@ -223,6 +242,7 @@ static Module* load(const std::vector<std::string>& inputs, const std::vector<st
 
 返回：module对象
 
+---
 ### load
 ```cpp
 static Module* load(const std::vector<std::string>& inputs, const std::vector<std::string>& outputs, const uint8_t* buffer, size_t length, const std::shared_ptr<MNN::Express::Executor::RuntimeManager> rtMgr, const Config* config = nullptr);
@@ -239,6 +259,7 @@ static Module* load(const std::vector<std::string>& inputs, const std::vector<st
 
 返回：module对象
 
+---
 ### load
 ```cpp
 static Module* extract(std::vector<Express::VARP> inputs, std::vector<Express::VARP> outputs, bool fortrain, const std::map<std::string, SubGraph>& subGraph = {});
@@ -253,6 +274,7 @@ static Module* extract(std::vector<Express::VARP> inputs, std::vector<Express::V
 
 返回：module对象
 
+---
 ### clone
 ```cpp
 static Module* clone(const Module* module, const bool shareParams = false);
@@ -265,6 +287,7 @@ static Module* clone(const Module* module, const bool shareParams = false);
 
 返回：Module对象实例
 
+---
 ### getInfo
 ```cpp
 const Info* getInfo() const;
@@ -275,6 +298,7 @@ const Info* getInfo() const;
 
 返回：Module的信息
 
+---
 ### CloneContext
 ```cpp
 CloneContext() = default;
@@ -285,6 +309,7 @@ CloneContext() = default;
 
 返回：Module的内容
 
+---
 ### CloneContext
 ```cpp
 explicit CloneContext(const bool shareParams)
@@ -297,12 +322,14 @@ explicit CloneContext(const bool shareParams)
 
 返回：Module的内容
 
+---
 ### ~CloneContext
 析构函数
 ```cpp
 virtual ~CloneContext() = default;
 ```
 
+---
 ### shareParams
 ```cpp
 const bool shareParams() const { return mShareParams; };
@@ -313,6 +340,7 @@ const bool shareParams() const { return mShareParams; };
 
 返回：共享返回true，反之则为false
 
+---
 ### clone
 ```cpp
 virtual Module* clone(CloneContext* ctx) const {
@@ -326,6 +354,7 @@ virtual Module* clone(CloneContext* ctx) const {
 
 返回：Module对象
 
+---
 ### registerModel
 ```cpp
 void registerModel(const std::vector<std::shared_ptr<Module>>& children);
@@ -337,6 +366,7 @@ void registerModel(const std::vector<std::shared_ptr<Module>>& children);
 
 返回：`void`
 
+---
 ### destroy
 ```cpp
 static void destroy(Module* m);

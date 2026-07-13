@@ -46,7 +46,7 @@ IF(MNN_SEP_BUILD)
     add_library(MNN_CL SHARED ${MNN_OpenCL_SRC} "${CMAKE_CURRENT_LIST_DIR}/execution/cl/")
     target_link_libraries(MNN_CL MNN ${OpenCL_LIBRARIES})
 ELSE()
-    add_library(MNN_CL OBJECT ${MNN_OpenCL_SRC} "${CMAKE_CURRENT_LIST_DIR}/execution/cl/")
+    add_library(MNN_CL STATIC ${MNN_OpenCL_SRC} "${CMAKE_CURRENT_LIST_DIR}/execution/cl/")
     set(MNN_OCL_LIBS ${OpenCL_LIBRARIES} PARENT_SCOPE)
 ENDIF()
 

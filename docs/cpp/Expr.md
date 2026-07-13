@@ -19,6 +19,7 @@ enum Dimensionformat {
 | 1 | `NC4HW4` | |
 | 2 | `NCHW` |  |
 
+---
 ### InputType
 ```cpp
 enum InputType {
@@ -36,6 +37,7 @@ enum InputType {
 
 ## 成员函数
 
+---
 ### VARP
 ```cpp
 VARP(std::shared_ptr<Variable> c) {
@@ -50,6 +52,7 @@ VARP(std::shared_ptr<Variable> c) {
 
 返回：`void`
 
+---
 ### VARP
 ```cpp
 VARP(Variable* c) {
@@ -64,6 +67,7 @@ VARP(Variable* c) {
 
 返回：`void`
 
+---
 ### get
 ```cpp
 Variable* get() const  {
@@ -77,6 +81,7 @@ Variable* get() const  {
 
 返回：Variable对象
 
+---
 ### VARP
 ```cpp
 VARP(const VARP& var) {
@@ -91,6 +96,7 @@ VARP(const VARP& var) {
 
 返回：`void`
 
+---
 ### VARP
 ```cpp
 VARP(VARP&& var) {
@@ -105,6 +111,7 @@ VARP(VARP&& var) {
 
 返回：`void`
 
+---
 ### operator+
 ```cpp
 VARP operator+(VARP var) const;
@@ -117,6 +124,7 @@ VARP类型对象加法计算
 
 返回：VARP对象
 
+---
 ### operator-
 ```cpp
 VARP operator-(VARP var) const;
@@ -129,6 +137,7 @@ VARP类型对象减法计算
 
 返回：VARP对象
 
+---
 ### operator*
 ```cpp
 VARP operator*(VARP var) const;
@@ -141,6 +150,7 @@ VARP类型对象乘法计算
 
 返回：VARP对象
 
+---
 ### operator/
 ```cpp
 VARP operator/(VARP var) const;
@@ -153,6 +163,7 @@ VARP类型对象除法计算
 
 返回：VARP对象
 
+---
 ### mean
 ```cpp
 VARP mean(INTS dims) const;
@@ -165,6 +176,7 @@ VARP mean(INTS dims) const;
 
 返回：VARP对象
 
+---
 ### sum
 ```cpp
 VARP sum(INTS dims) const;
@@ -177,6 +189,7 @@ VARP sum(INTS dims) const;
 
 返回：VARP对象
 
+---
 ### operator==
 ```cpp
 bool operator==(const VARP& var) const {
@@ -191,6 +204,7 @@ bool operator==(const VARP& var) const {
 
 返回：true/false
 
+---
 ### operator<
 ```cpp
 bool operator<(const VARP& var) const {
@@ -205,6 +219,7 @@ bool operator<(const VARP& var) const {
 
 返回：true/false
 
+---
 ### operator<=
 ```cpp
 bool operator<=(const VARP& var) const {
@@ -219,6 +234,7 @@ bool operator<=(const VARP& var) const {
 
 返回：true/false
 
+---
 ### operator=
 ```cpp
 VARP& operator=(const VARP& var) {
@@ -234,6 +250,7 @@ VARP& operator=(const VARP& var) {
 
 返回：当前对象的拷贝
 
+---
 ### operator=
 ```cpp
 VARP& operator=(Variable* var) {
@@ -250,6 +267,7 @@ VARP& operator=(Variable* var) {
 
 返回：当前对象的拷贝
 
+---
 ### operator->
 ```cpp
 Variable* operator->() const  {
@@ -263,6 +281,7 @@ Variable* operator->() const  {
 
 返回：Variable对象
 
+---
 ### fix
 ```cpp
 bool fix(InputType type) const;
@@ -275,6 +294,7 @@ bool fix(InputType type) const;
 
 返回：true/false
 
+---
 ### operator==
 ```cpp
 inline bool operator==(Variable* src, VARP dst) {
@@ -290,6 +310,7 @@ inline bool operator==(Variable* src, VARP dst) {
 
 返回：true/false
 
+---
 ### operator!=
 ```cpp
 inline bool operator!=(Variable* src, VARP dst) {
@@ -311,6 +332,7 @@ inline bool operator!=(Variable* src, VARP dst) {
 class Variable
 ```
 ## 成员函数
+---
 ### name
 ```cpp
 const std::string& name() const;
@@ -322,6 +344,7 @@ const std::string& name() const;
 
 返回：名称
 
+---
 ### setName
 ```cpp
 void setName(const std::string& name);
@@ -334,6 +357,7 @@ void setName(const std::string& name);
 
 返回：`void` 
 
+---
 ### expr
 ```cpp
 std::pair<EXPRP, int> expr() const {
@@ -347,6 +371,7 @@ std::pair<EXPRP, int> expr() const {
 
 返回：EXPRP对象
 
+---
 ### getInfo
 ```cpp
 const Info* getInfo();
@@ -358,6 +383,7 @@ const Info* getInfo();
 
 返回：如果计算信息错误，返回nullptr
 
+---
 ### resize
 ```cpp
 bool resize(INTS dims);
@@ -370,6 +396,7 @@ bool resize(INTS dims);
 
 返回：true/false
 
+---
 ### readMap
 ```cpp
 template <typename T>
@@ -385,6 +412,7 @@ const T* readMap() {
 
 返回：信息
 
+---
 ### writeMap
 ```cpp
 template <typename T>
@@ -399,6 +427,7 @@ T* writeMap() {
 
 返回：信息
 
+---
 ### input
 ```cpp
 bool input(VARP src);
@@ -411,6 +440,7 @@ bool input(VARP src);
 
 返回：true/false
 
+---
 ### replace
 ```cpp
 static void replace(VARP dst, VARP src);
@@ -424,6 +454,7 @@ static void replace(VARP dst, VARP src);
 
 返回：`void`
 
+---
 ### create
 ```cpp
 static VARP create(EXPRP expr, int index = 0);
@@ -437,6 +468,7 @@ static VARP create(EXPRP expr, int index = 0);
 
 返回：VARP对象
 
+---
 ### load
 ```cpp
 static std::vector<VARP> load(const char* fileName);
@@ -449,6 +481,7 @@ static std::vector<VARP> load(const char* fileName);
 
 返回：VARP对象矩阵
 
+---
 ### loadMap
 ```cpp
 static std::map<std::string, VARP> loadMap(const char* fileName);
@@ -461,6 +494,7 @@ static std::map<std::string, VARP> loadMap(const char* fileName);
 
 返回：模型对象
 
+---
 ### load
 ```cpp
 static std::vector<VARP> load(const uint8_t* buffer, size_t length);
@@ -474,6 +508,7 @@ static std::vector<VARP> load(const uint8_t* buffer, size_t length);
 
 返回：模型对象
 
+---
 ### loadMap
 ```cpp
 static std::map<std::string, VARP> loadMap(const uint8_t* buffer, size_t length);
@@ -487,6 +522,7 @@ static std::map<std::string, VARP> loadMap(const uint8_t* buffer, size_t length)
 
 返回：模型对象
 
+---
 ### getInputAndOutput
 ```cpp
 static std::pair<std::map<std::string, VARP>, std::map<std::string, VARP>> getInputAndOutput(const std::map<std::string, VARP>& allVariable);
@@ -499,6 +535,7 @@ static std::pair<std::map<std::string, VARP>, std::map<std::string, VARP>> getIn
 
 返回：模型输入输出节点
 
+---
 ### mapToSequence
 ```cpp
 static std::vector<VARP> mapToSequence(const std::map<std::string, VARP>& source);
@@ -511,6 +548,7 @@ static std::vector<VARP> mapToSequence(const std::map<std::string, VARP>& source
 
 返回：输出节点及其名称
 
+---
 ### getExecuteOrder
 ```cpp
 static std::vector<EXPRP> getExecuteOrder(const std::vector<VARP>& output);
@@ -523,6 +561,7 @@ static std::vector<EXPRP> getExecuteOrder(const std::vector<VARP>& output);
 
 返回：指令集
 
+---
 ### save
 ```cpp
 static void save(const std::vector<VARP>& vars, const char* fileName);
@@ -536,6 +575,7 @@ static void save(const std::vector<VARP>& vars, const char* fileName);
 
 返回：`void`
 
+---
 ### save
 ```cpp
 static std::vector<int8_t> save(const std::vector<VARP>& vars);
@@ -548,6 +588,7 @@ static std::vector<int8_t> save(const std::vector<VARP>& vars);
 
 返回：`void`
 
+---
 ### save
 ```cpp
 static void save(const std::vector<VARP>& vars, NetT* dest);
@@ -561,6 +602,7 @@ static void save(const std::vector<VARP>& vars, NetT* dest);
 
 返回：`void`
 
+---
 ### prepareCompute
 ```cpp
 static void prepareCompute(const std::vector<VARP>& vars, bool forceCPU = false);
@@ -574,6 +616,7 @@ static void prepareCompute(const std::vector<VARP>& vars, bool forceCPU = false)
 
 返回：`void`
 
+---
 ### compute
 ```cpp
 static void compute(const std::vector<VARP>& vars, bool forceCPU = false);
@@ -587,6 +630,7 @@ static void compute(const std::vector<VARP>& vars, bool forceCPU = false);
 
 返回：`void`
 
+---
 ### linkNumber
 ```cpp
 size_t linkNumber() const;
@@ -598,6 +642,7 @@ size_t linkNumber() const;
 
 返回：size
 
+---
 ### toExprs
 ```cpp
 const std::vector<WeakEXPRP>& toExprs() const;
@@ -609,6 +654,7 @@ const std::vector<WeakEXPRP>& toExprs() const;
 
 返回：模型对象信息
 
+---
 ### setExpr
 ```cpp
 void setExpr(EXPRP expr, int index) {
@@ -630,6 +676,7 @@ class Expr
 ```
 
 ## 枚举类
+---
 ### MemoryType
 ```cpp
 enum MemoryType {
@@ -646,6 +693,7 @@ enum MemoryType {
 | 2 | `REF` | 引用 |
 
 ## 成员函数
+---
 ### create
 ```cpp
 static EXPRP create(Tensor* tensor, bool own = false);
@@ -659,6 +707,7 @@ static EXPRP create(Tensor* tensor, bool own = false);
 
 返回：EXPRP变量
 
+---
 ### create
 ```cpp
 static EXPRP create(Variable::Info&& info, const void* ptr, VARP::InputType type, MemoryType copy = COPY);
@@ -674,6 +723,7 @@ static EXPRP create(Variable::Info&& info, const void* ptr, VARP::InputType type
 
 返回：EXPRP变量
 
+---
 ### create
 ```cpp
 static EXPRP create(const OpT* op, std::vector<VARP> inputs, int outputSize = 1);
@@ -688,6 +738,7 @@ static EXPRP create(const OpT* op, std::vector<VARP> inputs, int outputSize = 1)
 
 返回：EXPRP变量
 
+---
 ### create
 ```cpp
 static EXPRP create(std::shared_ptr<BufferStorage> extra, std::vector<VARP>&& inputs, int outputSize = 1);
@@ -702,6 +753,7 @@ static EXPRP create(std::shared_ptr<BufferStorage> extra, std::vector<VARP>&& in
 
 返回：EXPRP变量
 
+---
 ### create
 ```cpp
 static EXPRP create(std::unique_ptr<OpT>&& op, std::vector<VARP> inputs, int outputSize = 1) {
@@ -718,6 +770,7 @@ static EXPRP create(std::unique_ptr<OpT>&& op, std::vector<VARP> inputs, int out
 
 返回：EXPRP变量
 
+---
 ### setName
 ```cpp
 void setName(const std::string& name);
@@ -730,6 +783,7 @@ void setName(const std::string& name);
 
 返回：`void`
 
+---
 ### get
 ```cpp
 const Op* get() const {
@@ -743,6 +797,7 @@ const Op* get() const {
 
 返回：对象信息
 
+---
 ### inputs
 ```cpp
 const std::vector<VARP>& inputs() const {
@@ -756,6 +811,7 @@ const std::vector<VARP>& inputs() const {
 
 返回：输入节点信息
 
+---
 ### outputSize
 ```cpp
 int outputSize() const {
@@ -769,6 +825,7 @@ int outputSize() const {
 
 返回：size
 
+---
 ### replace
 ```cpp
 static void replace(EXPRP oldExpr, EXPRP newExpr);
@@ -782,6 +839,7 @@ static void replace(EXPRP oldExpr, EXPRP newExpr);
 
 返回：`void`
 
+---
 ### requireInfo
 ```cpp
 bool requireInfo();
@@ -793,6 +851,7 @@ bool requireInfo();
 
 返回：信息
 
+---
 ### visitOutputs
 ```cpp
 void visitOutputs(const std::function<bool(EXPRP, int)>& visit);
@@ -805,6 +864,7 @@ void visitOutputs(const std::function<bool(EXPRP, int)>& visit);
 
 返回：`void`
 
+---
 ### visit
 ```cpp
 static void visit(EXPRP expr, const std::function<bool(EXPRP)>& before, const std::function<bool(EXPRP)>& after);
@@ -819,6 +879,7 @@ static void visit(EXPRP expr, const std::function<bool(EXPRP)>& before, const st
 
 返回：`void`
 
+---
 ### outputs
 ```cpp
 const std::vector<WeakEXPRP>& outputs() const {
@@ -832,9 +893,11 @@ const std::vector<WeakEXPRP>& outputs() const {
 
 返回：信息
 
+---
 ### ~Expr()
 析构函数
 
+---
 ### visited
 ```cpp
 bool visited() const {
@@ -848,6 +911,7 @@ bool visited() const {
 
 返回：true/false
 
+---
 ### setVisited
 ```cpp
 void setVisited(bool visited) {
@@ -862,6 +926,7 @@ void setVisited(bool visited) {
 
 返回：`void`
 
+---
 ### name
 ```cpp
 const std::string& name() const {
@@ -875,6 +940,7 @@ const std::string& name() const {
 
 返回：名称
 
+---
 ### outputName
 ```cpp
 const std::string& outputName(int index) {
@@ -889,6 +955,7 @@ const std::string& outputName(int index) {
 
 返回：名称
 
+---
 ### inputType
 ```cpp
 VARP::InputType inputType() const {return mType;};
@@ -900,6 +967,7 @@ VARP::InputType inputType() const {return mType;};
 
 返回：输入类型
 
+---
 ### outputInfo
 ```cpp
 Variable::Info* outputInfo(int index) const;
@@ -912,6 +980,7 @@ Variable::Info* outputInfo(int index) const;
 
 返回：输出信息
 
+---
 ### extra
 ```cpp
 std::shared_ptr<BufferStorage> extra() const {
@@ -925,6 +994,7 @@ std::shared_ptr<BufferStorage> extra() const {
 
 返回：附加信息
 
+---
 ### inside
 ```cpp
 std::shared_ptr<Inside> inside() const {
@@ -938,6 +1008,7 @@ std::shared_ptr<Inside> inside() const {
 
 返回：内部信息
 
+---
 ### valid
 ```cpp
 bool valid() const {
