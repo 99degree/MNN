@@ -268,7 +268,9 @@ std::pair<const void*, size_t> VulkanRuntime::onGetCache() {
 }
 
 // Forward declaration for VulkanFuse registration
+#ifndef MNN_VULKAN_IMAGE
 extern "C" void MNNVulkanFuseRegister();
+#endif
 
 class VulkanRuntimeCreator : public RuntimeCreator {
 public:
@@ -360,7 +362,9 @@ int MNNVulkanHotSwapConstBuffer(void* session_ptr, int bindingIndex,
 // This avoids --gc-sections stripping the static constructor.
 extern "C" __attribute__((visibility("default"))) void MNNVulkanRegisterAll() {
     MNNInsertExtraRuntimeCreator(MNN_FORWARD_VULKAN, new VulkanRuntimeCreator, true);
+#ifndef MNN_VULKAN_IMAGE
     MNNVulkanFuseRegister();
+#endif
 }
 
 // Use __attribute__((constructor)) instead of static lambda to ensure
@@ -368,8 +372,10 @@ extern "C" __attribute__((visibility("default"))) void MNNVulkanRegisterAll() {
 // initializers that are not directly referenced by live code).
 __attribute__((constructor)) static void _vulkan_runtime_init() {
     MNNInsertExtraRuntimeCreator(MNN_FORWARD_VULKAN, new VulkanRuntimeCreator, true);
+#ifndef MNN_VULKAN_IMAGE
     // Register VulkanFuse creator for OpType_Extra
     // (Static constructors in other files may be stripped by --gc-sections)
     MNNVulkanFuseRegister();
+#endif
 }
 }
