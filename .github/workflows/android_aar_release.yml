@@ -506,14 +506,14 @@ jobs:
             build_android/armeabi-v7a/tools/converter/convertToStaticModel
           retention-days: 7
 
-      # ========== Download arm64 artifacts ==========
       - name: Download arm64-v8a artifacts
         uses: actions/download-artifact@v4
         with:
           name: arm64-v8a-libs
           path: build_android/arm64-v8a
 
-          # -------- Create AAR structure --------
+      - name: Create AAR structure
+        run: |
           # AndroidManifest.xml (required for AAR)
           cat > ${AAR_DIR}/AndroidManifest.xml << 'EOF'
           <?xml version="1.0" encoding="utf-8"?>
