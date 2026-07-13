@@ -420,13 +420,7 @@ jobs:
           fi
 
       # ========== Collect and package AAR ==========
-      - name: Package AAR
-        id: package_aar
-        run: |
-          VERSION="${{ steps.version.outputs.VERSION }}"
-          AAR_DIR="aar_build"
-          mkdir -p ${AAR_DIR}/jni/arm64-v8a
-          mkdir -p ${AAR_DIR}/jni/armeabi-v7a
+      # (handled by package_aar step after armv7 build)
 
           # -------- Collect arm64-v8a .so files --------
           echo "=== Collecting arm64-v8a native libs ==="
