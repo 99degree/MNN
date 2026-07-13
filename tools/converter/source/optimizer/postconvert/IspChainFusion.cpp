@@ -2246,7 +2246,7 @@ private:
         auto* gainAttr = new MNN::AttributeT();
         gainAttr->key = "gain_map";
         gainAttr->tensor.reset(new MNN::BlobT());
-        gainAttr->tensor->dataType = 0;  // float
+        gainAttr->tensor->dataType = MNN::DataType_DT_FLOAT;
         gainAttr->tensor->float32s = gainMap;
         ex->attr.push_back(std::unique_ptr<MNN::AttributeT>(gainAttr));
         setEngine(ex);
