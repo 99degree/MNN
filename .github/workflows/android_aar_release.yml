@@ -36,17 +36,6 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Determine version
-        id: version
-        run: |
-          if [[ -n "${{ github.event.inputs.version }}" ]]; then
-            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
-          elif [[ -n "${GITHUB_REF##*/}" ]] && [[ "${GITHUB_REF##*/}" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "VERSION=${GITHUB_REF##*/v}" >> $GITHUB_OUTPUT
-          else
-            echo "VERSION=3.5.1" >> $GITHUB_OUTPUT
-          fi
-
       # ============================================================
       # Android SDK & NDK Setup
       # ============================================================
@@ -201,14 +190,13 @@ jobs:
             exit 1
           fi
 
-          # Copy headers to 3rdParty include/QNN/ directory (CMake expects include/QNN/)
-          mkdir -p "${QNN_3RD_PARTY}/include/QNN"
+          # Copy headers to 3rdParty include directory
           if [ -d "${EXTRACTED_QNN_DIR}/include/QNN" ]; then
             echo "=== Copying QNN headers from QNN subdirectory ==="
-            cp -rv "${EXTRACTED_QNN_DIR}/include/QNN/"* "${QNN_3RD_PARTY}/include/QNN/"
+            cp -rv "${EXTRACTED_QNN_DIR}/include/QNN/"* "${QNN_3RD_PARTY}/include/"
           else
             echo "=== Copying QNN headers from include root ==="
-            cp -rv "${EXTRACTED_QNN_DIR}/include/"* "${QNN_3RD_PARTY}/include/QNN/"
+            cp -rv "${EXTRACTED_QNN_DIR}/include/"* "${QNN_3RD_PARTY}/include/"
           fi
 
           echo "=== Debug: Copied headers ==="
@@ -260,20 +248,20 @@ jobs:
             -DMNN_JNI=ON \
             -DMNN_BUILD_OPENCV=ON \
             -DMNN_IMGCODECS=ON \
-            -DMNN_BUILD_LLM=OFF \
+            -DMNN_BUILD_LLM=ON \
             -DMNN_SUPPORT_TRANSFORMER_FUSE=ON \
             -DMNN_LOW_MEMORY=ON \
             -DMNN_SUPPORT_BF16=ON \
             -DMNN_BUILD_AUDIO=ON \
-            -DMNN_BUILD_DIFFUSION=OFF \
-            -DLLM_SUPPORT_VISION=OFF \
-            -DLLM_SUPPORT_AUDIO=OFF \
+            -DMNN_BUILD_DIFFUSION=ON \
+            -DLLM_SUPPORT_VISION=ON \
+            -DLLM_SUPPORT_AUDIO=ON \
             -DMNN_BUILD_FOR_ANDROID_COMMAND=ON \
-            -DMNN_SEP_BUILD=ON \
+            -DMNN_SEP_BUILD=OFF \
             -DMNN_BUILD_SHARED_LIBS=ON \
             -DMNN_BUILD_BENCHMARK=OFF \
             -DMNN_BUILD_TEST=OFF \
-            -DMNN_BUILD_TOOLS=ON \
+            -DMNN_BUILD_TOOLS=OFF \
             -DMNN_BUILD_DEMO=OFF \
             -DNATIVE_LIBRARY_OUTPUT=. \
             -DNATIVE_INCLUDE_OUTPUT=. \
@@ -300,20 +288,20 @@ jobs:
             -DMNN_JNI=ON \
             -DMNN_BUILD_OPENCV=ON \
             -DMNN_IMGCODECS=ON \
-            -DMNN_BUILD_LLM=OFF \
+            -DMNN_BUILD_LLM=ON \
             -DMNN_SUPPORT_TRANSFORMER_FUSE=ON \
             -DMNN_LOW_MEMORY=ON \
             -DMNN_SUPPORT_BF16=ON \
             -DMNN_BUILD_AUDIO=ON \
-            -DMNN_BUILD_DIFFUSION=OFF \
-            -DLLM_SUPPORT_VISION=OFF \
-            -DLLM_SUPPORT_AUDIO=OFF \
+            -DMNN_BUILD_DIFFUSION=ON \
+            -DLLM_SUPPORT_VISION=ON \
+            -DLLM_SUPPORT_AUDIO=ON \
             -DMNN_BUILD_FOR_ANDROID_COMMAND=ON \
-            -DMNN_SEP_BUILD=ON \
+            -DMNN_SEP_BUILD=OFF \
             -DMNN_BUILD_SHARED_LIBS=ON \
             -DMNN_BUILD_BENCHMARK=OFF \
             -DMNN_BUILD_TEST=OFF \
-            -DMNN_BUILD_TOOLS=ON \
+            -DMNN_BUILD_TOOLS=OFF \
             -DMNN_BUILD_DEMO=OFF \
             -DNATIVE_LIBRARY_OUTPUT=. \
             -DNATIVE_INCLUDE_OUTPUT=. \
@@ -321,25 +309,6 @@ jobs:
 
             make -j$(nproc) VERBOSE=1
           fi
-
-      # ========== Upload arm64 artifacts ==========
-      - name: Upload arm64-v8a artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: arm64-v8a-libs
-          path: |
-            build_android/arm64-v8a/*.so
-            build_android/arm64-v8a/source/jni/*.so
-            build_android/arm64-v8a/tools/cv/*.so
-            build_android/arm64-v8a/tools/audio/*.so
-            build_android/arm64-v8a/source/backend/qnn/*.so
-            build_android/arm64-v8a/source/backend/vulkan/*.so
-            build_android/arm64-v8a/source/backend/opencl/*.so
-            build_android/arm64-v8a/source/backend/opengl/*.so
-            build_android/arm64-v8a/tools/converter/*.so
-            build_android/arm64-v8a/tools/converter/mnnconvert
-            build_android/arm64-v8a/tools/converter/convertToStaticModel
-          retention-days: 7
 
       # ========== Build armeabi-v7a with all backends ==========
       - name: Build native libs (armeabi-v7a)
@@ -368,20 +337,20 @@ jobs:
             -DMNN_JNI=ON \
             -DMNN_BUILD_OPENCV=ON \
             -DMNN_IMGCODECS=ON \
-            -DMNN_BUILD_LLM=OFF \
+            -DMNN_BUILD_LLM=ON \
             -DMNN_SUPPORT_TRANSFORMER_FUSE=ON \
             -DMNN_LOW_MEMORY=ON \
             -DMNN_SUPPORT_BF16=ON \
             -DMNN_BUILD_AUDIO=ON \
-            -DMNN_BUILD_DIFFUSION=OFF \
-            -DLLM_SUPPORT_VISION=OFF \
-            -DLLM_SUPPORT_AUDIO=OFF \
+            -DMNN_BUILD_DIFFUSION=ON \
+            -DLLM_SUPPORT_VISION=ON \
+            -DLLM_SUPPORT_AUDIO=ON \
             -DMNN_BUILD_FOR_ANDROID_COMMAND=ON \
-            -DMNN_SEP_BUILD=ON \
+            -DMNN_SEP_BUILD=OFF \
             -DMNN_BUILD_SHARED_LIBS=ON \
             -DMNN_BUILD_BENCHMARK=OFF \
             -DMNN_BUILD_TEST=OFF \
-            -DMNN_BUILD_TOOLS=ON \
+            -DMNN_BUILD_TOOLS=OFF \
             -DMNN_BUILD_DEMO=OFF \
             -DNATIVE_LIBRARY_OUTPUT=. \
             -DNATIVE_INCLUDE_OUTPUT=. \
@@ -408,20 +377,20 @@ jobs:
             -DMNN_JNI=ON \
             -DMNN_BUILD_OPENCV=ON \
             -DMNN_IMGCODECS=ON \
-            -DMNN_BUILD_LLM=OFF \
+            -DMNN_BUILD_LLM=ON \
             -DMNN_SUPPORT_TRANSFORMER_FUSE=ON \
             -DMNN_LOW_MEMORY=ON \
             -DMNN_SUPPORT_BF16=ON \
             -DMNN_BUILD_AUDIO=ON \
-            -DMNN_BUILD_DIFFUSION=OFF \
-            -DLLM_SUPPORT_VISION=OFF \
-            -DLLM_SUPPORT_AUDIO=OFF \
+            -DMNN_BUILD_DIFFUSION=ON \
+            -DLLM_SUPPORT_VISION=ON \
+            -DLLM_SUPPORT_AUDIO=ON \
             -DMNN_BUILD_FOR_ANDROID_COMMAND=ON \
-            -DMNN_SEP_BUILD=ON \
+            -DMNN_SEP_BUILD=OFF \
             -DMNN_BUILD_SHARED_LIBS=ON \
             -DMNN_BUILD_BENCHMARK=OFF \
             -DMNN_BUILD_TEST=OFF \
-            -DMNN_BUILD_TOOLS=ON \
+            -DMNN_BUILD_TOOLS=OFF \
             -DMNN_BUILD_DEMO=OFF \
             -DNATIVE_LIBRARY_OUTPUT=. \
             -DNATIVE_INCLUDE_OUTPUT=. \
@@ -430,50 +399,73 @@ jobs:
             make -j$(nproc) VERBOSE=1
           fi
 
-      # ========== Upload armv7 artifacts ==========
-      - name: Upload armeabi-v7a artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: armeabi-v7a-libs
-          path: |
-            build_android/armeabi-v7a/*.so
-            build_android/armeabi-v7a/source/jni/*.so
-            build_android/armeabi-v7a/tools/cv/*.so
-            build_android/armeabi-v7a/tools/audio/*.so
-            build_android/armeabi-v7a/source/backend/qnn/*.so
-            build_android/armeabi-v7a/source/backend/vulkan/*.so
-            build_android/armeabi-v7a/source/backend/opencl/*.so
-            build_android/armeabi-v7a/source/backend/opengl/*.so
-            build_android/armeabi-v7a/tools/converter/*.so
-            build_android/armeabi-v7a/tools/converter/mnnconvert
-            build_android/armeabi-v7a/tools/converter/convertToStaticModel
-          retention-days: 7
-
-      - name: Download armeabi-v7a artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: armeabi-v7a-libs
-          path: build_android/armeabi-v7a
-
-      - name: Download arm64-v8a artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: arm64-v8a-libs
-          path: build_android/arm64-v8a
-
-      - name: package_aar
+      # ========== Collect and package AAR ==========
+      - name: Package AAR
         id: package_aar
-        env:
-          AAR_DIR: aar_build
-          AAR_NAME: MNN-Android
-          VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
+          VERSION="${{ steps.version.outputs.VERSION }}"
+          AAR_DIR="aar_build"
+          mkdir -p ${AAR_DIR}/jni/arm64-v8a
+          mkdir -p ${AAR_DIR}/jni/armeabi-v7a
+
+          # -------- Collect arm64-v8a .so files --------
+          echo "=== Collecting arm64-v8a native libs ==="
+          cp -v build_android/arm64-v8a/libMNN.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No libMNN.so"
+          cp -v build_android/arm64-v8a/source/jni/libmnncore.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No JNI libmnncore.so"
+          cp -v build_android/arm64-v8a/tools/cv/libMNNOpenCV.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No libMNNOpenCV.so"
+          cp -v build_android/arm64-v8a/tools/audio/libMNNAudio.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No libMNNAudio.so"
+          cp -v build_android/arm64-v8a/source/backend/qnn/libMNN_QNN.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No libMNN_QNN.so"
+
+          # QNN SDK runtime libraries (Qualcomm Hexagon DSP etc.)
+          QNN_LIB_DIR="source/backend/qnn/3rdParty/lib"
+          if [ -d "${QNN_LIB_DIR}/arm64-v8a" ]; then
+            cp -v ${QNN_LIB_DIR}/arm64-v8a/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No QNN SDK arm64 libs"
+          fi
+
+          # libc++_shared from NDK
+          LIBC_64=$(find $ANDROID_NDK -name "libc++_shared.so" | grep "aarch64-linux-android" | head -1)
+          if [ -n "$LIBC_64" ]; then
+            cp -v "$LIBC_64" ${AAR_DIR}/jni/arm64-v8a/
+          else
+            echo "WARNING: libc++_shared not found for arm64"
+          fi
+
+          # -------- Collect armeabi-v7a .so files --------
+          echo "=== Collecting armeabi-v7a native libs ==="
+
+          cp -v build_android/armeabi-v7a/libMNN.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No libMNN.so"
+          cp -v build_android/armeabi-v7a/source/jni/libmnncore.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No JNI libmnncore.so"
+          cp -v build_android/armeabi-v7a/tools/cv/libMNNOpenCV.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No libMNNOpenCV.so"
+          cp -v build_android/armeabi-v7a/tools/audio/libMNNAudio.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No libMNNAudio.so"
+          cp -v build_android/armeabi-v7a/source/backend/qnn/libMNN_QNN.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No libMNN_QNN.so"
+
+          if [ -d "${QNN_LIB_DIR}/armeabi-v7a" ]; then
+            cp -v ${QNN_LIB_DIR}/armeabi-v7a/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No QNN SDK armv7 libs"
+          fi
+
+          LIBC_32=$(find $ANDROID_NDK -name "libc++_shared.so" | grep "arm-linux-androideabi" | head -1)
+          if [ -n "$LIBC_32" ]; then
+            cp -v "$LIBC_32" ${AAR_DIR}/jni/armeabi-v7a/
+          else
+            echo "WARNING: libc++_shared not found for arm32"
+          fi
+
+          # -------- Verify collected files --------
+          echo ""
+          echo "=== arm64-v8a contents ==="
+          ls -lh ${AAR_DIR}/jni/arm64-v8a/
+          echo ""
+          echo "=== armeabi-v7a contents ==="
+          ls -lh ${AAR_DIR}/jni/armeabi-v7a/
+
+          # -------- Create AAR structure --------
           # AndroidManifest.xml (required for AAR)
-          mkdir -p ${AAR_DIR}
-          echo '<?xml version="1.0" encoding="utf-8"?>' > ${AAR_DIR}/AndroidManifest.xml
-          echo '<manifest xmlns="http://schemas.android.com/apk/res/android">' >> ${AAR_DIR}/AndroidManifest.xml
-          echo '    package="com.taobao.android.mnn">' >> ${AAR_DIR}/AndroidManifest.xml
-          echo '</manifest>' >> ${AAR_DIR}/AndroidManifest.xml
+          cat > ${AAR_DIR}/AndroidManifest.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              package="com.taobao.android.mnn">
+          </manifest>
+          EOF
 
           # classes.jar (required, can be empty)
           mkdir -p ${AAR_DIR}/tmp_empty
@@ -486,30 +478,6 @@ jobs:
 
           # proguard.txt (optional)
           touch proguard.txt
-
-          # Create jni directories and copy native libraries
-          mkdir -p ${AAR_DIR}/jni/armeabi-v7a
-          mkdir -p ${AAR_DIR}/jni/arm64-v8a
-
-          # Copy armeabi-v7a libraries
-          cp build_android/armeabi-v7a/source/jni/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
-          cp build_android/armeabi-v7a/tools/cv/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
-          cp build_android/armeabi-v7a/tools/audio/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
-          cp build_android/armeabi-v7a/source/backend/qnn/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
-          cp build_android/armeabi-v7a/source/backend/vulkan/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
-          cp build_android/armeabi-v7a/source/backend/opencl/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
-          cp build_android/armeabi-v7a/source/backend/opengl/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
-          cp build_android/armeabi-v7a/tools/converter/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
-
-          # Copy arm64-v8a libraries
-          cp build_android/arm64-v8a/source/jni/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
-          cp build_android/arm64-v8a/tools/cv/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
-          cp build_android/arm64-v8a/tools/audio/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
-          cp build_android/arm64-v8a/source/backend/qnn/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
-          cp build_android/arm64-v8a/source/backend/vulkan/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
-          cp build_android/arm64-v8a/source/backend/opencl/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
-          cp build_android/arm64-v8a/source/backend/opengl/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
-          cp build_android/arm64-v8a/tools/converter/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
 
           cd ..
 
@@ -565,3 +533,12 @@ jobs:
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+# CI trigger
+# CI trigger
+# CI trigger
+# CI trigger
+# CI trigger
+# CI trigger
+# CI trigger
+# CI trigger
+# CI trigger

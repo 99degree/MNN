@@ -26,7 +26,7 @@
 #include "caffeConverter.hpp"
 #include "liteConverter.hpp"
 #include "onnxConverter.hpp"
-#include "../onnx/onnxOpConverter.hpp"
+#include "onnxOpConverter.hpp"
 #include "tensorflowConverter.hpp"
 #include "torchConverter.hpp"
 #include "writeFb.hpp"
@@ -219,15 +219,12 @@ bool Cli::initializeMNNConvertArgs(modelConfig &modelPath, int argc, char **argv
         "convertMatmulToConv", "if 1, converter matmul with constant input to convolution. default: 1, range: {0, 1}",
         cxxopts::value<int>())("transformerFuse", "fuse key transformer op, like attention. default: false",
                                cxxopts::value<bool>())(
-        "transformerFuseC4",
-        "fuse LLM transformer tensors to C4 format for faster runtime. default: true, set 0 to disable",
-        cxxopts::value<int>())("groupConvNative", "keep native group convolution. default: false",
-                               cxxopts::value<bool>())("allowCustomOp", "allow custom op when convert. default: false",
-                                                       cxxopts::value<bool>())(
-        "useOriginRNNImpl",
-        "Don't use While Module to Implement LSTM or GRU, use origin OP, if open it, LSTM and "
-        "GRU can't be quantized or use other compress method",
-        cxxopts::value<bool>())("splitBlockQuant", "Split Block Quant Convolution")(
+        "groupConvNative", "keep native group convolution. default: false", cxxopts::value<bool>())(
+        "allowCustomOp", "allow custom op when convert. default: false",
+        cxxopts::value<bool>())("useOriginRNNImpl",
+                                "Don't use While Module to Implement LSTM or GRU, use origin OP, if open it, LSTM and "
+                                "GRU can't be quantized or use other compress method",
+                                cxxopts::value<bool>())("splitBlockQuant", "Split Block Quant Convolution")(
         "dumpPass",
         "Enable verbose output for each optimization pass, showing what changes each pass made (like LLVM's "
         "-debug-pass)");
