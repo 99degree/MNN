@@ -10,6 +10,7 @@
 #define VulkanDevice_hpp
 
 #include <memory>
+#include <mutex>
 #include <vector>
 #include "core/NonCopyable.hpp"
 #include "backend/vulkan/component/VulkanInstance.hpp"
@@ -29,6 +30,7 @@ public:
 
     void getDeviceQueue(const uint32_t familyIndex, const uint32_t queueIndex, VkQueue& queue);
     const VkQueue acquireDefaultDevQueue() const;
+    std::mutex& queueMutex() const { return mQueueMutex; }
 
     // VkBuffer/VkDeviceMemory
     const VkResult createBuffer(VkBuffer& buffer, const size_t size, const VkBufferUsageFlags usage,
@@ -209,6 +211,7 @@ private:
 private:
     bool mOwner;
     std::shared_ptr<VulkanInstance> mInstance; ///< refer to Instance object used to create device
+    mutable std::mutex mQueueMutex; ///< serializes vkQueueSubmit across sessions
     uint32_t mQueueFamilyIndex;
     VkPhysicalDevice mPhysicalDevice;
     VkDevice mDevice;
