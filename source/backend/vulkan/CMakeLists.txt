@@ -1,11 +1,6 @@
 option(MNN_VULKAN_IMAGE "Use Image as basic type" ON)
 if (MNN_VULKAN_IMAGE)
     FILE(GLOB_RECURSE MNN_Vulkan_SRC ${CMAKE_CURRENT_LIST_DIR}/image/* ${CMAKE_CURRENT_LIST_DIR}/component/* ${CURRENT_LIST_DIR}/runtime/* ${CURRENT_LIST_DIR}/vulkan/*)
-    # Always compile VulkanFuse.cpp regardless of VULKAN_IMAGE mode
-    # VulkanFuse.cpp depends on buffer backend's VulkanBackend implementation
-    list(APPEND MNN_Vulkan_SRC "${CMAKE_CURRENT_LIST_DIR}/buffer/execution/VulkanFuse.cpp")
-    file(GLOB_RECURSE BUFFER_BACKEND_SRC "${CMAKE_CURRENT_LIST_DIR}/buffer/backend/*.cpp")
-    list(APPEND MNN_Vulkan_SRC ${BUFFER_BACKEND_SRC})
 else()
     FILE(GLOB_RECURSE MNN_Vulkan_SRC ${CMAKE_CURRENT_LIST_DIR}/buffer/* ${CMAKE_CURRENT_LIST_DIR}/component/* ${CMAKE_CURRENT_LIST_DIR}/runtime/* ${CMAKE_CURRENT_LIST_DIR}/vulkan/*)
 endif()
@@ -57,12 +52,9 @@ ENDIF()
 include_directories("${CMAKE_CURRENT_LIST_DIR}/include/" "${CMAKE_CURRENT_LIST_DIR}/component/" "${CMAKE_CURRENT_LIST_DIR}/runtime" "${CMAKE_CURRENT_LIST_DIR}/schema/current")
 if (MNN_VULKAN_IMAGE)
     include_directories("${CMAKE_CURRENT_LIST_DIR}/image/execution" "${CMAKE_CURRENT_LIST_DIR}/image/backend" "${CMAKE_CURRENT_LIST_DIR}/image" "${CMAKE_CURRENT_LIST_DIR}/image/shaders")
-    # Buffer backend includes needed for VulkanFuse.cpp and buffer backend sources
-    include_directories("${CMAKE_CURRENT_LIST_DIR}/buffer/execution" "${CMAKE_CURRENT_LIST_DIR}/buffer/backend" "${CMAKE_CURRENT_LIST_DIR}/buffer" "${CMAKE_CURRENT_LIST_DIR}/buffer/shaders")
 else()
     include_directories("${CMAKE_CURRENT_LIST_DIR}/buffer/execution" "${CMAKE_CURRENT_LIST_DIR}/buffer/backend" "${CMAKE_CURRENT_LIST_DIR}/buffer" "${CMAKE_CURRENT_LIST_DIR}/buffer/shaders")
 endif()
 if (CMAKE_SYSTEM_NAME MATCHES "^Android")
     add_definitions(-DVK_USE_PLATFORM_ANDROID_KHR)
 endif()
-# CI trigger Mon Jul 13 03:36:38 HKT 2026
