@@ -416,6 +416,7 @@ jobs:
           cp -v build_android/arm64-v8a/tools/cv/libMNNOpenCV.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No libMNNOpenCV.so"
           cp -v build_android/arm64-v8a/tools/audio/libMNNAudio.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No libMNNAudio.so"
           cp -v build_android/arm64-v8a/source/backend/qnn/libMNN_QNN.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No libMNN_QNN.so"
+          cp -v build_android/arm64-v8a/source/backend/vulkan/libMNN_Vulkan.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || echo "No libMNN_Vulkan.so"
 
           # QNN SDK runtime libraries (Qualcomm Hexagon DSP etc.)
           QNN_LIB_DIR="source/backend/qnn/3rdParty/lib"
@@ -439,6 +440,7 @@ jobs:
           cp -v build_android/armeabi-v7a/tools/cv/libMNNOpenCV.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No libMNNOpenCV.so"
           cp -v build_android/armeabi-v7a/tools/audio/libMNNAudio.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No libMNNAudio.so"
           cp -v build_android/armeabi-v7a/source/backend/qnn/libMNN_QNN.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No libMNN_QNN.so"
+          cp -v build_android/armeabi-v7a/source/backend/vulkan/libMNN_Vulkan.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No libMNN_Vulkan.so"
 
           if [ -d "${QNN_LIB_DIR}/armeabi-v7a" ]; then
             cp -v ${QNN_LIB_DIR}/armeabi-v7a/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || echo "No QNN SDK armv7 libs"
