@@ -463,12 +463,11 @@ jobs:
           VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
           # AndroidManifest.xml (required for AAR)
-          cat > ${AAR_DIR}/AndroidManifest.xml << 'EOF'
-          <?xml version="1.0" encoding="utf-8"?>
-          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
-              package="com.taobao.android.mnn">
-          </manifest>
-          EOF
+          mkdir -p ${AAR_DIR}
+          echo '<?xml version="1.0" encoding="utf-8"?>' > ${AAR_DIR}/AndroidManifest.xml
+          echo '<manifest xmlns="http://schemas.android.com/apk/res/android">' >> ${AAR_DIR}/AndroidManifest.xml
+          echo '    package="com.taobao.android.mnn">' >> ${AAR_DIR}/AndroidManifest.xml
+          echo '</manifest>' >> ${AAR_DIR}/AndroidManifest.xml
 
           # classes.jar (required, can be empty)
           mkdir -p ${AAR_DIR}/tmp_empty
