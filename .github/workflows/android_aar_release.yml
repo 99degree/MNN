@@ -428,6 +428,8 @@ jobs:
             -DCMAKE_VERBOSE_MAKEFILE=ON
 
             make -j$(nproc) VERBOSE=1
+          fi
+
       # ========== Upload armv7 artifacts ==========
       - name: Upload armeabi-v7a artifacts
         uses: actions/upload-artifact@v4
