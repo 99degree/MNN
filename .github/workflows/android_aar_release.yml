@@ -449,6 +449,12 @@ jobs:
             build_android/armeabi-v7a/tools/converter/convertToStaticModel
           retention-days: 7
 
+      - name: Download armeabi-v7a artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: armeabi-v7a-libs
+          path: build_android/armeabi-v7a
+
       - name: Download arm64-v8a artifacts
         uses: actions/download-artifact@v4
         with:
