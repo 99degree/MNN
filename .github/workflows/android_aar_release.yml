@@ -481,6 +481,30 @@ jobs:
           # proguard.txt (optional)
           touch proguard.txt
 
+          # Create jni directories and copy native libraries
+          mkdir -p ${AAR_DIR}/jni/armeabi-v7a
+          mkdir -p ${AAR_DIR}/jni/arm64-v8a
+
+          # Copy armeabi-v7a libraries
+          cp build_android/armeabi-v7a/source/jni/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
+          cp build_android/armeabi-v7a/tools/cv/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
+          cp build_android/armeabi-v7a/tools/audio/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
+          cp build_android/armeabi-v7a/source/backend/qnn/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
+          cp build_android/armeabi-v7a/source/backend/vulkan/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
+          cp build_android/armeabi-v7a/source/backend/opencl/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
+          cp build_android/armeabi-v7a/source/backend/opengl/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
+          cp build_android/armeabi-v7a/tools/converter/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
+
+          # Copy arm64-v8a libraries
+          cp build_android/arm64-v8a/source/jni/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
+          cp build_android/arm64-v8a/tools/cv/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
+          cp build_android/arm64-v8a/tools/audio/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
+          cp build_android/arm64-v8a/source/backend/qnn/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
+          cp build_android/arm64-v8a/source/backend/vulkan/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
+          cp build_android/arm64-v8a/source/backend/opencl/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
+          cp build_android/arm64-v8a/source/backend/opengl/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
+          cp build_android/arm64-v8a/tools/converter/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
+
           cd ..
 
           # Create AAR (jar = zip with .aar extension)
