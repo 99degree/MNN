@@ -12,6 +12,7 @@
 #include "core/Macro.h"
 #include <MNN/Tensor.hpp>
 #include "core/TensorUtils.hpp"
+#include <MNN/MNNForwardType.h>
 #include "component/VulkanDevice.hpp"
 #include "component/VulkanInstance.hpp"
 #include "execution/VulkanBasicExecution.hpp"
@@ -197,6 +198,28 @@ private:
     MemChunk mPoint;
     int mSize;
 };
+
+// Keeps an externally-imported (zero-copy) Vulkan buffer alive for the lifetime
+// of the tensor. On release, the VulkanBuffer is destroyed (its VkBuffer is
+// freed) but the underlying imported VkDeviceMemory is left intact (the fd is
+// owned by the exporter, e.g. a V4L2 dma-buf / CMA buffer).
+class VulkanExternalMemRelease : public Backend::MemObj {
+public:
+    VulkanExternalMemRelease(std::shared_ptr<VulkanBuffer> buffer, int64_t handle)
+        : mBuffer(std::move(buffer)), mHandle(handle) {
+    }
+    virtual ~VulkanExternalMemRelease() {
+        mBuffer.reset();
+    }
+    int64_t handle() const {
+        return mHandle;
+    }
+
+private:
+    std::shared_ptr<VulkanBuffer> mBuffer;
+    int64_t mHandle;
+};
+
 VULKAN_TENSOR VulkanBackend::getBuffer(const Tensor* tensor) const {
     auto b = getTensorBuffer(tensor);
     return std::make_tuple(b.first->buffer(), getTensorSize(tensor), b.second);
@@ -220,6 +243,26 @@ Backend::MemObj* VulkanBackend::onAcquire(const Tensor* tensor, StorageType stor
     //FUNC_PRINT_ALL(tensor, p);
     auto alignSize = getTensorSize(tensor);
     auto MTensor     = const_cast<Tensor*>(tensor);
+    // Zero-copy external memory import (Linux V4L2 dma-buf fd). The fd + type are
+    // bound via Tensor::setDevicePtr(handle, MNN_MEMORY_AHARDWAREBUFFER) (see the
+    // cam-isp run_external_zero_copy path). Import once per handle and re-import
+    // when the handle changes between frames.
+    if (MNN_MEMORY_AHARDWAREBUFFER == MTensor->buffer().flags) {
+        int64_t fd = (int64_t)MTensor->buffer().device;
+        auto* shared = static_cast<VulkanExternalMemRelease*>(TensorUtils::getSharedMem(MTensor));
+        if (nullptr == shared || shared->handle() != fd) {
+            auto buffer = VulkanBuffer::createExternal(*mRuntime->mMemoryPool, (int)fd, alignSize);
+            if (nullptr == buffer) {
+                MNN_ERROR("VulkanBackend::onAcquire external dma-buf import failed (fd=%lld)\n", (long long)fd);
+                return nullptr;
+            }
+            shared = new VulkanExternalMemRelease(buffer, fd);
+            TensorUtils::setSharedMem(MTensor, shared);
+            MTensor->buffer().device = (uint64_t)buffer.get();
+        }
+        TensorUtils::getDescribeOrigin(MTensor)->offset = 0;
+        return shared;
+    }
     auto des = TensorUtils::getDescribeOrigin(tensor);
     if (Backend::STATIC == storageType) {
         auto newBuffer = mRuntime->mBufferPool->alloc(alignSize);

@@ -128,6 +128,11 @@ VulkanDevice::VulkanDevice(std::shared_ptr<VulkanInstance> instance)
         deviceExtensions.push_back(portabilityExtName);
     }
 
+    // Configure external memory (Linux V4L2 dma-buf fd import for zero-copy).
+    if (_hasExtension(availableDeviceExtensions, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME)) {
+        deviceExtensions.push_back(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
+    }
+
     // Configure FP16
     checkFP16(availableDeviceExtensions);
     if (mFP16Info.supportFP16) {
@@ -277,10 +282,11 @@ const VkQueue VulkanDevice::acquireDefaultDevQueue() const {
 }
 
 const VkResult VulkanDevice::createBuffer(VkBuffer& buffer, const size_t size, const VkBufferUsageFlags usage,
-                                          const VkSharingMode shared, const VkAllocationCallbacks* allocator) const {
+                                          const VkSharingMode shared, const VkAllocationCallbacks* allocator,
+                                          const void* pNext) const {
     VkBufferCreateInfo info    = {};
     info.sType                 = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
-    info.pNext                 = nullptr;
+    info.pNext                 = pNext;
     info.flags                 = 0;
     info.size                  = (VkDeviceSize)size;
     info.usage                 = usage;

@@ -32,7 +32,8 @@ public:
 
     // VkBuffer/VkDeviceMemory
     const VkResult createBuffer(VkBuffer& buffer, const size_t size, const VkBufferUsageFlags usage,
-                                const VkSharingMode shared, const VkAllocationCallbacks* allocator = nullptr) const;
+                                const VkSharingMode shared, const VkAllocationCallbacks* allocator = nullptr,
+                                const void* pNext = nullptr) const;
     const void getBufferMemoryRequirements(const VkBuffer buffer, VkMemoryRequirements& memoryRequirements) const;
     const VkResult allocMemory(VkDeviceMemory& memory, const VkMemoryAllocateInfo& allocateInfo,
                                const VkAllocationCallbacks* allocator = nullptr) const;

@@ -44,7 +44,8 @@ VulkanInstance::VulkanInstance() : mOwner(true), mInstance(VK_NULL_HANDLE) {
     std::vector<const char*> instanceExtensions;
     std::vector<const char*> instanceExtensionsToCheck = {
         VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME,
-        VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME
+        VK_KHR_GET_PHYSICAL_DEVICE_PROPERTIES_2_EXTENSION_NAME,
+        VK_KHR_EXTERNAL_MEMORY_CAPABILITIES_EXTENSION_NAME
     };
     uint32_t availableInstanceExtensionCount = 0;
     CALL_VK(vkEnumerateInstanceExtensionProperties(nullptr, &availableInstanceExtensionCount, nullptr));

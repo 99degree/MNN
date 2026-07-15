@@ -17,6 +17,15 @@ public:
                  VkSharingMode shared      = VK_SHARING_MODE_EXCLUSIVE,
                  VkFlags requirements_mask = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
 
+    // Imports an external memory handle (Linux V4L2 dma-buf fd) as a zero-copy
+    // Vulkan buffer. The caller retains ownership of the fd; the VkDeviceMemory
+    // is imported (not allocated) and is NOT freed on destruction.
+    static std::shared_ptr<VulkanBuffer> createExternal(const VulkanMemoryPool& pool, int fd, size_t size,
+                                                        VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                                                                                   VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                                                                                   VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                                        VkSharingMode shared = VK_SHARING_MODE_EXCLUSIVE);
+
     virtual ~VulkanBuffer();
 
     VkBuffer buffer() const {
@@ -31,8 +40,13 @@ public:
     void flush(bool write, int start, int size) const;
 
     void release();
+    bool external() const {
+        return mExternal;
+    }
 
 private:
+    VulkanBuffer(const VulkanMemoryPool& pool, int fd, size_t size, VkBufferUsageFlags usage, VkSharingMode shared);
+
     const VulkanMemoryPool& mPool;
     MemChunk mMemory;
     VkBuffer mBuffer;
@@ -40,6 +54,7 @@ private:
     VkBufferUsageFlags mUsage;
     bool mReleased = false;
     VkSharingMode mShared;
+    bool mExternal = false;
 };
 } // namespace MNN
 

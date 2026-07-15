@@ -22,6 +22,9 @@ namespace MNN {
 class VulkanMemory : public NonCopyable {
 public:
     VulkanMemory(const VulkanDevice& dev, const VkMemoryAllocateInfo& info);
+    // Wraps an already-imported VkDeviceMemory (e.g. a Linux V4L2 dma-buf fd).
+    // The memory is owned by the exporter; the destructor does NOT free it.
+    VulkanMemory(const VulkanDevice& dev, VkDeviceMemory mem, uint32_t type, VkDeviceSize size);
     ~VulkanMemory();
 
     VkDeviceMemory get() const {
@@ -33,12 +36,16 @@ public:
     VkDeviceSize size() const {
         return mSize;
     }
+    bool external() const {
+        return mExternal;
+    }
 
 private:
     VkDeviceMemory mMemory;
     const VulkanDevice& mDevice;
     uint32_t mTypeIndex;
     VkDeviceSize mSize;
+    bool mExternal = false;
 };
 
 class VulkanMemoryPool : public NonCopyable {

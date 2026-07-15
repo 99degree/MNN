@@ -13,8 +13,13 @@ VulkanMemory::VulkanMemory(const VulkanDevice& dev, const VkMemoryAllocateInfo& 
     mTypeIndex = info.memoryTypeIndex;
     mSize      = info.allocationSize;
 }
+VulkanMemory::VulkanMemory(const VulkanDevice& dev, VkDeviceMemory mem, uint32_t type, VkDeviceSize size)
+    : mDevice(dev), mMemory(mem), mTypeIndex(type), mSize(size), mExternal(true) {
+}
 VulkanMemory::~VulkanMemory() {
-    mDevice.freeMemory(mMemory);
+    if (!mExternal) {
+        mDevice.freeMemory(mMemory);
+    }
 }
 
 class VulkanAllocator : public BufferAllocator::Allocator {
