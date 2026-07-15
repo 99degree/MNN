@@ -186,7 +186,7 @@ VulkanBuffer::VulkanBuffer(const VulkanMemoryPool& pool, AHardwareBuffer* ahb, s
             continue;
         }
         allocInfo.memoryTypeIndex = i;
-        if (VK_SUCCESS == mPool.device().allocMemory(devMem, allocInfo)) {
+        if (VK_SUCCESS == mPool.device().allocMemory(devMem, allocInfo, nullptr)) {
             if (VK_SUCCESS == mPool.device().bindBufferMemory(mBuffer, devMem, 0)) {
                 typeIndex = i;
                 break;
