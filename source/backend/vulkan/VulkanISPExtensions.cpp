@@ -27,6 +27,9 @@ static std::map<std::string, std::vector<uint8_t>> gConstBuffers;
 
 } // namespace MNN
 
+using MNN::gSessionWorkgroups;
+using MNN::gConstBuffers;
+
 // C API for ISP Vulkan extensions
 extern "C" {
 
