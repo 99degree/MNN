@@ -82,7 +82,7 @@ VulkanBuffer::VulkanBuffer(const VulkanMemoryPool& pool, int fd, size_t size, Vk
     extBufferInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
 
     mBuffer = VK_NULL_HANDLE;
-    CALL_VK(mPool.device().createBuffer(mBuffer, size, usage, shared, &extBufferInfo));
+    CALL_VK(mPool.device().createBuffer(mBuffer, size, usage, shared, nullptr, &extBufferInfo));
 
     VkMemoryRequirements memReq{};
     mPool.device().getBufferMemoryRequirements(mBuffer, memReq);
@@ -161,7 +161,7 @@ VulkanBuffer::VulkanBuffer(const VulkanMemoryPool& pool, AHardwareBuffer* ahb, s
     extBufferInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID;
 
     mBuffer = VK_NULL_HANDLE;
-    CALL_VK(mPool.device().createBuffer(mBuffer, size, usage, shared, &extBufferInfo));
+    CALL_VK(mPool.device().createBuffer(mBuffer, size, usage, shared, nullptr, &extBufferInfo));
 
     VkMemoryRequirements memReq{};
     mPool.device().getBufferMemoryRequirements(mBuffer, memReq);
