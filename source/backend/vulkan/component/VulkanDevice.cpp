@@ -132,6 +132,12 @@ VulkanDevice::VulkanDevice(std::shared_ptr<VulkanInstance> instance)
     if (_hasExtension(availableDeviceExtensions, VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME)) {
         deviceExtensions.push_back(VK_KHR_EXTERNAL_MEMORY_FD_EXTENSION_NAME);
     }
+#ifdef __ANDROID__
+    // Configure external memory (Android AHardwareBuffer import for zero-copy).
+    if (_hasExtension(availableDeviceExtensions, VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME)) {
+        deviceExtensions.push_back(VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME);
+    }
+#endif
 
     // Configure FP16
     checkFP16(availableDeviceExtensions);
