@@ -477,41 +477,38 @@ jobs:
 
           # classes.jar (required, can be empty)
           mkdir -p ${AAR_DIR}/tmp_empty
-          cd ${AAR_DIR}
-          jar cf classes.jar -C tmp_empty .
-          rm -rf tmp_empty
+          jar cf ${AAR_DIR}/classes.jar -C ${AAR_DIR}/tmp_empty .
+          rm -rf ${AAR_DIR}/tmp_empty
 
           # R.txt (required, can be empty)
-          touch R.txt
+          touch ${AAR_DIR}/R.txt
 
           # proguard.txt (optional)
-          touch proguard.txt
+          touch ${AAR_DIR}/proguard.txt
 
           # Create jni directories and copy native libraries
           mkdir -p ${AAR_DIR}/jni/armeabi-v7a
           mkdir -p ${AAR_DIR}/jni/arm64-v8a
 
           # Copy armeabi-v7a libraries
-          cp source/jni/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
-          cp tools/cv/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
-          cp tools/audio/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
-          cp source/backend/qnn/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
-          cp source/backend/vulkan/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
-          cp source/backend/opencl/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
-          cp source/backend/opengl/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
-          cp tools/converter/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
+          cp build_android/armeabi-v7a/source/jni/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
+          cp build_android/armeabi-v7a/tools/cv/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
+          cp build_android/armeabi-v7a/tools/audio/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
+          cp build_android/armeabi-v7a/source/backend/qnn/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
+          cp build_android/armeabi-v7a/source/backend/vulkan/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
+          cp build_android/armeabi-v7a/source/backend/opencl/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
+          cp build_android/armeabi-v7a/source/backend/opengl/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
+          cp build_android/armeabi-v7a/tools/converter/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
 
           # Copy arm64-v8a libraries
-          cp arm64-v8a/source/jni/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
-          cp arm64-v8a/tools/cv/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
-          cp arm64-v8a/tools/audio/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
-          cp arm64-v8a/source/backend/qnn/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
-          cp arm64-v8a/source/backend/vulkan/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
-          cp arm64-v8a/source/backend/opencl/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
-          cp arm64-v8a/source/backend/opengl/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
-          cp arm64-v8a/tools/converter/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
-
-          cd ..
+          cp build_android/arm64-v8a/source/jni/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
+          cp build_android/arm64-v8a/tools/cv/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
+          cp build_android/arm64-v8a/tools/audio/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
+          cp build_android/arm64-v8a/source/backend/qnn/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
+          cp build_android/arm64-v8a/source/backend/vulkan/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
+          cp build_android/arm64-v8a/source/backend/opencl/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
+          cp build_android/arm64-v8a/source/backend/opengl/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
+          cp build_android/arm64-v8a/tools/converter/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
 
           # Create AAR (jar = zip with .aar extension)
           FINAL_AAR="${AAR_NAME}-${VERSION}.aar"
