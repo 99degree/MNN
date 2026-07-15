@@ -243,20 +243,32 @@ Backend::MemObj* VulkanBackend::onAcquire(const Tensor* tensor, StorageType stor
     //FUNC_PRINT_ALL(tensor, p);
     auto alignSize = getTensorSize(tensor);
     auto MTensor     = const_cast<Tensor*>(tensor);
-    // Zero-copy external memory import (Linux V4L2 dma-buf fd). The fd + type are
-    // bound via Tensor::setDevicePtr(handle, MNN_MEMORY_AHARDWAREBUFFER) (see the
-    // cam-isp run_external_zero_copy path). Import once per handle and re-import
+    // Zero-copy external memory import (Linux V4L2 dma-buf fd or Android AHardwareBuffer).
+    // The handle + type are bound via Tensor::setDevicePtr(handle, MNN_MEMORY_AHARDWAREBUFFER)
+    // (see the cam-isp run_external_zero_copy path). Import once per handle and re-import
     // when the handle changes between frames.
     if (MNN_MEMORY_AHARDWAREBUFFER == MTensor->buffer().flags) {
-        int64_t fd = (int64_t)MTensor->buffer().device;
+        int64_t handle = (int64_t)MTensor->buffer().device;
         auto* shared = static_cast<VulkanExternalMemRelease*>(TensorUtils::getSharedMem(MTensor));
-        if (nullptr == shared || shared->handle() != fd) {
-            auto buffer = VulkanBuffer::createExternal(*mRuntime->mMemoryPool, (int)fd, alignSize);
+        if (nullptr == shared || shared->handle() != handle) {
+            std::shared_ptr<VulkanBuffer> buffer = nullptr;
+#ifdef __ANDROID__
+            // Android: handle is AHardwareBuffer pointer (large address)
+            // Linux: handle is dma-buf fd (small integer)
+            if (handle > 1024) {
+                buffer = VulkanBuffer::createExternalAHB(*mRuntime->mMemoryPool, (AHardwareBuffer*)handle, alignSize);
+            } else {
+                buffer = VulkanBuffer::createExternal(*mRuntime->mMemoryPool, (int)handle, alignSize);
+            }
+#else
+            // Linux: handle is dma-buf fd
+            buffer = VulkanBuffer::createExternal(*mRuntime->mMemoryPool, (int)handle, alignSize);
+#endif
             if (nullptr == buffer) {
-                MNN_ERROR("VulkanBackend::onAcquire external dma-buf import failed (fd=%lld)\n", (long long)fd);
+                MNN_ERROR("VulkanBackend::onAcquire external memory import failed (handle=%lld)\n", (long long)handle);
                 return nullptr;
             }
-            shared = new VulkanExternalMemRelease(buffer, fd);
+            shared = new VulkanExternalMemRelease(buffer, handle);
             TensorUtils::setSharedMem(MTensor, shared);
             MTensor->buffer().device = (uint64_t)buffer.get();
         }

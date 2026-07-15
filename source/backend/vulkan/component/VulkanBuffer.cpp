@@ -143,6 +143,77 @@ VulkanBuffer::VulkanBuffer(const VulkanMemoryPool& pool, int fd, size_t size, Vk
         return;
     }
     mMemory = MemChunk(new VulkanMemory(mPool.device(), devMem, typeIndex, memReq.size), 0);
+
+#ifdef __ANDROID__
+VulkanBuffer::VulkanBuffer(const VulkanMemoryPool& pool, AHardwareBuffer* ahb, size_t size, VkBufferUsageFlags usage, VkSharingMode shared) : mPool(pool) {
+    MNN_ASSERT(size > 0);
+    MNN_ASSERT(ahb != nullptr);
+    mSize = size;
+    mShared = shared;
+    mUsage = usage;
+    mExternal = true;
+    
+    // Create buffer with external memory capability
+    VkExternalMemoryBufferCreateInfo extBufferInfo{};
+    extBufferInfo.sType = VK_STRUCTURE_TYPE_EXTERNAL_MEMORY_BUFFER_CREATE_INFO;
+    extBufferInfo.pNext = nullptr;
+    extBufferInfo.handleTypes = VK_EXTERNAL_MEMORY_HANDLE_TYPE_ANDROID_HARDWARE_BUFFER_BIT_ANDROID;
+    
+    mBuffer = VK_NULL_HANDLE;
+    CALL_VK(mPool.device().createBuffer(mBuffer, size, usage, shared, &extBufferInfo));
+    
+    VkMemoryRequirements memReq{};
+    mPool.device().getBufferMemoryRequirements(mBuffer, memReq);
+    
+    // Import the AHardwareBuffer
+    VkImportAndroidHardwareBufferInfoANDROID importAHB{};
+    importAHB.sType = VK_STRUCTURE_TYPE_IMPORT_ANDROID_HARDWARE_BUFFER_INFO_ANDROID;
+    importAHB.pNext = nullptr;
+    importAHB.buffer = ahb;
+    
+    VkMemoryAllocateInfo allocInfo{};
+    allocInfo.sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO;
+    allocInfo.pNext = &importAHB;
+    allocInfo.allocationSize = memReq.size;
+    
+    // Find a memory type that supports the external memory
+    VkDeviceMemory devMem = VK_NULL_HANDLE;
+    const auto& memTypes = mPool.device().memProty().memoryTypes;
+    uint32_t typeCount = mPool.device().memProty().memoryTypeCount;
+    uint32_t typeIndex = 0;
+    for (uint32_t i = 0; i < typeCount; i++) {
+        if ((memReq.memoryTypeBits & (1u << i)) == 0) {
+            continue;
+        }
+        allocInfo.memoryTypeIndex = i;
+        if (VK_SUCCESS == mPool.device().allocMemory(devMem, allocInfo)) {
+            if (VK_SUCCESS == mPool.device().bindBufferMemory(mBuffer, devMem, 0)) {
+                typeIndex = i;
+                break;
+            }
+            mPool.device().freeMemory(devMem);
+            devMem = VK_NULL_HANDLE;
+        }
+    }
+    
+    if (VK_NULL_HANDLE == devMem) {
+        mPool.device().destroyBuffer(mBuffer);
+        mBuffer = VK_NULL_HANDLE;
+        MNN_ERROR("VulkanBuffer: failed to import AHardwareBuffer %p as Vulkan memory\n", ahb);
+        return;
+    }
+    
+    mMemory = MemChunk(new VulkanMemory(mPool.device(), devMem, typeIndex, memReq.size), 0);
+}
+
+std::shared_ptr<VulkanBuffer> VulkanBuffer::createExternalAHB(const VulkanMemoryPool& pool, AHardwareBuffer* ahb, size_t size, VkBufferUsageFlags usage, VkSharingMode shared) {
+    auto buffer = std::shared_ptr<VulkanBuffer>(new VulkanBuffer(pool, ahb, size, usage, shared));
+    if (VK_NULL_HANDLE == buffer->mBuffer) {
+        return nullptr;
+    }
+    return buffer;
+}
+#endif
 }
 
 std::shared_ptr<VulkanBuffer> VulkanBuffer::createExternal(const VulkanMemoryPool& pool, int fd, size_t size,
