@@ -54,6 +54,8 @@ public:
     static MNN::DataType convertDataType(int32_t type);
     static MNN::BlobT* convertTensorToBlob(const onnx::TensorProto* tensor, const std::string& modelDir, MNN::OpT* op);
     // static std::unique_ptr<MNN::SubGraphProtoT> buildSubGraph(const onnx::GraphProto* graph, std::string& name);
+    static void setPreserveInputType(bool v);
+    static bool getPreserveInputType();
 };
 
 class onnxOpConverterSuit {

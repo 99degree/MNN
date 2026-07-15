@@ -52,7 +52,7 @@ option(MNN_BUILD_DEMO "Build demo/exec or not" OFF)
 option(MNN_BUILD_TOOLS "Build tools/cpp or not" ON)
 option(MNN_BUILD_QUANTOOLS "Build Quantized Tools or not" OFF)
 option(MNN_EVALUATION "Build Evaluation Tools or not" OFF)
-option(MNN_BUILD_CONVERTER "Build Converter" OFF)
+option(MNN_BUILD_CONVERTER "Build Converter" ON)
 option(MNN_REDUCE_SIZE "Remove not common op and optimize code" OFF)
 option(MNN_SUPPORT_QUANT_EXTEND "Add int8 op for layernorm, binary, unary, scale, softmax, interp" ON)
 option(MNN_SUPPORT_DEPRECATED_OP "Enable MNN's tflite quantized op" OFF)
@@ -682,11 +682,9 @@ ENDIF()
 
 # NEUROPILOT
 IF(MNN_NEUROPILOT)
+    target_compile_options(MNNCore PRIVATE -DMNN_NEUROPILOT=1)
     add_subdirectory(${CMAKE_CURRENT_LIST_DIR}/source/backend/neuropilot)
-    IF(TARGET MNN_NEUROPILOT)
-        target_compile_options(MNNCore PRIVATE -DMNN_NEUROPILOT=1)
-        list(APPEND MNN_OBJECTS_TO_LINK $<TARGET_OBJECTS:MNN_NEUROPILOT>)
-    ENDIF()
+    list(APPEND MNN_OBJECTS_TO_LINK $<TARGET_OBJECTS:MNN_NEUROPILOT>)
 ENDIF()
 
 # Vulkan

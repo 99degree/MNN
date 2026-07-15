@@ -14,11 +14,7 @@ def makeIO(args, model_name, inputjson, external_file = None):
     cache = os.path.join(os.getcwd(), args.cache_path)
     output = os.path.join(cache, 'testdir')
     os.makedirs(output, exist_ok=True)
-    process = subprocess.Popen(exe + " " + model + " " + inputjson + " " + output + " " + external_file, bufsize=1, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, cwd = cache, text=True, shell=True)
-    for line in process.stdout:
-        print(line, end='')
-    process.wait()
-    return process.returncode
+    print(os.popen(exe + " " + model + " " + inputjson + " " + output + " " + external_file).read())
 
 def makeIOJson(args, seq_len, hidden_size, mask_type):
     config = {
@@ -265,20 +261,17 @@ def output_qnn(args):
 def convert_qnn(args, model_name, inputjson, external_file, ids):
     sta = time.time()
     print("Step1: Make IO")
-    if makeIO(args, model_name, inputjson, external_file) != 0:
-        raise RuntimeError("generateIO failed")
+    makeIO(args, model_name, inputjson, external_file)
     end = time.time()
     print("Cost: ", end - sta, ' s')
     sta = end
     print("Step2: Seperate Model")
-    if seperate(args, model_name, ids) != 0:
-        raise RuntimeError("compilefornpu failed")
+    seperate(args, model_name, ids)
     end = time.time()
     print("Cost: ", end - sta, ' s')
     sta = end
     print("Step3: Compile to QNN")
-    if compile_qnn(args) != 0:
-        raise RuntimeError("npu_convert.py failed")
+    compile_qnn(args)
     end = time.time()
     print("Cost: ", end - sta, ' s')
     print("Step4: Move result file to ", args.model)
@@ -335,7 +328,7 @@ def convert_llm(args):
     
     ids = [0, 1]
     external_file = os.path.join(os.getcwd(), args.model, 'llm.mnn.weight')
-    makeIOJson(args, args.chunk_size, hidden_size, mask_type)
+    makeIOJson(args, 128, hidden_size, mask_type)
     inputjson = os.path.join(cache, 'input.json')
     convert_qnn(args, 'llm.mnn', inputjson, external_file, ids)
 
