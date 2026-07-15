@@ -328,17 +328,17 @@ jobs:
         with:
           name: arm64-v8a-libs
           path: |
-            *.so
-            source/jni/*.so
-            tools/cv/*.so
-            tools/audio/*.so
-            source/backend/qnn/*.so
-            source/backend/vulkan/*.so
-            source/backend/opencl/*.so
-            source/backend/opengl/*.so
-            tools/converter/*.so
-            tools/converter/mnnconvert
-            tools/converter/convertToStaticModel
+            build_android/arm64-v8a/*.so
+            build_android/arm64-v8a/source/jni/*.so
+            build_android/arm64-v8a/tools/cv/*.so
+            build_android/arm64-v8a/tools/audio/*.so
+            build_android/arm64-v8a/source/backend/qnn/*.so
+            build_android/arm64-v8a/source/backend/vulkan/*.so
+            build_android/arm64-v8a/source/backend/opencl/*.so
+            build_android/arm64-v8a/source/backend/opengl/*.so
+            build_android/arm64-v8a/tools/converter/*.so
+            build_android/arm64-v8a/tools/converter/mnnconvert
+            build_android/arm64-v8a/tools/converter/convertToStaticModel
           retention-days: 7
 
       # ========== Build armeabi-v7a with all backends ==========
@@ -436,30 +436,30 @@ jobs:
         with:
           name: armeabi-v7a-libs
           path: |
-            *.so
-            source/jni/*.so
-            tools/cv/*.so
-            tools/audio/*.so
-            source/backend/qnn/*.so
-            source/backend/vulkan/*.so
-            source/backend/opencl/*.so
-            source/backend/opengl/*.so
-            tools/converter/*.so
-            tools/converter/mnnconvert
-            tools/converter/convertToStaticModel
+            build_android/armeabi-v7a/*.so
+            build_android/armeabi-v7a/source/jni/*.so
+            build_android/armeabi-v7a/tools/cv/*.so
+            build_android/armeabi-v7a/tools/audio/*.so
+            build_android/armeabi-v7a/source/backend/qnn/*.so
+            build_android/armeabi-v7a/source/backend/vulkan/*.so
+            build_android/armeabi-v7a/source/backend/opencl/*.so
+            build_android/armeabi-v7a/source/backend/opengl/*.so
+            build_android/armeabi-v7a/tools/converter/*.so
+            build_android/armeabi-v7a/tools/converter/mnnconvert
+            build_android/armeabi-v7a/tools/converter/convertToStaticModel
           retention-days: 7
 
       - name: Download armeabi-v7a artifacts
         uses: actions/download-artifact@v4
         with:
           name: armeabi-v7a-libs
-          path: .
+          path: build_android/armeabi-v7a
 
       - name: Download arm64-v8a artifacts
         uses: actions/download-artifact@v4
         with:
           name: arm64-v8a-libs
-          path: .
+          path: build_android/arm64-v8a
 
       - name: package_aar
         id: package_aar
