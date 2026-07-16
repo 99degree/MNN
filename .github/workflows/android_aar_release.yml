@@ -491,6 +491,7 @@ jobs:
           mkdir -p ${AAR_DIR}/jni/arm64-v8a
 
           # Copy armeabi-v7a libraries
+          cp build_android/armeabi-v7a/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
           cp build_android/armeabi-v7a/source/jni/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
           cp build_android/armeabi-v7a/tools/cv/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
           cp build_android/armeabi-v7a/tools/audio/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
@@ -501,6 +502,7 @@ jobs:
           cp build_android/armeabi-v7a/tools/converter/*.so ${AAR_DIR}/jni/armeabi-v7a/ 2>/dev/null || true
 
           # Copy arm64-v8a libraries
+          cp build_android/arm64-v8a/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
           cp build_android/arm64-v8a/source/jni/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
           cp build_android/arm64-v8a/tools/cv/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
           cp build_android/arm64-v8a/tools/audio/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
