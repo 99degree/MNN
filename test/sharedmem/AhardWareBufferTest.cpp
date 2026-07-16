@@ -1,6 +1,6 @@
 //
-//  ReplaceTest.cpp
-//  MNNTests
+//  AhardWareBufferTest.cpp
+//  MNNTests - zero-copy AHardwareBuffer shared-memory tests
 //
 //  Created by MNN on 2019/09/10.
 //  Copyright © 2018, Alibaba Group Holding Limited
@@ -14,6 +14,8 @@
 #include <MNN/expr/Module.hpp>
 #include "TestUtils.h"
 #include <android/hardware_buffer.h>
+#include <MNN/expr/Executor.hpp>
+#include <MNN/expr/ExecutorScope.hpp>
 #define MNN_OPEN_TIME_TRACE
 #include <MNN/AutoTime.hpp>
 
@@ -296,6 +298,14 @@ static void copyDataFromAHardWareBufferYUV420(AHardwareBuffer* buffer, int width
     }
 }
 
+static bool isSupportedType(MNNForwardType type) {
+    // OpenCL: always supported for AHB zero-copy.
+    // Vulkan: supported when built with MNN_VULKAN_IMAGE=OFF (buffer backend),
+    //         which provides createExternalAHB / VkImportAndroidHardwareBufferInfoANDROID.
+    //         The Vulkan image backend does NOT handle MNN_MEMORY_AHARDWAREBUFFER.
+    return type == MNN_FORWARD_OPENCL || type == MNN_FORWARD_VULKAN;
+}
+
 static bool checkvalue(const float* ref, const unsigned char* out, int size){
     for(int i = 0; i < size; ++i){
         if(ref[i] != (float)out[i]){
@@ -327,10 +337,12 @@ public:
         if (nullptr == gFunction) {
             gFunction.reset(new AndroidHardwareBufferCompat);
         }
-        if (MNN_FORWARD_OPENCL != getCurrentType()) {
-            MNN_ERROR("Currently forwardtype[%d] run sharedmem/AhardWareBuffer has error, skip it\n", getCurrentType());
+        auto type = getCurrentType();
+        if (!isSupportedType(type)) {
+            MNN_ERROR("sharedmem/AhardWareBuffer: forwardtype[%d] not supported (need OpenCL or Vulkan buffer-mode), skip\n", type);
             return true;
         }
+        const char* backendName = (type == MNN_FORWARD_VULKAN) ? "Vulkan" : "OpenCL";
         // test rgbainput
         {
             int channel = 3;
@@ -368,7 +380,7 @@ public:
                 outputsShared[0]->copyToDevicePtr((void*)outputValue, MNN_MEMORY_AHARDWAREBUFFER);
                 copyDataFromAHardWareBufferRGBA(outputAhardwareBuffer, height, width, outputData);
                 if(checkvalue(refPtr, outputData, size) == false){
-                    MNN_ERROR("sharedmem/AhardWareBuffer RGBA format test failed!\n");
+                    MNN_ERROR("sharedmem/AhardWareBuffer RGBA format test failed! (backend=%s)\n", backendName);
                     return false;
                 }
             }
@@ -383,7 +395,7 @@ public:
                     outputs[0]->readMap<float>();
                 }
                 float timeCost = _t.durationInUs() / 1000.0f / (float)time;
-                MNN_PRINT("cpu copy [%d, %d, %d], Avg time: %f ms\n", channel, height, width, timeCost);
+                MNN_PRINT("[%s] cpu copy [%d, %d, %d], Avg time: %f ms\n", backendName, channel, height, width, timeCost);
             }
             {
                 MNN::Timer _t;
@@ -393,7 +405,7 @@ public:
                     outputs[0]->copyToDevicePtr((void*)outputValue, MNN_MEMORY_AHARDWAREBUFFER);
                 }
                 float timeCost = _t.durationInUs() / 1000.0f / (float)time;
-                MNN_PRINT("shared memory copy [%d, %d, %d], Avg time: %f ms\n", channel, height, width, timeCost);
+                MNN_PRINT("[%s] shared memory copy [%d, %d, %d], Avg time: %f ms\n", backendName, channel, height, width, timeCost);
             }
 
             ReleaseAHardWareBuffer(inputAhardwareBuffer);
@@ -436,7 +448,7 @@ public:
                 outputsShared[0]->copyToDevicePtr((void*)outputValue, MNN_MEMORY_AHARDWAREBUFFER);
                 copyDataFromAHardWareBufferYUV420(outputAhardwareBuffer, height, width, outputData);
                 if(checkvalue(refPtr, outputData, size) == false){
-                    MNN_ERROR("sharedmem/AhardWareBuffer YUV420 format test failed!\n");
+                    MNN_ERROR("sharedmem/AhardWareBuffer YUV420 format test failed! (backend=%s)\n", backendName);
                     return false;
                 }
             }
@@ -451,7 +463,7 @@ public:
                     outputs[0]->readMap<float>();
                 }
                 float timeCost = _t.durationInUs() / 1000.0f / (float)time;
-                MNN_PRINT("cpu copy [%d, %d, %d], Avg time: %f ms\n", channel, height, width, timeCost);
+                MNN_PRINT("[%s] cpu copy [%d, %d, %d], Avg time: %f ms\n", backendName, channel, height, width, timeCost);
             }
             {
                 MNN::Timer _t;
@@ -461,7 +473,7 @@ public:
                     outputs[0]->copyToDevicePtr((void*)outputValue, MNN_MEMORY_AHARDWAREBUFFER);
                 }
                 float timeCost = _t.durationInUs() / 1000.0f / (float)time;
-                MNN_PRINT("shared memory copy [%d, %d, %d], Avg time: %f ms\n", channel, height, width, timeCost);
+                MNN_PRINT("[%s] shared memory copy [%d, %d, %d], Avg time: %f ms\n", backendName, channel, height, width, timeCost);
             }
 
             ReleaseAHardWareBuffer(inputAhardwareBuffer);
@@ -471,5 +483,102 @@ public:
     }
 };
 
+// Dedicated Vulkan zero-copy test.
+// Creates its own Vulkan executor so the test can run independently of the
+// global forward-type setting. Requires: -DMNN_VULKAN=ON -DMNN_VULKAN_IMAGE=OFF.
+class VulkanZeroCopyTest : public MNNTestCase {
+public:
+    virtual bool run(int precision) {
+        if (nullptr == gFunction) {
+            gFunction.reset(new AndroidHardwareBufferCompat);
+        }
+        if (!gFunction->IsSupportAvailable()) {
+            MNN_ERROR("VulkanZeroCopyTest: AHardwareBuffer API not available, skip\n");
+            return true;
+        }
+        BackendConfig config;
+        config.precision = BackendConfig::Precision_Normal;
+        config.memory = BackendConfig::Memory_Normal;
+        auto exe = Executor::newExecutor(MNN_FORWARD_VULKAN, config, 1);
+        if (nullptr == exe) {
+            MNN_ERROR("VulkanZeroCopyTest: cannot create Vulkan executor (libMNN_Vulkan.so missing?), skip\n");
+            return true;
+        }
+        ExecutorScope scope(exe);
+        MNN_PRINT("[Vulkan] executor created, testing zero-copy AHB RGBA\n");
+
+        const int channel = 3;
+        auto net = _createModel(channel);
+        auto x = _Input({1, channel, height, width}, NCHW, halide_type_of<float>());
+        unsigned char inputData[4 * height * width];
+        unsigned char outputData[4 * height * width];
+        for (int i = 0; i < 4 * height * width; ++i) {
+            inputData[i] = rand() % 255;
+        }
+        // CPU reference
+        {
+            auto xPtr = x->writeMap<float>();
+            for (int i = 0; i < channel; ++i) {
+                for (int j = 0; j < height * width; ++j) {
+                    xPtr[i * height * width + j] = (float)inputData[j * 4 + i];
+                }
+            }
+            x->unMap();
+        }
+        auto outputs = net->onForward({x});
+        outputs[0] = _Convert(outputs[0], NC4HW4);
+        auto refPtr = outputs[0]->readMap<float>();
+        auto size = outputs[0]->getInfo()->size;
+
+        // Zero-copy via AHardwareBuffer
+        auto xShared = _Input({1, channel, height, width}, NCHW, halide_type_of<float>());
+        auto inputAhb = creatAHardwareBufferRGBA(width, height, inputData);
+        volatile uint64_t inputValue = (uint64_t)inputAhb;
+        xShared->setDevicePtr((void*)inputValue, MNN_MEMORY_AHARDWAREBUFFER);
+        auto outputsShared = net->onForward({xShared});
+        auto outputAhb = creatAHardwareBufferRGBA(height, width, nullptr);
+        volatile uint64_t outputValue = (uint64_t)outputAhb;
+        {
+            outputsShared[0]->copyToDevicePtr((void*)outputValue, MNN_MEMORY_AHARDWAREBUFFER);
+            copyDataFromAHardWareBufferRGBA(outputAhb, height, width, outputData);
+            if (checkvalue(refPtr, outputData, size) == false) {
+                MNN_ERROR("[Vulkan] zero-copy RGBA test FAILED!\n");
+                ReleaseAHardWareBuffer(inputAhb);
+                ReleaseAHardWareBuffer(outputAhb);
+                return false;
+            }
+        }
+
+        // Speed benchmark
+        const int benchIter = 50;
+        {
+            MNN::Timer _t;
+            for (int t = 0; t < benchIter; ++t) {
+                x->writeMap<float>();
+                auto out = net->onForward({x});
+                out[0]->readMap<float>();
+            }
+            float ms = _t.durationInUs() / 1000.0f / (float)benchIter;
+            MNN_PRINT("[Vulkan] cpu copy [%d, %d, %d]  Avg: %f ms\n", channel, height, width, ms);
+        }
+        {
+            MNN::Timer _t;
+            for (int t = 0; t < benchIter; ++t) {
+                xShared->setDevicePtr((void*)inputValue, MNN_MEMORY_AHARDWAREBUFFER);
+                auto out = net->onForward({xShared});
+                out[0]->copyToDevicePtr((void*)outputValue, MNN_MEMORY_AHARDWAREBUFFER);
+            }
+            float ms = _t.durationInUs() / 1000.0f / (float)benchIter;
+            MNN_PRINT("[Vulkan] zero-copy [%d, %d, %d]  Avg: %f ms\n", channel, height, width, ms);
+        }
+
+        ReleaseAHardWareBuffer(inputAhb);
+        ReleaseAHardWareBuffer(outputAhb);
+        MNN_PRINT("[Vulkan] zero-copy RGBA test PASSED\n");
+        return true;
+    }
+};
+
 MNNTestSuiteRegister(AhardWareBufferTest, "sharedmem/AhardWareBuffer");
+MNNTestSuiteRegister(VulkanZeroCopyTest, "sharedmem/VulkanZeroCopy");
 #endif

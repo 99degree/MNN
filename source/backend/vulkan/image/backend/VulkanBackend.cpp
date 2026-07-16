@@ -19,6 +19,7 @@
 #include "execution/VulkanBasicExecution.hpp"
 //#define MNN_OPEN_TIME_TRACE
 #include <MNN/AutoTime.hpp>
+#include <MNN/MNNForwardType.h>
 #ifdef MNN_USE_NEON
 #include <arm_neon.h>
 #endif
@@ -149,6 +150,28 @@ private:
     std::shared_ptr<VulkanTensor> mTensor;
 };
 
+// Keeps an externally-imported (zero-copy) Vulkan buffer alive for the lifetime
+// of the tensor. Used for AHardwareBuffer / dma-buf zero-copy import.
+// Mirrors the same class in buffer/backend/VulkanBackend.cpp.
+class VulkanExternalMemRelease : public Backend::MemObj {
+public:
+    VulkanExternalMemRelease(std::shared_ptr<VulkanBuffer> buffer, int64_t handle)
+        : mBuffer(std::move(buffer)), mHandle(handle) {
+    }
+    virtual ~VulkanExternalMemRelease() {
+        mBuffer.reset();
+    }
+    int64_t handle() const {
+        return mHandle;
+    }
+    std::shared_ptr<VulkanBuffer> buffer() const {
+        return mBuffer;
+    }
+private:
+    std::shared_ptr<VulkanBuffer> mBuffer;
+    int64_t mHandle;
+};
+
 static VkFormat _getFormat(halide_type_t type) {
     switch (type.code) {
         case halide_type_float:
@@ -176,10 +199,41 @@ static VkFormat _getFormat(halide_type_t type) {
 }
 
 Backend::MemObj* VulkanBackend::onAcquire(const Tensor* tensor, StorageType storageType) {
-    //FUNC_PRINT_ALL(tensor, p);
-
     auto MTensor     = const_cast<Tensor*>(tensor);
     auto format = _getFormat(tensor->getType());
+
+    // Zero-copy external memory import (Linux V4L2 dma-buf fd or Android AHardwareBuffer).
+    // Import the external memory as a VkBuffer, then create a VulkanTensor (VkImage)
+    // for compute. The VkBuffer→VkImage copy happens in onCopyBuffer via
+    // encodeBufferToTensor, keeping the data flow entirely on the GPU.
+    if (MNN_MEMORY_AHARDWAREBUFFER == MTensor->buffer().flags) {
+        int64_t handle = (int64_t)MTensor->buffer().device;
+        auto* shared = static_cast<VulkanExternalMemRelease*>(TensorUtils::getSharedMem(MTensor));
+        if (nullptr == shared || shared->handle() != handle) {
+            auto alignSize = VulkanTensor::getAlignSize(MTensor) * sizeof(float);
+            std::shared_ptr<VulkanBuffer> extBuf = nullptr;
+#ifdef __ANDROID__
+            if (handle > 1024) {
+                extBuf = VulkanBuffer::createExternalAHB(getMemoryPool(), (AHardwareBuffer*)handle, alignSize);
+            } else {
+                extBuf = VulkanBuffer::createExternal(getMemoryPool(), (int)handle, alignSize);
+            }
+#else
+            extBuf = VulkanBuffer::createExternal(getMemoryPool(), (int)handle, alignSize);
+#endif
+            if (nullptr == extBuf) {
+                MNN_ERROR("VulkanBackend::onAcquire AHB import failed (handle=%lld)\n", (long long)handle);
+                return nullptr;
+            }
+            shared = new VulkanExternalMemRelease(extBuf, handle);
+            TensorUtils::setSharedMem(MTensor, shared);
+        }
+        // Create VulkanTensor for compute shaders (data loaded via onCopyBuffer)
+        auto newBuffer = std::make_shared<VulkanTensor>(MTensor, format, getMemoryPool(), device().proty().limits);
+        MTensor->buffer().device = (uint64_t)(newBuffer.get());
+        return new VulkanMemRelease(newBuffer);
+    }
+
     if (Backend::STATIC == storageType) {
         auto newBuffer           = std::make_shared<VulkanTensor>(MTensor, format, getMemoryPool(), device().proty().limits);
         MTensor->buffer().device = (uint64_t)(newBuffer.get());
@@ -403,7 +457,73 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
         MNNCPUCopyBuffer(tempTensor.get(), dstTensor);
         mHostBuffer->unmap();
     } else {
-        // Device to device
+        // Check for AHB/dma-buf external memory import (zero-copy path)
+        auto* sharedSrc = static_cast<VulkanExternalMemRelease*>(TensorUtils::getSharedMem(srcTensor));
+        auto* sharedDst = static_cast<VulkanExternalMemRelease*>(TensorUtils::getSharedMem(dstTensor));
+        if (sharedSrc && sharedSrc->buffer()) {
+            // AHB → VkImage: imported VkBuffer → VkImage via encodeBufferToTensor
+            _finish();
+            auto extBuffer = sharedSrc->buffer();
+            auto format = TensorUtils::getDescribe(dstTensor)->dimensionFormat;
+            auto key    = std::make_tuple(TensorUtils::getDescribe(dstTensor), true, format);
+            auto iter   = mConverters.find(key);
+            if (iter != mConverters.end() && std::get<2>(iter->second).lock() == nullptr) {
+                mConverters.erase(iter);
+                iter = mConverters.end();
+            }
+            if (iter == mConverters.end()) {
+                if (mConverters.size() > MNN_VULKAN_MAX_CACHE_CONVSIZE) {
+                    mConverters.clear();
+                }
+                auto converter = std::make_shared<VulkanImageConverter>(this);
+                std::shared_ptr<VulkanCommandPool::Buffer> convertorBuffer(
+                    const_cast<VulkanCommandPool::Buffer*>(getPool().allocBuffer()));
+                convertorBuffer->begin(0);
+                auto vkTensor = reinterpret_cast<VulkanTensor*>(dstTensor->deviceId());
+                for (int i=0; i<vkTensor->imageSize(); ++i) {
+                    vkTensor->image(i)->barrierWrite(convertorBuffer->get());
+                }
+                converter->encodeBufferToTensor(extBuffer->buffer(), dstTensor, extBuffer->size(), 0,
+                                                format, convertorBuffer.get());
+                for (int i=0; i<vkTensor->imageSize(); ++i) {
+                    vkTensor->image(i)->barrierRead(convertorBuffer->get());
+                }
+                convertorBuffer->end();
+                mConverters.insert(std::make_pair(key, std::make_tuple(converter, convertorBuffer, std::weak_ptr<Tensor::InsideDescribe::NativeInsideDescribe>(TensorUtils::getDescribeOrigin(dstTensor)->mContent))));
+                iter = mConverters.find(key);
+            }
+            mCmdBuffers.push_back(std::get<1>(iter->second)->get());
+            if (TensorUtils::getDescribe(srcTensor)->isMutable == false) {
+                _finish();
+            }
+        } else if (sharedDst && sharedDst->buffer()) {
+            // VkImage → AHB: VkImage → imported VkBuffer via encodeTensorToBuffer
+            _finish();
+            auto extBuffer = sharedDst->buffer();
+            auto format = TensorUtils::getDescribe(srcTensor)->dimensionFormat;
+            auto key    = std::make_tuple(TensorUtils::getDescribe(srcTensor), false, format);
+            auto iter   = mConverters.find(key);
+            if (iter != mConverters.end() && std::get<2>(iter->second).lock() == nullptr) {
+                mConverters.erase(iter);
+                iter = mConverters.end();
+            }
+            if (iter == mConverters.end()) {
+                if (mConverters.size() > MNN_VULKAN_MAX_CACHE_CONVSIZE) {
+                    mConverters.clear();
+                }
+                auto converter = std::make_shared<VulkanImageConverter>(this);
+                std::shared_ptr<VulkanCommandPool::Buffer> convertorBuffer(
+                    const_cast<VulkanCommandPool::Buffer*>(getPool().allocBuffer()));
+                convertorBuffer->begin(0);
+                converter->encodeTensorToBuffer(srcTensor, extBuffer->buffer(), extBuffer->size(), 0,
+                                                format, convertorBuffer.get());
+                convertorBuffer->end();
+                mConverters.insert(std::make_pair(key, std::make_tuple(converter, convertorBuffer, std::weak_ptr<Tensor::InsideDescribe::NativeInsideDescribe>(TensorUtils::getDescribeOrigin(srcTensor)->mContent))));
+                iter = mConverters.find(key);
+            }
+            mCmdBuffers.push_back(std::get<1>(iter->second)->get());
+            _finish();
+        } else {
         _finish();
         auto srcVkTensor = reinterpret_cast<VulkanTensor*>(srcTensor->deviceId());
         auto dstVkTensor = reinterpret_cast<VulkanTensor*>(dstTensor->deviceId());
@@ -469,6 +589,7 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
         cmdBuffer->end();
         mCmdBuffers.push_back(cmdBuffer->get());
         _finish();
+        }
     }
 }
 
