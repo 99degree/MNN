@@ -3241,6 +3241,54 @@ public:
         Pass2_FuseExtra::instance()->onExecute(net);
 
         VLOG(1) << "[IspFusion] Complete: " << net->oplists.size() << " ops";
+
+        // ═══ DIAGNOSTIC: Warn if primitive ops remain after ISP fusion ═══
+        // After Pass1+Pass2, ISP-pattern ops should be Extra(isp.*) types.
+        // Any remaining Conv/BinaryOp/UnaryOp/Pooling/Reduction may indicate
+        // incomplete fusion or non-ISP ops.
+        {
+            int ispCount = 0, primCount = 0;
+            std::map<std::string, int> ispTypes;
+            std::map<MNN::OpType, int> primTypes;
+            for (size_t i = 0; i < net->oplists.size(); i++) {
+                auto& op = net->oplists[i];
+                if (!op) continue;
+                if (op->type == MNN::OpType_Extra) {
+                    auto* ex = op->main.AsExtra();
+                    if (ex && ex->type.size() > 4 && ex->type.substr(0, 4) == "isp.") {
+                        ispCount++;
+                        ispTypes[ex->type]++;
+                    }
+                } else if (op->type == MNN::OpType_Convolution ||
+                           op->type == MNN::OpType_BinaryOp ||
+                           op->type == MNN::OpType_UnaryOp ||
+                           op->type == MNN::OpType_Pooling ||
+                           op->type == MNN::OpType_Reduction ||
+                           op->type == MNN::OpType_Scale ||
+                           op->type == MNN::OpType_ReLU ||
+                           op->type == MNN::OpType_ReLU6 ||
+                           op->type == MNN::OpType_Cast ||
+                           op->type == MNN::OpType_Eltwise) {
+                    primCount++;
+                    primTypes[op->type]++;
+                }
+            }
+            if (ispCount > 0) {
+                fprintf(stderr, "[IspFusion] ISP opsets in use (%d total):\n", ispCount);
+                for (auto& kv : ispTypes) {
+                    fprintf(stderr, "  %-30s  x%d\n", kv.first.c_str(), kv.second);
+                }
+            }
+            if (primCount > 0) {
+                fprintf(stderr, "[IspFusion] WARNING: %d primitive ops remain after ISP fusion:\n", primCount);
+                for (auto& kv : primTypes) {
+                    fprintf(stderr, "  %-30s  x%d\n", MNN::EnumNamesOpType()[kv.first], kv.second);
+                }
+            } else {
+                fprintf(stderr, "[IspFusion] OK: All ISP-pattern ops converted to Extra.\n");
+            }
+        }
+
         // Debug: dump all op types
         for (size_t i = 0; i < net->oplists.size(); i++) {
             auto& op = net->oplists[i];
