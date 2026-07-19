@@ -339,6 +339,7 @@ jobs:
             build_android/arm64-v8a/tools/converter/*.so
             build_android/arm64-v8a/tools/converter/mnnconvert
             build_android/arm64-v8a/tools/converter/convertToStaticModel
+            build_android/*.so
           retention-days: 7
 
       # ========== Build armeabi-v7a with all backends ==========
@@ -503,6 +504,7 @@ jobs:
 
           # Copy arm64-v8a libraries
           cp build_android/arm64-v8a/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
+          cp build_android/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
           cp build_android/arm64-v8a/source/jni/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
           cp build_android/arm64-v8a/tools/cv/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
           cp build_android/arm64-v8a/tools/audio/*.so ${AAR_DIR}/jni/arm64-v8a/ 2>/dev/null || true
