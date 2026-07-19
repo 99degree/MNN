@@ -650,6 +650,54 @@ public:
             if (tryVignetting(ops, i)) { changed = true; continue; }
             // R14: Add → Sub → Mul → Add chain → isp.auto_contrast
             if (tryAutoContrast(ops, i)) { changed = true; continue; }
+            // NEW: Missing ISP blocks
+            // DPC (median filter) - 3x3 Pool -> Sub -> Mul -> Add -> Clip
+            if (tryDpc(ops, i)) { changed = true; continue; }
+            // Gaussian Denoise - Conv -> Add (blend)
+            if (tryGaussianDenoise(ops, i)) { changed = true; continue; }
+            // LSC (Lens Shading Correction) - Mul with 2D gain map
+            if (tryLsc(ops, i)) { changed = true; continue; }
+            // AWB (Auto White Balance) - Mul(3ch gains) + Add(3ch offsets)
+            if (tryAwb(ops, i)) { changed = true; continue; }
+            // AE (Auto Exposure) - Mul(global gain) + optional Add(offset)
+            if (tryAe(ops, i)) { changed = true; continue; }
+            // Tone Mapping - Pow(gamma) -> Mul(contrast) -> optional unsharp
+            if (tryTone(ops, i)) { changed = true; continue; }
+            // Gamma - Pow operation
+            if (tryGamma(ops, i)) { changed = true; continue; }
+            // Calibration Stats - ReduceMean/Min/Max
+            if (tryCalibStats(ops, i)) { changed = true; continue; }
+            // IspController Stats - ReduceMean for AE/AWB/AF
+            if (tryIspControllerStats(ops, i)) { changed = true; continue; }
+            // AF Focus - Sobel -> Mul -> ReduceMean -> Pow -> ReduceMean
+            if (tryAfFocus(ops, i)) { changed = true; continue; }
+            // EIS Gyro - warp with gyro params
+            if (tryEisGyro(ops, i)) { changed = true; continue; }
+
+            // NEW: Missing ISP blocks
+            // DPC (median filter) - 3x3 Pool -> Sub -> Mul -> Add -> Clip
+            if (tryDpc(ops, i)) { changed = true; continue; }
+            // Gaussian Denoise - Conv -> Add (blend)
+            if (tryGaussianDenoise(ops, i)) { changed = true; continue; }
+            // LSC (Lens Shading Correction) - Mul with 2D gain map
+            if (tryLsc(ops, i)) { changed = true; continue; }
+            // AWB (Auto White Balance) - Mul(3ch gains) + Add(3ch offsets)
+            if (tryAwb(ops, i)) { changed = true; continue; }
+            // AE (Auto Exposure) - Mul(global gain) + optional Add(offset)
+            if (tryAe(ops, i)) { changed = true; continue; }
+            // Tone Mapping - Pow(gamma) -> Mul(contrast) -> optional unsharp
+            if (tryTone(ops, i)) { changed = true; continue; }
+            // Gamma - Pow operation
+            if (tryGamma(ops, i)) { changed = true; continue; }
+            // Calibration Stats - ReduceMean/Min/Max
+            if (tryCalibStats(ops, i)) { changed = true; continue; }
+            // IspController Stats - ReduceMean for AE/AWB/AF
+            if (tryIspControllerStats(ops, i)) { changed = true; continue; }
+            // AF Focus - Sobel -> Mul -> ReduceMean -> Pow -> ReduceMean
+            if (tryAfFocus(ops, i)) { changed = true; continue; }
+            // EIS Gyro - warp with gyro params
+            if (tryEisGyro(ops, i)) { changed = true; continue; }
+
         }
 
         ops.erase(std::remove_if(ops.begin(), ops.end(),
@@ -2345,69 +2393,325 @@ private:
         return true;
     }
 
-/* R7d commented out until GammaBlock ONNX pattern fixed
-   // R7d: Log+Mul+Exp → isp.gamma
-    // GammaBlock pattern: Log(x) * inv_gamma → Exp(result)
-    bool tryGamma(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
-        if (!ops[i] || ops[i]->type != MNN::OpType_BinaryOp) return false;
-        if (!isBinaryType(ops[i].get(), MNN::BinaryOpOperation_Log)) return false;
-        // Find next Mul (should be scaling by inv_gamma)
-        int mulIdx = -1;
-        for (int j = i + 1; j < std::min((int)ops.size(), i + 3); j++) {
-            if (!ops[j] || ops[j]->type == MNN::OpType_Const) continue;
-            if (ops[j]->type == MNN::OpType_BinaryOp &&
-                isBinaryType(ops[j].get(), MNN::BinaryOpOperation_MUL)) {
-                if (!isChain(ops[i].get(), ops[j].get())) return false;
-                mulIdx = j;
+
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  NEW ISP BLOCKS - Missing optimization rules
+    // ═════════════════════════════════════════════════════════════════════
+
+    // DPC (Defective Pixel Correction) - median filter pattern
+    bool tryDpc(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (!ops[i] || ops[i]->type != MNN::OpType_Pooling) return false;
+        auto* pool = ops[i]->main.AsPool();
+        if (!pool || pool->kernelX != 3 || pool->kernelY != 3) return false;
+        if (pool->type != MNN::PoolType_MAXPOOL) return false;
+
+        int subIdx = -1, mulIdx = -1, addIdx = -1, clipIdx = -1;
+        for (int k = i + 1; k < std::min((int)ops.size(), i + 6); k++) {
+            if (!ops[k]) continue;
+            if (ops[k]->type == MNN::OpType_BinaryOp) {
+                auto* bin = ops[k]->main.AsBinaryOp();
+                if (bin->opType == MNN::BinaryOpOperation_SUB && subIdx < 0 && isChain(ops[i].get(), ops[k].get())) subIdx = k;
+                else if (bin->opType == MNN::BinaryOpOperation_MUL && mulIdx < 0 && (subIdx < 0 || isChain(ops[subIdx].get(), ops[k].get()))) mulIdx = k;
+                else if (bin->opType == MNN::BinaryOpOperation_ADD && addIdx < 0 && (mulIdx < 0 || isChain(ops[mulIdx].get(), ops[k].get()))) addIdx = k;
+            } else if (ops[k]->type == MNN::OpType_ReLU || ops[k]->type == MNN::OpType_ReLU6) {
+                clipIdx = k;
             }
-            break;
         }
-        if (mulIdx < 0) return false;
-        // Find next Exp (should consume Mul's output)
-        for (int k = mulIdx + 1; k < std::min((int)ops.size(), mulIdx + 3); k++) {
-            if (!ops[k] || ops[k]->type == MNN::OpType_Const) continue;
-            if (ops[k]->type == MNN::OpType_UnaryOp &&
-                isUnaryType(ops[k].get(), MNN::UnaryOpOperation_EXP)) {
-                if (!isChain(ops[mulIdx].get(), ops[k].get())) return false;
-                // Extract inv_gamma from Mul's second input
-                float inv_g = 0.0f;
-                for (int inIdx : ops[mulIdx]->inputIndexes) {
-                    for (int j = 0; j < (int)ops.size(); j++) {
-                        if (!ops[j] || ops[j]->type != MNN::OpType_Const) continue;
-                        for (int outIdx : ops[j]->outputIndexes) {
-                            if (outIdx == inIdx) {
-                                auto* blb = ops[j]->main.AsBlob();
-                                if (blb && !blb->float32s.empty()) inv_g = blb->float32s[0];
-                            }
-                        }
-                    }
-                }
-                float gamma = (inv_g > 0) ? (1.0f / inv_g) : 2.2f;
-                // Replace Mul with Gamma Extra
-                ops[mulIdx]->type = MNN::OpType_Extra;
-                ops[mulIdx]->main.type = MNN::OpParameter_Extra;
-                ops[mulIdx]->type = MNN::OpType_Extra;
-                ops[mulIdx]->main.type = MNN::OpParameter_Extra;
-                auto* ex = new MNN::ExtraT();
-                ex->type = "isp.gamma";
-                std::vector<float> u = {float(mW), float(mH), gamma, 0, 0,0,0,0};
-                buildCommonAttrs(ex, mW, mH, u);
-                addNamedFloats(ex, "gamma", {gamma});
-                setEngine(ex);
-                addSpirv(ex, "isp.gamma");
-                ops[mulIdx]->main.value = ex;
-                ops[mulIdx]->outputIndexes = ops[k]->outputIndexes;
-                ops[k].reset();
-                ops[i].reset(); // Remove Log
-                VLOG(2) << "[P1] R7d: Log+Mul+Exp → gamma at " << mulIdx << " gamma=" << gamma;
-                i = k;
-                return true;
-            }
-            break;
+
+        if (subIdx >= 0 && mulIdx >= 0 && addIdx >= 0) {
+            int lastIdx = clipIdx >= 0 ? clipIdx : addIdx;
+            ops[lastIdx]->type = MNN::OpType_Extra;
+            ops[lastIdx]->main.type = MNN::OpParameter_Extra;
+            auto* ex = new MNN::ExtraT(); ex->type = "isp.dpc"; ex->engine = "MNN";
+            std::vector<float> u = {float(mW), float(mH), 3.0f, 3.0f, 0.5f};
+            buildCommonAttrs(ex, mW, mH, u);
+            addNamedFloats(ex, "dpc", {3.0f, 3.0f, 0.5f});
+            setEngine(ex); addSpirv(ex, "isp.dpc");
+            ops[lastIdx]->main.value = ex;
+
+            if (subIdx >= 0) ops[subIdx].reset();
+            if (mulIdx >= 0 && mulIdx != lastIdx) ops[mulIdx].reset();
+            if (clipIdx >= 0 && clipIdx != lastIdx) ops[clipIdx].reset();
+
+            VLOG(2) << "[P1] DPC: median filter at " << i; i = lastIdx; return true;
         }
         return false;
     }
-*/};
+
+    // Gaussian Denoise
+    bool tryGaussianDenoise(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (!ops[i] || ops[i]->type != MNN::OpType_Convolution) return false;
+        auto* conv = ops[i]->main.AsConvolution2D();
+        if (!conv || !conv->common) return false;
+        if (!((conv->common->kernelX == 3 && conv->common->kernelY == 3) || (conv->common->kernelX == 5 && conv->common->kernelY == 5))) return false;
+        if (conv->common->strideX != 1 || conv->common->strideY != 1) return false;
+
+        int addIdx = -1;
+        for (int j = i + 1; j < std::min((int)ops.size(), i + 4); j++) {
+            if (!ops[j] || ops[j]->type != MNN::OpType_BinaryOp) continue;
+            if (!isBinaryType(ops[j].get(), MNN::BinaryOpOperation_ADD)) continue;
+            if (isChain(ops[i].get(), ops[j].get())) { addIdx = j; break; }
+        }
+        if (addIdx < 0) return false;
+
+        float blendAlpha = 0.5f;
+        for (int inIdx : ops[addIdx]->inputIndexes) {
+            for (int k = 0; k < (int)ops.size(); k++) {
+                if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
+                for (int outIdx : ops[k]->outputIndexes) {
+                    if (outIdx == addIdx) {
+                        auto* blb = ops[k]->main.AsBlob();
+                        if (blb && !blb->float32s.empty()) blendAlpha = blb->float32s[0];
+                    }
+                }
+            }
+        }
+
+        ops[addIdx]->type = MNN::OpType_Extra; ops[addIdx]->main.type = MNN::OpParameter_Extra;
+        auto* ex = new MNN::ExtraT(); ex->type = "isp.denoise"; ex->engine = "MNN";
+        std::vector<float> u = {float(mW), float(mH), blendAlpha, 3.0f};
+        buildCommonAttrs(ex, mW, mH, u); addNamedFloats(ex, "denoise", {blendAlpha, 3.0f});
+        setEngine(ex); addSpirv(ex, "isp.denoise"); ops[addIdx]->main.value = ex;
+        ops[i].reset(); VLOG(2) << "[P1] Denoise: Gaussian blur at " << i << " alpha=" << blendAlpha; i = addIdx; return true;
+    }
+
+    // LSC (Lens Shading Correction)
+    bool tryLsc(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (!isBinaryType(ops[i].get(), MNN::BinaryOpOperation_MUL)) return false;
+        int gainMapIdx = -1;
+        for (int inIdx : ops[i]->inputIndexes) {
+            for (int k = 0; k < (int)ops.size(); k++) {
+                if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
+                for (int outIdx : ops[k]->outputIndexes) {
+                    if (outIdx == inIdx) {
+                        auto* blb = ops[k]->main.AsBlob();
+                        if (blb && blb->dims.size() >= 2) {
+                            int h = blb->dims[blb->dims.size() - 2];
+                            int w = blb->dims[blb->dims.size() - 1];
+                            if (h > 1 && w > 1 && h == mH && w == mW) { gainMapIdx = k; break; }
+                        }
+                    }
+                }
+                if (gainMapIdx >= 0) break;
+            }
+            if (gainMapIdx < 0) return false;
+
+            ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
+            auto* ex = new MNN::ExtraT(); ex->type = "isp.lsc"; ex->engine = "MNN";
+            std::vector<float> u = {float(mW), float(mH)}; buildCommonAttrs(ex, mW, mH, u);
+            auto* blb = ops[gainMapIdx]->main.AsBlob();
+            if (blb && !blb->float32s.empty()) addNamedFloats(ex, "gain_map", blb->float32s);
+            setEngine(ex); addSpirv(ex, "isp.lsc"); ops[i]->main.value = ex;
+            VLOG(2) << "[P1] LSC: radial gain map at " << i; return true;
+        }
+        return false;
+    }
+
+    // AWB (Auto White Balance)
+    bool tryAwb(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (!isBinaryType(ops[i].get(), MNN::BinaryOpOperation_MUL)) return false;
+        float gains[3] = {1,1,1}; int gainConstIdx = -1;
+        for (int inIdx : ops[i]->inputIndexes) {
+            for (int k = 0; k < (int)ops.size(); k++) {
+                if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
+                for (int outIdx : ops[k]->outputIndexes) {
+                    if (outIdx == inIdx) {
+                        auto* blb = ops[k]->main.AsBlob();
+                        if (blb && blb->float32s.size() >= 3) { for (int c=0;c<3;c++) gains[c]=blb->float32s[c]; gainConstIdx=k; break; }
+                    }
+                } if (gainConstIdx >= 0) break;
+            } if (gainConstIdx < 0) return false;
+
+            int addIdx = -1;
+            for (int j = i + 1; j < std::min((int)ops.size(), i + 4); j++) {
+                if (!ops[j] || ops[j]->type != MNN::OpType_BinaryOp) continue;
+                if (isBinaryType(ops[j].get(), MNN::BinaryOpOperation_ADD) && isChain(ops[i].get(), ops[j].get())) { addIdx = j; break; }
+            } if (addIdx < 0) return false;
+
+            float offsets[3] = {0,0,0};
+            for (int inIdx : ops[addIdx]->inputIndexes) {
+                for (int k = 0; k < (int)ops.size(); k++) {
+                    if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
+                    for (int outIdx : ops[k]->outputIndexes) {
+                        if (outIdx == inIdx) {
+                            auto* blb = ops[k]->main.AsBlob();
+                            if (blb && blb->float32s.size() >= 3) { for(int c=0;c<3;c++) offsets[c]=blb->float32s[c]; } break;
+                        }
+                    }
+                }
+            }
+
+            ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
+            auto* ex = new MNN::ExtraT(); ex->type = "isp.awb"; ex->engine = "MNN";
+            std::vector<float> u = {float(mW), float(mH), gains[0], gains[1], gains[2], offsets[0], offsets[1], offsets[2]};
+            buildCommonAttrs(ex, mW, mH, u); addNamedFloats(ex, "awb", {gains[0], gains[1], gains[2], offsets[0], offsets[1], offsets[2]});
+            setEngine(ex); addSpirv(ex, "isp.awb"); ops[i]->main.value = ex;
+            if (gainConstIdx >= 0) ops[gainConstIdx].reset(); if (addIdx >= 0) ops[addIdx].reset();
+            VLOG(2) << "[P1] AWB: channel gains at " << i; return true;
+        }
+        return false;
+    }
+
+    // AE (Auto Exposure)
+    bool tryAe(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (!isBinaryType(ops[i].get(), MNN::BinaryOpOperation_MUL)) return false;
+        float gain = 1.0f; int gainConstIdx = -1;
+        for (int inIdx : ops[i]->inputIndexes) {
+            for (int k = 0; k < (int)ops.size(); k++) {
+                if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
+                for (int outIdx : ops[k]->outputIndexes) {
+                    if (outIdx == inIdx) { auto* blb = ops[k]->main.AsBlob(); if (blb && blb->float32s.size() == 1) { gain = blb->float32s[0]; gainConstIdx = k; break; } }
+                } if (gainConstIdx >= 0) break;
+            } if (gainConstIdx < 0) return false;
+
+            float offset = 0.0f; int addIdx = -1;
+            for (int j = i + 1; j < std::min((int)ops.size(), i + 3); j++) {
+                if (!ops[j] || ops[j]->type != MNN::OpType_BinaryOp) continue;
+                if (isBinaryType(ops[j].get(), MNN::BinaryOpOperation_ADD) && isChain(ops[i].get(), ops[j].get())) {
+                    for (int inIdx : ops[j]->inputIndexes) {
+                        for (int k = 0; k < (int)ops.size(); k++) {
+                            if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
+                            for (int outIdx : ops[k]->outputIndexes) {
+                                if (outIdx == inIdx) { auto* blb = ops[k]->main.AsBlob(); if (blb && blb->float32s.size() == 1) { offset = blb->float32s[0]; addIdx = j; break; } }
+                            } if (addIdx >= 0) break;
+                        }
+                    } if (addIdx >= 0) break;
+                }
+
+                ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
+                auto* ex = new MNN::ExtraT(); ex->type = "isp.ae"; ex->engine = "MNN";
+                std::vector<float> u = {float(mW), float(mH), gain, offset};
+                buildCommonAttrs(ex, mW, mH, u); addNamedFloats(ex, "ae", {gain, offset}); setEngine(ex); addSpirv(ex, "isp.ae");
+                ops[i]->main.value = ex; if (gainConstIdx >= 0) ops[gainConstIdx].reset(); if (addIdx >= 0) ops[addIdx].reset();
+                VLOG(2) << "[P1] AE: global gain=" << gain << " offset=" << offset << " at " << i; return true;
+            }
+        }
+        return false;
+    }
+
+    // Tone Mapping
+    bool tryTone(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (!ops[i] || ops[i]->type != MNN::OpType_BinaryOp) return false;
+        auto* bin = ops[i]->main.AsBinaryOp(); if (!bin || bin->opType != MNN::BinaryOpOperation_POW) return false;
+        float gamma = 2.2f;
+        // Try to read gamma from the const input
+        for (int inIdx : ops[i]->inputIndexes) {
+            for (int k = 0; k < (int)ops.size(); k++) {
+                if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
+                for (int outIdx : ops[k]->outputIndexes) {
+                    if (outIdx == inIdx) { auto* blb = ops[k]->main.AsBlob(); if (blb && !blb->float32s.empty()) gamma = blb->float32s[0]; }
+                }
+            }
+        }
+        float contrast = 1.0f; int mulIdx = -1;
+        for (int j = i + 1; j < std::min((int)ops.size(), i + 4); j++) {
+            if (!ops[j] || ops[j]->type != MNN::OpType_BinaryOp) continue;
+            if (isBinaryType(ops[j].get(), MNN::BinaryOpOperation_MUL) && isChain(ops[i].get(), ops[j].get())) {
+                for (int inIdx : ops[j]->inputIndexes) {
+                    for (int k = 0; k < (int)ops.size(); k++) {
+                        if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
+                        for (int outIdx : ops[k]->outputIndexes) {
+                            if (outIdx == inIdx) { auto* blb = ops[k]->main.AsBlob(); if (blb && blb->float32s.size() == 1) { contrast = blb->float32s[0]; mulIdx = j; break; } }
+                        }
+                    } if (mulIdx >= 0) break;
+                } if (mulIdx >= 0) break;
+            }
+
+            int unsharpIdx = -1;
+            if (mulIdx >= 0) {
+                for (int j = mulIdx + 1; j < std::min((int)ops.size(), mulIdx + 4); j++) {
+                    if (!ops[j] || ops[j]->type != MNN::OpType_Convolution) continue;
+                    auto* conv = ops[j]->main.AsConvolution2D();
+                    if (conv && conv->common && conv->common->kernelX == 3 && conv->common->kernelY == 3) { unsharpIdx = j; break; }
+                }
+            }
+
+            int replaceIdx = unsharpIdx >= 0 ? unsharpIdx : (mulIdx >= 0 ? mulIdx : i);
+            ops[replaceIdx]->type = MNN::OpType_Extra; ops[replaceIdx]->main.type = MNN::OpParameter_Extra;
+            auto* ex = new MNN::ExtraT(); ex->type = "isp.tone"; ex->engine = "MNN";
+            std::vector<float> u = {float(mW), float(mH), gamma, contrast, 0, 0, 0, 0};
+            buildCommonAttrs(ex, mW, mH, u); addNamedFloats(ex, "tone", {gamma, contrast}); setEngine(ex); addSpirv(ex, "isp.tone");
+            ops[replaceIdx]->main.value = ex;
+            if (mulIdx >= 0 && mulIdx != replaceIdx) ops[mulIdx].reset();
+            if (unsharpIdx >= 0 && unsharpIdx != replaceIdx) ops[unsharpIdx].reset();
+            VLOG(2) << "[P1] Tone: gamma=" << gamma << " contrast=" << contrast << " at " << i; i = replaceIdx; return true;
+        }
+        return false;
+    }
+
+    // Gamma correction
+    bool tryGamma(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (!ops[i] || ops[i]->type != MNN::OpType_BinaryOp) return false;
+        auto* bin = ops[i]->main.AsBinaryOp(); if (!bin || bin->opType != MNN::BinaryOpOperation_POW) return false;
+        float gamma = 2.2f;
+        for (int inIdx : ops[i]->inputIndexes) {
+            for (int k = 0; k < (int)ops.size(); k++) {
+                if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
+                for (int outIdx : ops[k]->outputIndexes) {
+                    if (outIdx == inIdx) { auto* blb = ops[k]->main.AsBlob(); if (blb && !blb->float32s.empty()) gamma = blb->float32s[0]; }
+                }
+            }
+        }
+        ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
+        auto* ex = new MNN::ExtraT(); ex->type = "isp.gamma"; ex->engine = "MNN";
+        std::vector<float> u = {float(mW), float(mH), gamma}; buildCommonAttrs(ex, mW, mH, u); addNamedFloats(ex, "gamma", {gamma}); setEngine(ex); addSpirv(ex, "isp.gamma");
+        ops[i]->main.value = ex; VLOG(2) << "[P1] Gamma: " << gamma << " at " << i; return true;
+    }
+
+    // Calibration Stats
+    bool tryCalibStats(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (!ops[i] || ops[i]->type != MNN::OpType_Reduction) return false;
+        auto* red = ops[i]->main.AsReductionParam(); if (!red) return false;
+        if (red->operation != MNN::ReductionType_MEAN && red->operation != MNN::ReductionType_MIN && red->operation != MNN::ReductionType_MAX) return false;
+        ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
+        auto* ex = new MNN::ExtraT(); ex->type = "isp.calib_stats"; ex->engine = "MNN";
+        std::vector<float> u = {float(mW), float(mH), (float)red->operation}; buildCommonAttrs(ex, mW, mH, u); setEngine(ex); addSpirv(ex, "isp.calib_stats");
+        ops[i]->main.value = ex; VLOG(2) << "[P1] CalibStats: op=" << (int)red->operation << " at " << i; return true;
+    }
+
+    // IspController Stats
+    bool tryIspControllerStats(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (!ops[i] || ops[i]->type != MNN::OpType_Reduction) return false;
+        auto* red = ops[i]->main.AsReductionParam(); if (!red) return false;
+        if (red->operation != MNN::ReductionType_MEAN) return false;
+        ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
+        auto* ex = new MNN::ExtraT(); ex->type = "isp.ispc_stats"; ex->engine = "MNN";
+        std::vector<float> u = {float(mW), float(mH)}; buildCommonAttrs(ex, mW, mH, u); setEngine(ex); addSpirv(ex, "isp.ispc_stats");
+        ops[i]->main.value = ex; VLOG(2) << "[P1] IspControllerStats at " << i; return true;
+    }
+
+    // AF Focus
+    bool tryAfFocus(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if (!ops[i] || ops[i]->type != MNN::OpType_Convolution) return false;
+        auto* conv = ops[i]->main.AsConvolution2D(); if (!conv || !conv->common || conv->common->kernelX != 3 || conv->common->kernelY != 3) return false;
+        float expectedSobel[9] = {-1,0,1, -2,0,2, -1,0,1}; bool isSobel = false;
+        if (conv->weight.size() >= 9) { isSobel = true; for (int k=0;k<9;k++) if (fabs(conv->weight[k]-expectedSobel[k])>0.1f){isSobel=false;break;} } if (!isSobel) return false;
+        int mulIdx=-1, redIdx=-1, powIdx=-1, red2Idx=-1;
+        for (int j=i+1;j<std::min((int)ops.size(),i+6);j++) {
+            if(!ops[j])continue;
+            if(ops[j]->type==MNN::OpType_BinaryOp&&mulIdx<0){ if(isBinaryType(ops[j].get(),MNN::BinaryOpOperation_MUL)&&isChain(ops[i].get(),ops[j].get())) mulIdx=j; }
+            else if(ops[j]->type==MNN::OpType_Reduction&&redIdx<0&&mulIdx>=0){ if(isChain(ops[mulIdx].get(),ops[j].get())) redIdx=j; }
+            else if(ops[j]->type==MNN::OpType_UnaryOp&&powIdx<0&&redIdx>=0){ auto* bin=ops[j]->main.AsBinaryOp(); if(bin&&bin->opType==MNN::BinaryOpOperation_POW) powIdx=j; }
+            else if(ops[j]->type==MNN::OpType_Reduction&&red2Idx<0&&powIdx>=0){ if(isChain(ops[powIdx].get(),ops[j].get())) red2Idx=j; }
+        } if(red2Idx<0) return false;
+        ops[red2Idx]->type=MNN::OpType_Extra; ops[red2Idx]->main.type=MNN::OpParameter_Extra;
+        auto* ex=new MNN::ExtraT(); ex->type="isp.af_focus"; ex->engine="MNN";
+        std::vector<float> u={float(mW),float(mH)}; buildCommonAttrs(ex,mW,mH,u); setEngine(ex); addSpirv(ex,"isp.af_focus");
+        ops[red2Idx]->main.value=ex; ops[i].reset(); if(mulIdx>=0)ops[mulIdx].reset(); if(redIdx>=0)ops[redIdx].reset(); if(powIdx>=0)ops[powIdx].reset();
+        VLOG(2)<<"[P1] AF Focus at "<<i; i=red2Idx; return true;
+    }
+
+    // EIS Gyro
+    bool tryEisGyro(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        if(!ops[i]||ops[i]->type!=MNN::OpType_Extra)return false;
+        auto* ex=ops[i]->main.AsExtra(); if(!ex||ex->type!="isp.warp")return false;
+        bool hasGyro=false; for(auto& attr:ex->attr){ if(attr&&(attr->key=="gyro_x"||attr->key=="gyro_y"||attr->key=="gyro_z")){hasGyro=true;break;} }
+        if(!hasGyro)return false; ex->type="isp.eis_gyro"; addSpirv(ex,"isp.eis_gyro");
+        VLOG(2)<<"[P1] EIS Gyro at "<<i; return true;
+    }
+
+};
 
 // ═══════════════════════════════════════════════════════════════════
 //  Pass 2: ISP Extra chain → fused Extra
@@ -3036,3 +3340,10 @@ static PostConverterRegister<RemoveExtraConvertTensor> __rm_extra_convert("Remov
 // ── Registration ──
 // Registers as "IspChainFusion" so optimizer finds it via optimizeNet()
 static PostConverterRegister<IspChainFusion> __isp_fusion("IspChainFusion");
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  NEW ISP BLOCKS - Missing optimization rules
+    // ═════════════════════════════════════════════════════════════════════
+
+    // DPC (Defective Pixel Correction) - median filter pattern
+    
