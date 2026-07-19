@@ -115,10 +115,23 @@ public:
                     attr->tensor.reset(convertTensorToBlob(&srcAttr.t(), scope->mModelDir, dstOp));
                     break;
                 case onnx::AttributeProto_AttributeType_STRINGS:
-                    attr->list.reset(new ListValueT);
-                    attr->list->s.resize(srcAttr.strings_size());
-                    for (int i = 0; i < srcAttr.strings_size(); ++i) {
-                        attr->list->s[i] = srcAttr.strings(i);
+                    // Special handling for "spirv" attribute: convert string bytes to tensor
+                    if (srcAttr.name() == "spirv" && srcAttr.strings_size() == 1) {
+                        const std::string& spirvData = srcAttr.strings(0);
+                        attr->tensor.reset(new BlobT);
+                        attr->tensor->dataType = DataType_DT_INT8;
+                        attr->tensor->dataFormat = MNN_DATA_FORMAT_NCHW;
+                        attr->tensor->dims = {1, 1, 1, (int)spirvData.size()};
+                        attr->tensor->int8s.resize(spirvData.size());
+                        for (size_t k = 0; k < spirvData.size(); ++k) {
+                            attr->tensor->int8s[k] = (int8_t)spirvData[k];
+                        }
+                    } else {
+                        attr->list.reset(new ListValueT);
+                        attr->list->s.resize(srcAttr.strings_size());
+                        for (int i = 0; i < srcAttr.strings_size(); ++i) {
+                            attr->list->s[i] = srcAttr.strings(i);
+                        }
                     }
                     break;
                 default:
