@@ -31,9 +31,26 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
     for (int i=0; i<extra->attr()->size(); ++i) {
         auto attr = extra->attr()->GetAs<Attribute>(i);
         if (attr->key()->str() == "spirv") {
-            data = (uint8_t*)attr->tensor()->int8s()->data();
-            dataSize = attr->tensor()->int8s()->size();
-            break;
+            // Try tensor format first (int8s)
+            if (attr->tensor() && attr->tensor()->int8s() && attr->tensor()->int8s()->size() > 0) {
+                data = (uint8_t*)attr->tensor()->int8s()->data();
+                dataSize = attr->tensor()->int8s()->size();
+                break;
+            }
+            // Fallback: check string list (ONNX STRING attribute converted to string list)
+            if (attr->list() && attr->list()->s() && attr->list()->s()->size() > 0) {
+                auto str = attr->list()->s()->GetAsString(0);
+                data = (const uint8_t*)str.c_str();
+                dataSize = str.size();
+                break;
+            }
+            // Fallback: check single string attribute
+            if (attr->s() && attr->s()->size() > 0) {
+                auto str = attr->s()->str();
+                data = (const uint8_t*)str.c_str();
+                dataSize = str.size();
+                break;
+            }
         }
     }
 
