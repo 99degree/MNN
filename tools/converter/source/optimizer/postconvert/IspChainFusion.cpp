@@ -570,61 +570,85 @@ public:
             if (!ops[i]) continue;
 
             // ═══ LONGEST CHAIN FIRST (prevents short rules from consuming ops) ═══
+            // Ordering principle: longer scan / more ops consumed → earlier.
+            // Same entry type: longer scan window first.
+            // Special: tryClipAbsorbFwd before block rules (absorbs into Conv before
+            //          block rules convert Conv to Extra).
+            // Special: tryTone before tryGamma (both POW; tone is multi-op chain).
+            // Special: tryIspControllerStats before tryCalibStats (more specific).
 
             // ═══════════════════════════════════════════════════════════════
-            // PASS 1: MICRO-FUSION — fuse ops within each ISP block's ONNX pattern
-            // Each rule matches the ONNX node pattern emitted by ONE block.
-            // Longest chain first → prevents short rules from consuming ops
-            // that belong to a longer block pattern.
+            // GROUP 1: Longest chains (5+ ops, scan i+6)
             // ═══════════════════════════════════════════════════════════════
+            // AF Focus - Sobel → Mul → ReduceMean → Pow → ReduceMean (5 ops)
+            if (tryAfFocus(ops, i)) { changed = true; continue; }
+            // DPC (median filter) - Pool→Sub→Mul→Add→Clip (4-5 ops)
+            if (tryDpc(ops, i)) { changed = true; continue; }
 
-            // ── Unpack block patterns (longest first) ──
+            // ═══════════════════════════════════════════════════════════════
+            // GROUP 2: Unpack block patterns (~8 ops → 2 ops)
+            // ═══════════════════════════════════════════════════════════════
             // R1c: Full packed-int32 chain (~8 ops) → isp.unpack_packed
-            // UnpackCfaBlock PackedInt32: Mod+Cast+Div+Cast+Div+Div+Stack+Conv
-            // Skips if demosaic Conv follows → lets Pass 2 macro-fuse instead.
             if (tryUnpackPackedChain(ops, i)) { changed = true; continue; }
             // R1: Cast[+Div]+Conv(2×2,stride=2,4ch) → isp.unpack_blc
-            // UnpackCfaBlock NativeInt16: Cast+Conv or Div+Cast+Conv
             if (tryUnpack(ops, i)) { changed = true; continue; }
             // R1b: Rust Concat+Conv(1×2,stride=1×2,4ch) → isp.unpack_blc
             if (tryUnpackRust(ops, i)) { changed = true; continue; }
 
-            // ── LDCI block patterns (~5 ops) ──
+            // ═══════════════════════════════════════════════════════════════
+            // GROUP 3: Multi-op block patterns (3-4 ops)
+            // ═══════════════════════════════════════════════════════════════
             // R5: Pool(AVG,3×3)+Sub+Mul+Add+ReLU6 → isp.ldci
             if (tryLdci(ops, i)) { changed = true; continue; }
             // R5b: ReduceMean+Sub+Mul+Mul+Add+ReLU6 → isp.ldci (Rust variant)
             if (tryRustReduceLdci(ops, i)) { changed = true; continue; }
+            // R14: Add→Sub→Mul→Add chain → isp.auto_contrast (3-4 ops)
+            if (tryAutoContrast(ops, i)) { changed = true; continue; }
+            // R3f: Sub+Max+Min → fuse (BLC50, 3 ops)
+            if (trySubMaxMin(ops, i)) { changed = true; continue; }
 
-            // ── Demosaic block patterns ──
+            // ═══════════════════════════════════════════════════════════════
+            // GROUP 4: Absorption rules (MUST run before block rules)
+            // ═══════════════════════════════════════════════════════════════
+            // R6c: ReLU6 → absorb into Conv producer
+            // MUST run before R2/R4 — those convert Conv to Extra, preventing absorption.
+            if (tryClipAbsorbFwd(ops, i)) { changed = true; continue; }
+
+            // ═══════════════════════════════════════════════════════════════
+            // GROUP 5: Block patterns (1-2 ops, scan i+4)
+            // ═══════════════════════════════════════════════════════════════
             // R2: Conv(1×1,4→3ch) → isp.demosaic_ccm
             if (tryDemosaic(ops, i)) { changed = true; continue; }
             // R2b: Conv(4×4,stride=1,1ch→3ch) → isp.demosaic_interp
             if (tryDemosaicInterp(ops, i)) { changed = true; continue; }
-
-            // ── EE block patterns ──
             // R4: Conv(3×3) → isp.ee
             if (tryEe(ops, i)) { changed = true; continue; }
             // R4b: Conv(3×5,g=3,laplacian)+Mul → isp.ee (Rust variant)
             if (tryRustConvEe(ops, i)) { changed = true; continue; }
-
-            // ── Micro fusion FIRST (before block rules consume ops) ──
-            // R6c: ReLU6 → absorb into Conv producer
-            // MUST run before R2/R4 — those convert Conv to Extra, preventing absorption.
-            if (tryClipAbsorbFwd(ops, i)) { changed = true; continue; }
-            // R3c: Sub+ReLU6 → isp.fcs (white-level normalize)
+            // Rust Conv+Mul variants (2 ops)
+            if (tryRustConvFcs(ops, i)) { changed = true; continue; }
+            // Gaussian Denoise - Conv→Add (2 ops, scan i+4)
+            if (tryGaussianDenoise(ops, i)) { changed = true; continue; }
+            // AWB - Mul(3ch gains)→Add(3ch offsets) (2 ops, scan i+4)
+            if (tryAwb(ops, i)) { changed = true; continue; }
+            // Tone Mapping - Pow→Mul→[Conv] (2-3 ops, scan i+4, before tryGamma)
+            if (tryTone(ops, i)) { changed = true; continue; }
+            // Rust ExtraEe (scans i+25, long chain)
+            if (tryRustExtraEe(ops, i)) { changed = true; continue; }
+            // R3c: Sub+ReLU6 → isp.fcs (white-level normalize, 2 ops)
             if (trySubClipNormalize(ops, i)) { changed = true; continue; }
-            // R3d: Sub+Mul(difference scaling) → fuse
+            // R3d: Sub+Mul(difference scaling) → fuse (2 ops)
             if (trySubMul(ops, i)) { changed = true; continue; }
-            // R3e: Mul+Add(channel bias) → fuse
+            // R3e: Mul+Add(channel bias) → fuse (2 ops)
             if (tryMulAdd(ops, i)) { changed = true; continue; }
-            // R6d: Mul+ReLU6 → absorb (white-level clamp)
+            // R6d: Mul+ReLU6 → absorb (white-level clamp, 2 ops)
             if (tryMulClip(ops, i)) { changed = true; continue; }
-            // R3f: Sub+Max+Min → fuse (BLC50)
-            if (trySubMaxMin(ops, i)) { changed = true; continue; }
-            // R4c: Conv(3×3)+Sub → fuse (unsharp sharpen)
+            // R4c: Conv(3×3)+Sub → fuse (unsharp sharpen, 2 ops)
             if (tryConvSub(ops, i)) { changed = true; continue; }
 
-            // ── Single-block single-op patterns ──
+            // ═══════════════════════════════════════════════════════════════
+            // GROUP 6: Single-op patterns (1 op)
+            // ═══════════════════════════════════════════════════════════════
             // R3: Scale → isp.fcs
             if (tryFcs(ops, i)) { changed = true; continue; }
             // R7b: Conv(1×1,3→4) → isp.argb_convert
@@ -633,69 +657,27 @@ public:
             if (tryYuv420Convert(ops, i)) { changed = true; continue; }
             // R7: Conv(1×1,3→1ch) → isp.grayscale
             if (tryGrayscale(ops, i)) { changed = true; continue; }
-            // R7d: Log+Mul+Exp → isp.gamma (GammaBlock)
-            // if (tryGamma(ops, i)) { changed = true; continue; }
             // R6: Pow+ReLU6 → isp.display
             if (tryDisplay(ops, i)) { changed = true; continue; }
             // R8: Conv(2×2,stride=2) → isp.pyramid
             if (tryPyramid(ops, i)) { changed = true; continue; }
             // Rwarp: Extra(isp.warp)
             if (tryWarp(ops, i)) { changed = true; continue; }
-            // Rust variants: FCS, ExtraEe, Display
-            if (tryRustConvFcs(ops, i)) { changed = true; continue; }
-            if (tryRustExtraEe(ops, i)) { changed = true; continue; }
+            // Rust Display (1 op)
             if (tryRustDisplay(ops, i)) { changed = true; continue; }
-            // New post-processing ops
-            // R13: Mul(input, gain_map) → isp.vignetting
+            // R13: Mul(input, gain_map) → isp.vignetting (1-2 ops)
             if (tryVignetting(ops, i)) { changed = true; continue; }
-            // R14: Add → Sub → Mul → Add chain → isp.auto_contrast
-            if (tryAutoContrast(ops, i)) { changed = true; continue; }
-            // NEW: Missing ISP blocks
-            // DPC (median filter) - 3x3 Pool -> Sub -> Mul -> Add -> Clip
-            if (tryDpc(ops, i)) { changed = true; continue; }
-            // Gaussian Denoise - Conv -> Add (blend)
-            if (tryGaussianDenoise(ops, i)) { changed = true; continue; }
-            // LSC (Lens Shading Correction) - Mul with 2D gain map
+            // LSC - Mul with 2D gain map (1 op)
             if (tryLsc(ops, i)) { changed = true; continue; }
-            // AWB (Auto White Balance) - Mul(3ch gains) + Add(3ch offsets)
-            if (tryAwb(ops, i)) { changed = true; continue; }
-            // AE (Auto Exposure) - Mul(global gain) + optional Add(offset)
+            // AE - Mul(global gain)→[Add offset] (1-2 ops)
             if (tryAe(ops, i)) { changed = true; continue; }
-            // Tone Mapping - Pow(gamma) -> Mul(contrast) -> optional unsharp
-            if (tryTone(ops, i)) { changed = true; continue; }
-            // Gamma - Pow operation
+            // Gamma - Pow (1 op, MUST after tryTone)
             if (tryGamma(ops, i)) { changed = true; continue; }
-            // Calibration Stats - ReduceMean/Min/Max
-            if (tryCalibStats(ops, i)) { changed = true; continue; }
-            // IspController Stats - ReduceMean for AE/AWB/AF
+            // IspController Stats - ReduceMean only (more specific, before tryCalibStats)
             if (tryIspControllerStats(ops, i)) { changed = true; continue; }
-            // AF Focus - Sobel -> Mul -> ReduceMean -> Pow -> ReduceMean
-            if (tryAfFocus(ops, i)) { changed = true; continue; }
-            // EIS Gyro - warp with gyro params
-            if (tryEisGyro(ops, i)) { changed = true; continue; }
-
-            // NEW: Missing ISP blocks
-            // DPC (median filter) - 3x3 Pool -> Sub -> Mul -> Add -> Clip
-            if (tryDpc(ops, i)) { changed = true; continue; }
-            // Gaussian Denoise - Conv -> Add (blend)
-            if (tryGaussianDenoise(ops, i)) { changed = true; continue; }
-            // LSC (Lens Shading Correction) - Mul with 2D gain map
-            if (tryLsc(ops, i)) { changed = true; continue; }
-            // AWB (Auto White Balance) - Mul(3ch gains) + Add(3ch offsets)
-            if (tryAwb(ops, i)) { changed = true; continue; }
-            // AE (Auto Exposure) - Mul(global gain) + optional Add(offset)
-            if (tryAe(ops, i)) { changed = true; continue; }
-            // Tone Mapping - Pow(gamma) -> Mul(contrast) -> optional unsharp
-            if (tryTone(ops, i)) { changed = true; continue; }
-            // Gamma - Pow operation
-            if (tryGamma(ops, i)) { changed = true; continue; }
-            // Calibration Stats - ReduceMean/Min/Max
+            // Calibration Stats - ReduceMean/Min/Max (1 op)
             if (tryCalibStats(ops, i)) { changed = true; continue; }
-            // IspController Stats - ReduceMean for AE/AWB/AF
-            if (tryIspControllerStats(ops, i)) { changed = true; continue; }
-            // AF Focus - Sobel -> Mul -> ReduceMean -> Pow -> ReduceMean
-            if (tryAfFocus(ops, i)) { changed = true; continue; }
-            // EIS Gyro - warp with gyro params
+            // EIS Gyro - warp with gyro params (1 op)
             if (tryEisGyro(ops, i)) { changed = true; continue; }
 
         }
