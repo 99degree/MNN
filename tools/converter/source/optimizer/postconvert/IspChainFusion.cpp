@@ -667,7 +667,7 @@ public:
             if (tryRustDisplay(ops, i)) { changed = true; continue; }
             // R13: Mul(input, gain_map) → isp.vignetting (1-2 ops)
             if (tryVignetting(ops, i)) { changed = true; continue; }
-            // LSC - Mul with 2D gain map (1 op)
+            // LSC - Mul with 2D gain map (1 op) or Resize(bilinear)+Mul (2 ops)
             if (tryLsc(ops, i)) { changed = true; continue; }
             // AE - Mul(global gain)→[Add offset] (1-2 ops)
             if (tryAe(ops, i)) { changed = true; continue; }
@@ -2459,8 +2459,13 @@ private:
     }
 
     // LSC (Lens Shading Correction)
+    // Pattern A: Mul(image, full_res_gain_map_Const) - 1 op
+    // Pattern B: Resize(bilinear, small_gain_map_Const) → Mul(image, resized) - 2 ops
+    //   (from cam_app / softisp LscBlock ONNX pattern)
     bool tryLsc(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         if (!isBinaryType(ops[i].get(), MNN::BinaryOpOperation_MUL)) return false;
+
+        // --- Pattern A: direct Const gain map at full sensor resolution ---
         int gainMapIdx = -1;
         for (int inIdx : ops[i]->inputIndexes) {
             for (int k = 0; k < (int)ops.size(); k++) {
@@ -2477,15 +2482,58 @@ private:
                 }
                 if (gainMapIdx >= 0) break;
             }
-            if (gainMapIdx < 0) return false;
+            if (gainMapIdx >= 0) {
+                ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
+                auto* ex = new MNN::ExtraT(); ex->type = "isp.lsc"; ex->engine = "MNN";
+                std::vector<float> u = {float(mW), float(mH)}; buildCommonAttrs(ex, mW, mH, u);
+                auto* blb = ops[gainMapIdx]->main.AsBlob();
+                if (blb && !blb->float32s.empty()) addNamedFloats(ex, "gain_map", blb->float32s);
+                setEngine(ex); addSpirv(ex, "isp.lsc"); ops[i]->main.value = ex;
+                VLOG(2) << "[P1] LSC: radial gain map at " << i; return true;
+            }
+        }
 
+        // --- Pattern B: Resize(bilinear) + Mul  (cam_app / softisp LscBlock) ---
+        for (int inIdx : ops[i]->inputIndexes) {
+            // Find an Interp (Resize) feeding this Mul input
+            int interpIdx = -1;
+            for (int k = 0; k < (int)ops.size(); k++) {
+                if (!ops[k] || ops[k]->type != MNN::OpType_Interp) continue;
+                for (int outIdx : ops[k]->outputIndexes) {
+                    if (outIdx == inIdx) { interpIdx = k; break; }
+                }
+                if (interpIdx >= 0) break;
+            }
+            if (interpIdx < 0) continue;
+            auto* interp = ops[interpIdx]->main.AsInterp();
+            if (!interp || interp->resizeType != 2) continue; // must be bilinear
+
+            // The Interp's input must be a small Const radial gain map
+            int smallGainIdx = -1;
+            for (int inIdx2 : ops[interpIdx]->inputIndexes) {
+                for (int k = 0; k < (int)ops.size(); k++) {
+                    if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
+                    for (int outIdx : ops[k]->outputIndexes) {
+                        if (outIdx == inIdx2) { smallGainIdx = k; break; }
+                    }
+                    if (smallGainIdx >= 0) break;
+                }
+                if (smallGainIdx >= 0) break;
+            }
+            if (smallGainIdx < 0) continue;
+            auto* blb = ops[smallGainIdx]->main.AsBlob();
+            if (!blb || blb->dims.size() < 2) continue;
+
+            // Fuse Resize+Mul into isp.lsc — store the small gain map;
+            // the ISP shader handles bilinear interpolation at runtime.
             ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
             auto* ex = new MNN::ExtraT(); ex->type = "isp.lsc"; ex->engine = "MNN";
             std::vector<float> u = {float(mW), float(mH)}; buildCommonAttrs(ex, mW, mH, u);
-            auto* blb = ops[gainMapIdx]->main.AsBlob();
-            if (blb && !blb->float32s.empty()) addNamedFloats(ex, "gain_map", blb->float32s);
+            addNamedFloats(ex, "gain_map", blb->float32s);
             setEngine(ex); addSpirv(ex, "isp.lsc"); ops[i]->main.value = ex;
-            VLOG(2) << "[P1] LSC: radial gain map at " << i; return true;
+            ops[interpIdx].reset(); // remove the Resize; the shader does interpolation
+            VLOG(2) << "[P1] LSC: Resize(bilinear)+Mul at " << interpIdx << "->" << i;
+            return true;
         }
         return false;
     }
