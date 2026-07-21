@@ -111,6 +111,7 @@ static void addSpirv(MNN::ExtraT* extra, const char* type) {
         {"isp.colorspace",       g_colorspace_spv,       g_colorspace_spv_len},
         {"isp.wavelet_denoise",  g_wavelet_denoise_spv,  g_wavelet_denoise_spv_len},
         {"isp.bilateral",        g_bilateral_spv,        g_bilateral_spv_len},
+        {"isp.lsc",              g_lsc_spv,              g_lsc_spv_len},
     };
     for (auto& m : map) {
         if (strcmp(type, m.type) == 0) {
@@ -2485,9 +2486,14 @@ private:
             if (gainMapIdx >= 0) {
                 ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
                 auto* ex = new MNN::ExtraT(); ex->type = "isp.lsc"; ex->engine = "MNN";
-                std::vector<float> u = {float(mW), float(mH)}; buildCommonAttrs(ex, mW, mH, u);
                 auto* blb = ops[gainMapIdx]->main.AsBlob();
-                if (blb && !blb->float32s.empty()) addNamedFloats(ex, "gain_map", blb->float32s);
+                std::vector<float> u = {float(mW), float(mH)};
+                if (blb) {
+                    u.push_back(float(blb->dims[blb->dims.size() - 1])); // gw
+                    u.push_back(float(blb->dims[blb->dims.size() - 2])); // gh
+                    u.insert(u.end(), blb->float32s.begin(), blb->float32s.end());
+                }
+                buildCommonAttrs(ex, mW, mH, u);
                 setEngine(ex); addSpirv(ex, "isp.lsc"); ops[i]->main.value = ex;
                 VLOG(2) << "[P1] LSC: radial gain map at " << i; return true;
             }
@@ -2528,8 +2534,13 @@ private:
             // the ISP shader handles bilinear interpolation at runtime.
             ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
             auto* ex = new MNN::ExtraT(); ex->type = "isp.lsc"; ex->engine = "MNN";
-            std::vector<float> u = {float(mW), float(mH)}; buildCommonAttrs(ex, mW, mH, u);
-            addNamedFloats(ex, "gain_map", blb->float32s);
+            std::vector<float> u = {float(mW), float(mH)};
+            if (blb) {
+                u.push_back(float(blb->dims[blb->dims.size() - 1])); // gw
+                u.push_back(float(blb->dims[blb->dims.size() - 2])); // gh
+                u.insert(u.end(), blb->float32s.begin(), blb->float32s.end());
+            }
+            buildCommonAttrs(ex, mW, mH, u);
             setEngine(ex); addSpirv(ex, "isp.lsc"); ops[i]->main.value = ex;
             ops[interpIdx].reset(); // remove the Resize; the shader does interpolation
             VLOG(2) << "[P1] LSC: Resize(bilinear)+Mul at " << interpIdx << "->" << i;
