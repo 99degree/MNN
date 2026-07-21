@@ -111,6 +111,7 @@ extern void ___SpaceToBatchNDSizeComputer__OpType_SpaceToBatchND__();
 extern void ___PackComputer__OpType_Pack__();
 extern void ___DeconvolutionSizeComputer__OpType_Deconvolution__();
 extern void ___DeconvolutionSizeComputer__OpType_DeconvolutionDepthwise__();
+extern void ___ShapeExtra__OpType_Extra__();
 
 #ifdef MNN_SUPPORT_RENDER
 extern void ___RasterAndInterpolateComputer__OpType_RasterAndInterpolate__();
@@ -237,6 +238,7 @@ ___SpaceToBatchNDSizeComputer__OpType_SpaceToBatchND__();
 ___PackComputer__OpType_Pack__();
 ___DeconvolutionSizeComputer__OpType_Deconvolution__();
 ___DeconvolutionSizeComputer__OpType_DeconvolutionDepthwise__();
+___ShapeExtra__OpType_Extra__();
 #ifdef MNN_SUPPORT_RENDER
 ___RasterAndInterpolateComputer__OpType_RasterAndInterpolate__();
 ___TextureComputer__OpType_Texture__();

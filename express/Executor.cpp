@@ -445,9 +445,6 @@ std::vector<bool> Executor::RuntimeManager::isBackendSupport(const std::vector<M
 ErrorCode Executor::computeInfo(Expr* expr) {
     MNN_ASSERT(nullptr != expr);
     MNN_ASSERT(nullptr != expr->get());
-    if (expr->get()->type() == OpType_Extra) {
-        return NOT_SUPPORT;
-    }
     auto op = expr->get();
     std::vector<Tensor*> inputTensors(expr->inputs().size());
     for (int i=0; i<inputTensors.size(); ++i) {

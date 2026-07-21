@@ -76,3 +76,78 @@ Java_com_taobao_android_mnn_MNNPortraitNative_nativeConvertMaskToPixelsMultiChan
 
     return arr;
 }
+
+extern "C" JNIEXPORT jint JNICALL Java_com_taobao_android_mnn_MNNPortraitNative_nativeTensorGetData(JNIEnv *env, jclass type,
+                                                                                                     jlong tensorPtr,
+                                                                                                     jfloatArray dest) {
+    auto tensor = reinterpret_cast<MNN::Tensor *>(tensorPtr);
+    if (nullptr == dest) {
+        std::unique_ptr<MNN::Tensor> hostTensor(new MNN::Tensor(tensor, tensor->getDimensionType(), false));
+        return hostTensor->elementSize();
+    }
+    auto length = env->GetArrayLength(dest);
+    std::unique_ptr<MNN::Tensor> hostTensor(new MNN::Tensor(tensor, tensor->getDimensionType(), true));
+    tensor->copyToHostTensor(hostTensor.get());
+    tensor = hostTensor.get();
+
+    auto size = tensor->elementSize();
+    if (length < size) {
+        MNN_ERROR("Can't copy buffer, length no enough");
+        return JNI_FALSE;
+    }
+    auto destPtr = env->GetFloatArrayElements(dest, nullptr);
+    ::memcpy(destPtr, tensor->host<float>(), size * sizeof(float));
+    env->ReleaseFloatArrayElements(dest, destPtr, 0);
+
+    return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_taobao_android_mnn_MNNPortraitNative_getOnnxOutputShape(JNIEnv *env, jclass type, jbyteArray onnxBytes) {
+    if (nullptr == onnxBytes) {
+        return env->NewStringUTF("[]");
+    }
+    jsize length = env->GetArrayLength(onnxBytes);
+    if (length <= 0) {
+        return env->NewStringUTF("[]");
+    }
+    std::vector<unsigned char> buffer(length);
+    env->GetByteArrayRegion(onnxBytes, 0, length, reinterpret_cast<jbyte*>(buffer.data()));
+    
+    // Parse the ONNX model
+    onnx::ModelProto model;
+    if (!model.ParseFromArray(buffer.data(), buffer.size())) {
+        return env->NewStringUTF("[]");
+    }
+    
+    const auto& graph = model.graph();
+    std::stringstream ss;
+    ss << "[";
+    for (int i = 0; i < graph.output_size(); ++i) {
+        if (i > 0) {
+            ss << ",";
+        }
+        const auto& output = graph.output(i);
+        const auto& type = output.type();
+        ss << "[";
+        if (type.has_tensor_type()) {
+            const auto& tensorType = type.tensor_type();
+            const auto& shape = tensorType.shape();
+            for (int j = 0; j < shape.dim_size(); ++j) {
+                if (j > 0) {
+                    ss << ",";
+                }
+                const auto& dim = shape.dim(j);
+                if (dim.has_dim_value()) {
+                    ss << dim.dim_value();
+                } else {
+                    // Use -1 for unknown dimension (dim_param)
+                    ss << "-1";
+                }
+            }
+        }
+        ss << "]";
+    }
+    ss << "]";
+    return env->NewStringUTF(ss.str().c_str());
+}
