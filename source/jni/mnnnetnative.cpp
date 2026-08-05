@@ -164,8 +164,11 @@ extern "C" JNIEXPORT jint JNICALL Java_com_taobao_android_mnn_MNNNetNative_nativ
                                                                                                 jlong sessionPtr) {
     auto net     = (MNN::Interpreter *)netPtr;
     auto session = (MNN::Session *)sessionPtr;
-    net->resizeSession(session);
-    return 0;
+    // Surface Session::resize() ErrorCode so Java callers can distinguish
+    // NO_ERROR (0) / OUT_OF_MEMORY (1) / COMPUTE_SIZE_ERROR (3) / NOT_SUPPORT (5)
+    // instead of seeing a silently-swallowed failure that only manifests
+    // at runSession() time. See Session::resize for log context.
+    return (jint)net->tryResizeSession(session);
 }
 
 extern "C" JNIEXPORT jlong JNICALL Java_com_taobao_android_mnn_MNNNetNative_nativeGetSessionInput(

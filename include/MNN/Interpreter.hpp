@@ -369,6 +369,25 @@ public:
      */
     void resizeSession(Session* session, int needRelloc);
 
+    /**
+     * @brief same as resizeSession(), but surfaces the underlying Session::resize() ErrorCode.
+     *        Useful when callers (JNI, multi-stage ISP pipelines) need to distinguish
+     *        NO_ERROR / OUT_OF_MEMORY / COMPUTE_SIZE_ERROR / NOT_SUPPORT instead of
+     *        seeing a silently-swallowed failure at runSession() time.
+     * @param session given session.
+     * @return result of Session::resize(); NO_ERROR on success.
+     */
+    ErrorCode tryResizeSession(Session* session);
+
+    /**
+     * @brief same as resizeSession(Session*, int), but surfaces the underlying
+     *        Session::resize() ErrorCode.
+     * @param session     given session.
+     * @param needRelloc  1 means need realloc.
+     * @return result of Session::resize(); NO_ERROR on success.
+     */
+    ErrorCode tryResizeSession(Session* session, int needRelloc);
+
 
     /**
      * @brief call this function if don't need resize or create session any more, it will save a few memory that equal
