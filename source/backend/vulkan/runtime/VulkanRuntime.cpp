@@ -8,6 +8,10 @@
 
 #include "VulkanRuntime.hpp"
 #include "VulkanBackend.hpp"
+
+// Forward declaration for VulkanFuse SPIR-V registration (defined in VulkanFuse.cpp)
+extern "C" void MNNVulkanFuseRegister(void);
+
 namespace MNN {
 class VulkanBufferAllocator : public BufferAllocator::Allocator {
 public:
@@ -267,6 +271,8 @@ class VulkanRuntimeCreator : public RuntimeCreator {
 public:
     virtual Runtime* onCreate(const Backend::Info& info) const {
         if (InitVulkan()) {
+            // Register VulkanFuse (SPIR-V custom ops) after Vulkan is initialized
+            MNNVulkanFuseRegister();
             return VulkanRuntime::create(info);
         }
         return nullptr;
