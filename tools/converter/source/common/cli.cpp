@@ -39,6 +39,35 @@
 #include <sstream>
 #include <cmath>
 #include "core/MemoryFormater.h"
+
+// Weak stubs for unsupported converter backends. When the real converter
+// object library is linked, the strong definition overrides these stubs.
+// If the backend is not linked, these stubs provide a clear error path.
+__attribute__((weak)) int caffe2MNNNet(const std::string prototxtFile, const std::string modelFile, const std::string bizCode,
+                                      std::unique_ptr<MNN::NetT>& netT) {
+    MNN_ERROR("[ERROR] CAFFE converter is not supported in this build.\n");
+    return -1;
+}
+__attribute__((weak)) int tensorflow2MNNNet(const std::string inputModel, const std::string bizCode,
+                                             std::unique_ptr<MNN::NetT>& netT) {
+    MNN_ERROR("[ERROR] TensorFlow converter is not supported in this build.\n");
+    return -1;
+}
+__attribute__((weak)) int tflite2MNNNet(const std::string inputModel, const std::string bizCode,
+                                        std::unique_ptr<MNN::NetT>& netT) {
+    MNN_ERROR("[ERROR] TFLite converter is not supported in this build.\n");
+    return -1;
+}
+__attribute__((weak)) int torch2MNNNet(const std::string inputModel, const std::string bizCode,
+                                       std::unique_ptr<MNN::NetT>& netT, const std::vector<std::string>& customOpLibs) {
+    MNN_ERROR("[ERROR] Torch converter is not supported in this build.\n");
+    return -1;
+}
+__attribute__((weak)) bool dumpTflite2Json(const char* inputModel, const char* outputJson) {
+    MNN_ERROR("[ERROR] TFLite JSON dump is not supported in this build.\n");
+    return false;
+}
+
 modelConfig::~modelConfig() {
     if (nullptr != compressInfo) {
         delete compressInfo;
@@ -568,7 +597,6 @@ bool Cli::convertModel(modelConfig& modelPath) {
         dumpModelInfo(modelPath.modelFile.c_str());
         return true;
     }
-    std::cout << "Start to Convert Other Model Format To MNN Model..., target version: " << modelPath.targetVersion << std::endl;
     std::unique_ptr<MNN::NetT> netT = std::unique_ptr<MNN::NetT>(new MNN::NetT());
     int parseRes = 1;
     std::unique_ptr<MNN::OpT> metaOp(new MNN::OpT);
@@ -585,7 +613,6 @@ bool Cli::convertModel(modelConfig& modelPath) {
     } else if (modelPath.model == modelConfig::MNN) {
         if (modelPath.mnn2json) {
             if (mnn2json(modelPath.modelFile.c_str(), modelPath.MNNModel.c_str())) {
-                MNN_PRINT("MNNModel %s has convert to JsonFile %s.\n", modelPath.modelFile.c_str(), modelPath.MNNModel.c_str());
                 return true;
             } else {
                 MNN_ERROR("[ERROR] MNN to Json failed.\n");
@@ -612,9 +639,8 @@ bool Cli::convertModel(modelConfig& modelPath) {
                         std::string val = attr->s;
                         if (val.rfind("enable:", 0) == 0) {
                             modelPath.ispFusionThreshold = std::stoi(val.substr(7));
-                            MNN_PRINT("[Meta] isp_fusion=%s threshold=%d\n", val.c_str(), modelPath.ispFusionThreshold);
                         } else {
-                            MNN_PRINT("[Meta] isp_fusion=%s (propagated to modelConfig)\n", modelPath.ispFusionMeta.c_str());
+                            // isp_fusion metadata value without threshold — pass through as-is
                         }
                     }
                 }
@@ -623,7 +649,6 @@ bool Cli::convertModel(modelConfig& modelPath) {
     } else if (modelPath.model == modelConfig::TFLITE) {
         if (modelPath.mnn2json) {
             if (dumpTflite2Json(modelPath.modelFile.c_str(), modelPath.MNNModel.c_str())) {
-                MNN_PRINT("Tflite %s has convert to JsonFile %s.\n", modelPath.modelFile.c_str(), modelPath.MNNModel.c_str());
                 return true;
             } else {
                 MNN_ERROR("[ERROR] MNN to Json failed.\n");
@@ -638,7 +663,6 @@ bool Cli::convertModel(modelConfig& modelPath) {
 #endif
     } else if (modelPath.model == modelConfig::JSON) {
         if (json2mnn(modelPath.modelFile.c_str(), modelPath.MNNModel.c_str())) {
-            MNN_PRINT("JsonFile %s has convert to MNNModel %s.\n", modelPath.modelFile.c_str(), modelPath.MNNModel.c_str());
             return true;
         } else {
             MNN_ERROR("[ERROR] Json to MNN failed.\n");
@@ -686,7 +710,6 @@ bool Cli::convertModel(modelConfig& modelPath) {
     }
     CommonKit::loadCompress(modelPath);
     if (needOptimize) {
-        std::cout << "Start to Optimize the MNN Net..." << std::endl;
         std::unique_ptr<MNN::NetT> newNet = optimizeNet(netT, modelPath.forTraining, modelPath, expectedPass);
         if (newNet->extraTensorDescribe.size()>0 && expectedPass.empty()) {
             MNN_PRINT("MNN net has tensor quant info\n");
@@ -697,11 +720,6 @@ bool Cli::convertModel(modelConfig& modelPath) {
     } else {
         _reorderInputs(inputNames, netT.get());
         error = writeFb(netT, modelPath, std::move(metaOp));
-    }
-    if (0 == error) {
-        std::cout << "Converted Success!" << std::endl;
-    } else {
-        std::cout << "Converted Failed!" << std::endl;
     }
     if (modelPath.testDir.size() > 0) {
         std::cout << "Check convert result by " << modelPath.testDir << ", thredhold is " << modelPath.testThredhold << std::endl;
@@ -886,7 +904,7 @@ int Cli::testconvert(const std::string& defaultCacheFile, const std::string& dir
                     hints.emplace_back(iter->GetInt());
                 }
                 if (hints.size() % 2 != 0) {
-                    MNN_ERROR("Invalid hint number: %d\n", hints.size());
+                    MNN_ERROR("Invalid hint number: %zu\n", hints.size());
                 }
             }
         } while (false);
