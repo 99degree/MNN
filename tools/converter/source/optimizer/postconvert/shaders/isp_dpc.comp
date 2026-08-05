@@ -1,0 +1,44 @@
+#version 450
+// isp.dpc — BadPixel correction via local min/max 3×3 neighborhood
+// Uniforms: {W, H, kernelX=3, kernelY=3, threshold=0.5}
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(set = 0, binding = 0, std430) buffer Uniforms {
+    float width; float height; float kernelX; float kernelY; float threshold;
+} u;
+layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
+layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    int w = int(u.width);
+    int h = int(u.height);
+    if (int(x) >= w || int(y) >= h) return;
+
+    int idx = int(y) * w + int(x);
+    float center = in_data[idx];
+
+    float neg_min = center;
+    float pos_max = center;
+    for (int dy = -1; dy <= 1; dy++) {
+        int ny = int(y) + dy;
+        if (ny < 0 || ny >= h) continue;
+        for (int dx = -1; dx <= 1; dx++) {
+            if (dx == 0 && dy == 0) continue;
+            int nx = int(x) + dx;
+            if (nx < 0 || nx >= w) continue;
+            float v = in_data[ny * w + nx];
+            if (v < neg_min) neg_min = v;
+            if (v > pos_max) pos_max = v;
+        }
+    }
+
+    float lo = center - neg_min;
+    float hi = pos_max - center;
+    float limit = max(lo, hi);
+    if (limit > u.threshold) limit = u.threshold;
+
+    float lo_clamp = center - limit;
+    float hi_clamp = center + limit;
+    out_data[idx] = clamp(center, lo_clamp, hi_clamp);
+}

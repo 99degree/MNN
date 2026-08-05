@@ -1,0 +1,48 @@
+#version 450
+// isp.denoise — Gaussian blur denoise + alpha blend
+// Based on WaveletDenoiseBlock (simplified Gaussian kernel)
+// Uniforms: {W, H, blendAlpha, spatialSigma=3.0}
+// Blend: out = (1-alpha) * in + alpha * gaussian_blur(in)
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer Uniforms {
+    float width;
+    float height;
+    float blendAlpha;  // 0.5
+    float sigma;       // 3.0
+} u;
+
+layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
+layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    int w = int(uint(u.width));
+    int h = int(uint(u.height));
+    if (int(x) >= w || int(y) >= h) return;
+
+    int plane_dim = w * h;
+    int idx = int(y) * w + int(x);
+
+    // 3x3 Gaussian blur
+    float blur = 0.0;
+    float total = 0.0;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            int nx = int(x) + dx;
+            int ny = int(y) + dy;
+            if (nx >= 0 && nx < w && ny >= 0 && ny < h) {
+                float sdist = float(dx*dx + dy*dy) / (2.0*u.sigma*u.sigma);
+                float weight = exp(-sdist);
+                blur += in_data[ny * w + nx] * weight;
+                total += weight;
+            }
+        }
+    }
+    blur = (total > 0.0) ? blur / total : in_data[idx];
+
+    // Alpha blend
+    out_data[idx] = (1.0 - u.blendAlpha) * in_data[idx] + u.blendAlpha * blur;
+}

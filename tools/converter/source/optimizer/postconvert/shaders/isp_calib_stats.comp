@@ -1,0 +1,67 @@
+#version 450
+// isp.calib_stats — Calibration / histogram reduction (SUM/MEAN)
+// Uniforms: {W, H, op} where op=0(SUM), op=3(MEAN), op=4(MAX), op=5(MIN)
+// In:  float[1,H,W] mask or image
+// Out: float[1] scalar statistic
+//
+// Dispatch: 1 workgroup (16x16 = 256 threads).
+// For SUM/MEAN: strided accumulation → shared reduction.
+// For MAX/MIN: strided atomic-like (but we do sequential max/min to shared).
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(set = 0, binding = 0, std430) buffer Uniforms { float width; float height; float op; } u;
+layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
+layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
+
+shared float partial[256];
+
+#define OP_SUM  0.0
+#define OP_MEAN 3.0
+#define OP_MAX  4.0
+#define OP_MIN  5.0
+
+void main() {
+    uint tid = gl_LocalInvocationIndex.x;
+    int w = int(u.width);
+    int h = int(u.height);
+    int total = w * h;
+    float op = u.op;
+
+    // Initialize: SUM/MEAN starts at 0, MAX starts at -inf, MIN at +inf
+    float acc = (op == OP_MAX) ? -1e30 : ((op == OP_MIN) ? 1e30 : 0.0);
+
+    for (int idx = int(tid); idx < total; idx += 256) {
+        float v = in_data[idx];
+        if (op == OP_MAX)      acc = (v > acc) ? v : acc;
+        else if (op == OP_MIN) acc = (v < acc) ? v : acc;
+        else                   acc += v;  // SUM
+    }
+
+    // Share min/max/sum in shared memory
+    partial[tid] = acc;
+    barrier();
+
+    if (op >= OP_MAX) {
+        // For MAX/MIN: tree-reduce to find global extremum
+        uint step;
+        for (step = 128u; step > 0u; step >>= 1) {
+            if (tid < step) {
+                float v = partial[tid + step];
+                if (op == OP_MAX) partial[tid] = (v > partial[tid]) ? v : partial[tid];
+                else                partial[tid] = (v < partial[tid]) ? v : partial[tid];
+            }
+            barrier();
+        }
+    } else {
+        // For SUM/MEAN: tree reduce
+        uint step;
+        for (step = 128u; step > 0u; step >>= 1) {
+            if (tid < step) partial[tid] += partial[tid + step];
+            barrier();
+        }
+    }
+    if (tid == 0u) {
+        if (op == OP_MEAN && total > 0) out_data[0] = partial[0] / float(total);
+        else out_data[0] = partial[0];
+    }
+}
