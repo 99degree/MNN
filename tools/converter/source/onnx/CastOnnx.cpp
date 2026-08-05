@@ -35,7 +35,9 @@ void CastOnnx::run(MNN::OpT *dstOp, const onnx::NodeProto *onnxNode,
     }
 
     castParam->dstT   = onnxOpConverter::convertDataType(castTo);
-    if (castTo == onnx::TensorProto_DataType_FLOAT16) {
+    // By default widen float16 -> float32 for compatibility. When preserveInputType
+    // is enabled, keep the half type as-is (DT_HALF) instead of widening.
+    if (castTo == onnx::TensorProto_DataType_FLOAT16 && !onnxOpConverter::getPreserveInputType()) {
         castParam->dstT = MNN::DataType_DT_FLOAT;
     }
     dstOp->main.value = castParam.release();

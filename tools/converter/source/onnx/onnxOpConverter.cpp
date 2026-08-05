@@ -12,6 +12,8 @@
 #include "OnnxTmpGraph.hpp"
 #include "core/FileLoader.hpp"
 #include "core/MNNFileUtils.h"
+#include "config.hpp"
+#include "../optimizer/Global.hpp"
 
 using namespace MNN;
 static int32_t _limit(int64_t i64) {
@@ -199,6 +201,14 @@ static int _getDataSizeForRead(int32_t itype) {
     return 8;
 }
 
+bool onnxOpConverter::getPreserveInputType() {
+    auto config = Global<modelConfig>::Get();
+    if (nullptr == config) {
+        return false;
+    }
+    return config->preserveInputType;
+}
+
 MNN::DataType onnxOpConverter::convertDataType(int32_t itype) {
     static std::map<::onnx::TensorProto_DataType, MNN::DataType> dataTypeMap{
         {onnx::TensorProto_DataType_FLOAT, MNN::DataType_DT_FLOAT},
@@ -217,6 +227,23 @@ MNN::DataType onnxOpConverter::convertDataType(int32_t itype) {
         {onnx::TensorProto_DataType_UINT64, MNN::DataType_DT_INT32}, // For compability, use int32 instead of uint64
     };
     auto type = static_cast<::onnx::TensorProto_DataType>(itype);
+
+    // When preserveInputType is enabled, keep int16/uint16 types instead of widening
+    if (getPreserveInputType()) {
+        switch (type) {
+            case onnx::TensorProto_DataType_INT16:
+                return MNN::DataType_DT_INT16;
+            case onnx::TensorProto_DataType_UINT16:
+                return MNN::DataType_DT_UINT16;
+            case onnx::TensorProto_DataType_FLOAT16:
+                return MNN::DataType_DT_HALF;
+            case onnx::TensorProto_DataType_BFLOAT16:
+                return MNN::DataType_DT_BFLOAT16;
+            default:
+                break;
+        }
+    }
+
     if (dataTypeMap.find(type) != dataTypeMap.end()) {
         return dataTypeMap[type];
     }
