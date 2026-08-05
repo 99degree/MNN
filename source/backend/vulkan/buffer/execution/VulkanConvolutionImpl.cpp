@@ -13,6 +13,7 @@
 #include "VulkanRaster.hpp"
 //#define MNN_OPEN_TIME_TRACE
 #include <MNN/AutoTime.hpp>
+#include <cstdlib>
 namespace MNN {
 
 class VulkanConvolutionSlideWindows : public VulkanConvolutionCommon {
@@ -33,6 +34,15 @@ public:
         auto kh = convOption->kernelY();
         auto vkBn = (VulkanBackend*)backend;
         mChannels = std::make_pair(ci, co);
+        // Precision override: env var MNN_VULKAN_FORCE_FP32_CONV=1 forces FP32
+        // path on FP16-capable devices. Useful for precision-sensitive ISP ops
+        // (BLC/WB small per-pixel gains, CCM 3x3) where FP16 weight/bias
+        // rounding accumulates to visible color drift. Default off so existing
+        // FP16-fast-path performance is preserved.
+        static bool sForceFP32Conv = []() {
+            const char* env = getenv("MNN_VULKAN_FORCE_FP32_CONV");
+            return (env != nullptr && env[0] != '0' && env[0] != '\0');
+        }();
         // Create Pipeline
         std::vector<VkDescriptorType> convTypes{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
             VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
@@ -40,7 +50,7 @@ public:
                                                 VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER};
         std::string pKey = "glsl_convolution_";
         pKey += getPostTreatMacro(convOption);
-        if (vkBn->useFP16()) {
+        if (vkBn->useFP16() && !sForceFP32Conv) {
             pKey += "FP16_";
         }
         pKey += "comp";
@@ -50,14 +60,14 @@ public:
         auto extra = vkBn;
         {
             size_t elementSize = sizeof(float);
-            if (vkBn->useFP16()) {
+            if (vkBn->useFP16() && !sForceFP32Conv) {
                 elementSize = sizeof(int16_t);
             }
             mBias = std::make_shared<VulkanBuffer>(extra->getMemoryPool(), false, elementSize * ALIGN_UP4(common->outputCount()));
             auto bias = mBias->map();
             ::memset(bias, 0, ALIGN_UP4(common->outputCount()) * elementSize);
             if (nullptr != biasPtr) {
-                if (vkBn->useFP16()) {
+                if (vkBn->useFP16() && !sForceFP32Conv) {
                     FLOAT_TO_HALF(biasPtr, (int16_t*)bias, common->outputCount());
                 } else {
                     ::memcpy(bias, biasPtr, common->outputCount() * sizeof(float));
@@ -111,7 +121,7 @@ public:
             std::shared_ptr<VulkanBuffer> sourceBuffer;
             int totalWeightSize = ci * co * kernelSize;
             sourceWeight.reset(Tensor::createDevice<float>({totalWeightSize}));
-            if (vkBn->useFP16()) {
+            if (vkBn->useFP16() && !sForceFP32Conv) {
                 sourceBuffer = vkBn->createHostBuffer(totalWeightSize * sizeof(int16_t));
                 if (nullptr == sourceBuffer.get()) {
                     return;
