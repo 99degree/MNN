@@ -265,6 +265,14 @@ option(MNN_METAL_OP_PROFILE "Enable per-op GPU time profiling for the Metal back
 option(MNN_OPENCL "Enable OpenCL" OFF)
 option(MNN_OPENGL "Enable OpenGL" OFF)
 option(MNN_VULKAN "Enable Vulkan" OFF)
+# Embed SPIR-V bytecodes for ISP fusion (isp.unpack_blc, isp.demosaic_ccm, ...).
+# When ON, IspChainFusion pass converts standard ISP ops (Conv/BinaryOp/Pool/...) into
+# fused VulkanFuse Extra ops carrying pre-compiled SPIR-V, giving ~3-5x speedup on
+# GPU ISP pipelines. Default ON because the bytecode data is only compiled into the
+# converter (MNN_BUILD_CONVERTER=ON) and is harmless when no ISP ops are present.
+# Disable if converter size is a concern (the embedded shaders add ~50KB to the
+# converter binary; see tools/converter/source/optimizer/postconvert/isp_spirv_embedded.h).
+option(MNN_ISP_EMBED_SPIRV "Embed ISP SPIR-V shaders in converter" ON)
 option(MNN_ARM82 "Enable ARMv8.2's FP16 Compute" ON)
 option(MNN_SUPPORT_FP16_ARMV7 "Enable ARMv8.2's FP16 Compute for armv7 arch, may cause library not valid for 32 bit cpu" OFF)
 option(MNN_KLEIDIAI "Enable KLEIDIAI" ON)
@@ -333,6 +341,7 @@ message(STATUS "\tMetal: ${MNN_METAL}")
 message(STATUS "\tOpenCL: ${MNN_OPENCL}")
 message(STATUS "\tOpenGL: ${MNN_OPENGL}")
 message(STATUS "\tVulkan: ${MNN_VULKAN}")
+message(STATUS "\tISP embed SPIR-V: ${MNN_ISP_EMBED_SPIRV}")
 message(STATUS "\tARM82: ${MNN_ARM82}")
 message(STATUS "\tKleidiAI: ${MNN_KLEIDIAI}")
 message(STATUS "\toneDNN: ${MNN_ONEDNN}")

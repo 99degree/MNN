@@ -1,0 +1,47 @@
+#version 450
+// isp.af_focus — Sobel tenengrad focus metric
+// Based on FocusBlock: Sobel gradient → squared → mean
+// Uniforms: {W, H}
+// In:  float[1,H,W] luminance
+// Out: float[1] focus metric (mean gradient magnitude)
+//
+// Dispatch: 1 workgroup (16x16 = 256 threads), each thread strides over image.
+// Output: scalar via shared-memory reduction.
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(set = 0, binding = 0, std430) buffer Uniforms { float width; float height; } u;
+layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
+layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
+
+shared float partial[256];
+
+void main() {
+    uint tid = gl_LocalInvocationIndex.x;
+    int w = int(u.width);
+    int h = int(u.height);
+    int total = w * h;
+    float sum = 0.0;
+
+    for (int idx = int(tid); idx < total; idx += 256) {
+        int x = idx % w;
+        int y = idx / w;
+        if (x > 0 && x < w-1 && y > 0 && y < h-1) {
+            float gcx = -in_data[(y-1)*w + (x-1)] + in_data[(y-1)*w + (x+1)]
+                       - 2.0*in_data[y*w + (x-1)] + 2.0*in_data[y*w + (x+1)]
+                       - in_data[(y+1)*w + (x-1)] + in_data[(y+1)*w + (x+1)];
+            float gcy = -in_data[(y-1)*w + (x-1)] - 2.0*in_data[(y-1)*w + x] - in_data[(y-1)*w + (x+1)]
+                       + in_data[(y+1)*w + (x-1)] + 2.0*in_data[(y+1)*w + x] + in_data[(y+1)*w + (x+1)];
+            sum += gcx*gcx + gcy*gcy;
+        }
+    }
+    partial[tid] = sum;
+    barrier();
+
+    // Parallel reduction
+    uint step;
+    for (step = 128u; step > 0u; step >>= 1) {
+        if (tid < step) partial[tid] += partial[tid + step];
+        barrier();
+    }
+    if (tid == 0u) out_data[0] = (total > 0) ? partial[0] / float(total) : 0.0;
+}

@@ -1,0 +1,30 @@
+#version 450
+// isp.ae — Auto Exposure gain + offset (elementwise)
+// Uniforms: {W, H, gain, offset}
+// In: float[NCHW] image
+// Out: float[NCHW] = in * gain + offset
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer Uniforms {
+    float width;
+    float height;
+    float gain;
+    float offset;
+} u;
+
+layout(set = 0, binding = 1) readonly buffer InBuf  { float in_data[]; };
+layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    uint w = uint(u.width);
+    uint h = uint(u.height);
+    if (x >= w || y >= h) return;
+
+    uint plane = w * h;
+    uint idx = y * w + x;
+    float v = in_data[idx];
+    out_data[idx] = v * u.gain + u.offset;
+}

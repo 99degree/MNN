@@ -1,0 +1,45 @@
+#version 450
+// isp.eis_gyro — EIS gyro-stabilized warp (bilinear sampling with rotation)
+// Uniforms: {W, H, outW, outH, gyroX, gyroY, gyroZ}
+// Same shader as isp.warp — just gyro-driven rotation
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(set = 0, binding = 0, std430) buffer Uniforms {
+    float width; float height; float outW; float outH;
+    float gyroX; float gyroY; float gyroZ;
+} u;
+layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
+layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
+
+float sample_bilinear(float ix, float iy, int iw, int ih) {
+    int x0 = clamp(int(floor(ix)), 0, iw-1);
+    int y0 = clamp(int(floor(iy)), 0, ih-1);
+    int x1 = clamp(x0+1, 0, iw-1);
+    int y1 = clamp(y0+1, 0, ih-1);
+    float fx = ix - float(x0);
+    float fy = iy - float(y0);
+    float a = mix(in_data[y0*iw + x0], in_data[y0*iw + x1], fx);
+    float b = mix(in_data[y1*iw + x0], in_data[y1*iw + x1], fx);
+    return mix(a, b, fy);
+}
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    int w = int(u.width);
+    int h = int(u.height);
+    int ow = int(u.outW);
+    int oh = int(u.outH);
+    if (int(x) >= ow || int(y) >= oh) return;
+
+    float cx = float(w) * 0.5;
+    float cy = float(h) * 0.5;
+    float angle = u.gyroZ;
+
+    float dx = float(x) - float(ow)*0.5;
+    float dy = float(y) - float(oh)*0.5;
+    float srcX = dx*cos(angle) + dy*sin(angle) + cx;
+    float srcY = -dx*sin(angle) + dy*cos(angle) + cy;
+
+    int idx = int(y)*ow + int(x);
+    out_data[idx] = sample_bilinear(srcX, srcY, w, h);
+}

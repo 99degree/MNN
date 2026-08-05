@@ -1,0 +1,37 @@
+#version 450
+// isp.tone — Tone Mapping: out = pow(in, gamma) * contrast
+// Uniforms: {W, H, gamma, contrast, pad0, pad1, pad2, pad3}
+// Based on Android ToneBlock: gamma=2.2, contrast=1.0
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer Uniforms {
+    float width;
+    float height;
+    float gamma;
+    float contrast;
+    float pad[4];  // 4 padding floats for alignment
+} u;
+
+layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
+layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    uint w = uint(u.width);
+    uint h = uint(u.height);
+    if (x >= w || y >= h) return;
+
+    uint plane = w * h;
+    uint idx = y * w + x;
+    float v = in_data[idx];
+
+    // pow(in, gamma) * contrast
+    v = clamp(v, 0.0, 1e10);
+    v = v + 1e-9;
+    v = exp(log(v) * u.gamma);
+    v = v * u.contrast;
+
+    out_data[idx] = v;
+}

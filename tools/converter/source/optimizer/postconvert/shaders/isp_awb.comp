@@ -1,0 +1,32 @@
+#version 450
+// isp.awb — Auto White Balance correction (per-channel gain + offset)
+// Uniforms: {W, H, gR, gG, gB, oR, oG, oB}
+// In: float[NCHW] image (C=3 typically)
+// Out: float[NCHW] corrected image
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer Uniforms {
+    float width;
+    float height;
+    float gains[3];
+    float offsets[3];
+} u;
+
+layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
+layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    uint w = uint(u.width);
+    uint h = uint(u.height);
+    if (x >= w || y >= h) return;
+
+    uint plane = w * h;
+    uint idx = y * w + x;
+
+    out_data[0*plane + idx] = in_data[0*plane + idx] * u.gains[0] + u.offsets[0];
+    out_data[1*plane + idx] = in_data[1*plane + idx] * u.gains[1] + u.offsets[1];
+    out_data[2*plane + idx] = in_data[2*plane + idx] * u.gains[2] + u.offsets[2];
+}
