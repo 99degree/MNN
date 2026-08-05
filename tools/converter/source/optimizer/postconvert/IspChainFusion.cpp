@@ -59,6 +59,8 @@
 #include <string>
 #include <vector>
 #include <cmath>
+#include <map>
+#include <set>
 #include "../PostTreatUtils.hpp"
 #include "../Global.hpp"
 #include "MNN_generated.h"
@@ -190,13 +192,21 @@ static void buildCommonAttrs(MNN::ExtraT* extra, int W, int H,
         a->tensor->dataType = MNN::DataType_DT_INT32;
         a->tensor->int32s = {W, H, 1};
     });
+    // Default: elementwise op — output shape copies the INPUT shape
+    // (BLC, fcs, ee, gamma, vignetting, lsc, ...). Stride-2 ops
+    // (unpack_blc / demosaic_ccm / pyramid) clear this marker and bake
+    // their own global_size.
+    addAttr(extra, "elementwise", [](MNN::AttributeT* a) { a->b = true; });
     addAttr(extra, "group_size", [&](MNN::AttributeT* a) {
         a->tensor.reset(new MNN::BlobT);
         a->tensor->dataType = MNN::DataType_DT_INT32;
         a->tensor->int32s = {16, 16, 1};
     });
     addAttr(extra, "optimized_dispatch", [](MNN::AttributeT* a) { a->b = true; });
-    addAttr(extra, "fp16_consts", [](MNN::AttributeT* a) { a->b = true; });
+    // fp16_consts must stay FALSE — every embedded isp.* SPIR-V shader reads
+    // its const block as raw FP32 (plain OpLoad, NO unpackHalf2x16). Packing
+    // as FP16 corrupts W/H/gain → shader early-returns → all-zero output.
+    addAttr(extra, "fp16_consts", [](MNN::AttributeT* a) { a->b = false; });
     addAttr(extra, "input", [&](MNN::AttributeT* a) {
         a->i = 0;
         a->list.reset(new MNN::ListValueT); a->list->i = {0, 1};
@@ -250,7 +260,8 @@ static void buildReduceAttrs(MNN::ExtraT* extra,
     });
     addAttr(extra, "reduce_keepdims", [](MNN::AttributeT* a) { a->b = true; });
     addAttr(extra, "optimized_dispatch", [](MNN::AttributeT* a) { a->b = true; });
-    addAttr(extra, "fp16_consts", [](MNN::AttributeT* a) { a->b = true; });
+    // fp16_consts must stay FALSE (shaders read raw FP32, no unpackHalf2x16)
+    addAttr(extra, "fp16_consts", [](MNN::AttributeT* a) { a->b = false; });
     addAttr(extra, "input", [&](MNN::AttributeT* a) {
         a->i = 0;
         a->list.reset(new MNN::ListValueT); a->list->i = {0, 1};
@@ -284,6 +295,14 @@ static void setEngine(MNN::ExtraT* extra) {
     extra->engine = "MNN";
 }
 
+// Clear the elementwise output-shape marker (stride-2 ops like
+// unpack_blc / demosaic_ccm / pyramid / unpack_demosaic halve resolution).
+static void clearElementwise(MNN::ExtraT* extra) {
+    if (extra->attr.empty()) return;
+    for (auto& a : extra->attr) {
+        if (a->key == "elementwise") { a->b = false; return; }
+    }
+}
 // Trace a tensor index through ConvertTensor ops to find the original producer
 // Returns the original tensor index, or the input if no ConvertTensor found
 static int traceTensor(int tensorIdx, const std::vector<std::unique_ptr<OpT>>& ops) {
@@ -454,10 +473,333 @@ static int skipThrough(int start, const std::vector<std::unique_ptr<OpT>>& ops) 
     return j;
 }
 
+// ── Exact graph-connectivity helpers (replace array-position heuristics) ──
+// Producer: the op whose outputIndexes contains tensorId.
+static OpT* producerOf(const std::vector<std::unique_ptr<OpT>>& ops, int tensorId) {
+    for (auto& op : ops) {
+        if (!op) continue;
+        for (int out : op->outputIndexes) {
+            if (out == tensorId) return op.get();
+        }
+    }
+    return nullptr;
+}
+
+// Const producer: find a Const op that outputs tensorId (returns its blob data).
+static const BlobT* constBlobOf(const std::vector<std::unique_ptr<OpT>>& ops, int tensorId) {
+    for (auto& op : ops) {
+        if (!op || op->type != MNN::OpType_Const) continue;
+        for (int out : op->outputIndexes) {
+            if (out == tensorId) {
+                auto* b = op->main.AsBlob();
+                if (b) return b;
+            }
+        }
+    }
+    return nullptr;
+}
+
+// Direct producer check: tensorId's producer op must be exactly `type`.
+static bool producerIs(const std::vector<std::unique_ptr<OpT>>& ops, int tensorId, MNN::OpType type) {
+    auto* p = producerOf(ops, tensorId);
+    return p != nullptr && p->type == type;
+}
+
+// Single-input producer: returns input tensor id of op `cur` at position `inputSlot`.
+// Null-safe for ops with missing inputs.
+static int inputTensorOf(const OpT* cur, int slot) {
+    if (!cur || slot < 0 || slot >= (int)cur->inputIndexes.size()) return -1;
+    return cur->inputIndexes[slot];
+}
+
+// Check op at index idx has exactly the given type (null-safe).
+static bool opIs(const std::vector<std::unique_ptr<OpT>>& ops, int idx, MNN::OpType type) {
+    return idx >= 0 && idx < (int)ops.size() && ops[idx] && ops[idx]->type == type;
+}
+
+// Find op index whose outputIndexes contains tensorId (returns -1 if none).
+static int opIndexProducerOf(const std::vector<std::unique_ptr<OpT>>& ops, int tensorId) {
+    for (int j = 0; j < (int)ops.size(); j++) {
+        if (!ops[j]) continue;
+        for (int out : ops[j]->outputIndexes) {
+            if (out == tensorId) return j;
+        }
+    }
+    return -1;
+}
+
+// BinaryOp type check helper.
+static bool isBinOp(const OpT* op, MNN::BinaryOpOperation t) {
+    if (!op || op->type != MNN::OpType_BinaryOp) return false;
+    if (op->main.type != MNN::OpParameter_BinaryOp) return false;
+    return op->main.AsBinaryOp()->opType == t;
+}
+
+// UnaryOp type check helper.
+static bool isUnOp(const OpT* op, MNN::UnaryOpOperation t) {
+    if (!op || op->type != MNN::OpType_UnaryOp) return false;
+    if (op->main.type != MNN::OpParameter_UnaryOp) return false;
+    return op->main.AsUnaryOp()->opType == t;
+}
+
+// Find the FIRST consumer of tensorId (any op whose inputIndexes contains it).
+static int consumerOf(const std::vector<std::unique_ptr<OpT>>& ops, int tensorId) {
+    for (int k = 0; k < (int)ops.size(); k++) {
+        if (!ops[k]) continue;
+        for (int inIdx : ops[k]->inputIndexes) {
+            if (inIdx == tensorId) return k;
+        }
+    }
+    return -1;
+}
+
+// Find consumer of tensorId that is a BinaryOp with specific type.
+static int consumerOfBinOp(const std::vector<std::unique_ptr<OpT>>& ops, int tensorId, MNN::BinaryOpOperation binOp) {
+    for (int k = 0; k < (int)ops.size(); k++) {
+        if (!ops[k] || ops[k]->type != MNN::OpType_BinaryOp) continue;
+        if (!isBinOp(ops[k].get(), binOp)) continue;
+        for (int inIdx : ops[k]->inputIndexes) {
+            if (inIdx == tensorId) return k;
+        }
+    }
+    return -1;
+}
+
+// Find consumer of tensorId that is a specific OpType.
+static int consumerOfType(const std::vector<std::unique_ptr<OpT>>& ops, int tensorId, MNN::OpType type) {
+    for (int k = 0; k < (int)ops.size(); k++) {
+        if (!ops[k] || ops[k]->type != type) continue;
+        for (int inIdx : ops[k]->inputIndexes) {
+            if (inIdx == tensorId) return k;
+        }
+    }
+    return -1;
+}
+
+// Check if tensorId is consumed by any op outside the fused set.
+static bool hasExternalConsumer(const std::vector<std::unique_ptr<OpT>>& ops,
+                                int tensorId,
+                                const std::vector<int>& fusedOps) {
+    for (int k = 0; k < (int)ops.size(); k++) {
+        if (!ops[k]) continue;
+        bool isFused = false;
+        for (int f : fusedOps) { if (f == k) { isFused = true; break; } }
+        if (isFused) continue;
+        for (int inIdx : ops[k]->inputIndexes) {
+            if (inIdx == tensorId) return true;
+        }
+    }
+    return false;
+}
+
 // ═══════════════════════════════════════════════════════════════════
 //  Pass 1: Standard MNN ops → ISP Extra ops
 // ═══════════════════════════════════════════════════════════════════
 
+// ═══════════════════════════════════════════════════════════════════
+//  Exact-pattern matching framework
+// ═══════════════════════════════════════════════════════════════════
+// Each try* helper first checks a table of ExactPattern structs
+// (sorted by opTypes.size() DESCENDING — longest match first).
+// Only if no exact pattern matches does it fall through to the old
+// heuristic code.
+struct ExactPattern {
+    std::vector<MNN::OpType> opTypes;
+    int constElems;
+    int constIndex;
+    const char* ispType;
+    const char* spvName;
+    const char* namedKey;
+    int convWeightElems = -1;
+    ExactPattern(std::vector<MNN::OpType> ops, int ce, int ci,
+                 const char* isp, const char* spv, const char* nk = nullptr, int cwe = -1)
+        : opTypes(std::move(ops)), constElems(ce), constIndex(ci),
+          ispType(isp), spvName(spv), namedKey(nk), convWeightElems(cwe) {}
+};
+
+// Navigate ops starting at , skipping Const and ConvertTensor,
+// collecting up to  op types. Returns actual index per collected op.
+static bool collectChain(const std::vector<std::unique_ptr<OpT>>& ops,
+                         int start, int count,
+                         std::vector<int>& indices, std::vector<MNN::OpType>& types) {
+    int j = start;
+    for (int n = 0; n < count && j < (int)ops.size(); j++) {
+        if (!ops[j]) continue;
+        if (ops[j]->type == MNN::OpType_Const ||
+            ops[j]->type == MNN::OpType_ConvertTensor) continue;
+        indices.push_back(j);
+        types.push_back(ops[j]->type);
+        n++;
+    }
+    return (int)types.size() == count;
+}
+
+// Check if an exact pattern matches at ops[i].
+static bool matchExact(const std::vector<std::unique_ptr<OpT>>& ops,
+                       int i, const ExactPattern& pat) {
+    if (i < 0 || i >= (int)ops.size() || !ops[i]) return false;
+    std::vector<int> idx;
+    std::vector<MNN::OpType> types;
+    if (!collectChain(ops, i, (int)pat.opTypes.size(), idx, types)) return false;
+    for (int k = 0; k < (int)pat.opTypes.size(); k++) {
+        if (types[k] != pat.opTypes[k]) return false;
+    }
+    // Check const constraint: inputIndexes[constIndex] must be a Const with constElems floats
+    if (pat.constIndex >= 0 && pat.constElems >= 0) {
+        if (idx.empty()) return false;
+        auto* op = ops[idx[0]].get();
+        if (pat.constIndex >= (int)op->inputIndexes.size()) return false;
+        int tensorId = op->inputIndexes[pat.constIndex];
+        auto* blb = constBlobOf(ops, tensorId);
+        if (!blb || (int)blb->float32s.size() != pat.constElems) return false;
+    }
+    // Check conv weight count
+    if (pat.convWeightElems >= 0) {
+        if (idx.empty()) return false;
+        auto* op = ops[idx[0]].get();
+        if (op->type != MNN::OpType_Convolution) return false;
+        auto* c = op->main.AsConvolution2D();
+        if (!c || (int)c->weight.size() != pat.convWeightElems) return false;
+    }
+    return true;
+}
+
+// Convert exact match to isp.* Extra op, consuming chain ops.
+static bool applyExact(std::vector<std::unique_ptr<OpT>>& ops, int& i,
+                       const ExactPattern& pat, int mW, int mH,
+                       const std::vector<float>& u) {
+    std::vector<int> idx;
+    std::vector<MNN::OpType> types;
+    if (!collectChain(ops, i, (int)pat.opTypes.size(), idx, types)) return false;
+    ops[idx[0]]->type = MNN::OpType_Extra;
+    ops[idx[0]]->main.type = MNN::OpParameter_Extra;
+    auto* ex = new MNN::ExtraT();
+    ex->type = pat.ispType;
+    ex->engine = "MNN";
+    buildCommonAttrs(ex, mW, mH, u);
+    setEngine(ex);
+    addSpirv(ex, pat.spvName);
+    if (pat.namedKey && pat.namedKey[0]) {
+        std::vector<float> nf(u.begin() + 2, u.end());
+        addNamedFloats(ex, pat.namedKey, nf);
+    }
+    ops[idx[0]]->main.value = ex;
+    // Output: last op in chain
+    if ((int)idx.size() > 1) {
+        ops[idx[0]]->outputIndexes[0] = ops[idx.back()]->outputIndexes[0];
+    }
+    // Nullify consumed ops (except first)
+    for (int k = 1; k < (int)idx.size(); k++) ops[idx[k]].reset();
+    i = idx.back();
+    VLOG(2) << "[P1] EXACT " << pat.ispType << " at " << idx[0]
+            << " chain=" << idx.size();
+    return true;
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Global exact-pattern tables (checked first, before any try* heuristic)
+// Sorted by chain length DESCENDING within each table.
+static const ExactPattern kExactFcs[] = {
+    // 1-op: Conv(1x1) with 9 weights (CCM, CcmBlock)
+    ExactPattern({MNN::OpType_Convolution},
+                 -1, -1, "isp.fcs", "isp.fcs", "fcs", 9),
+    // 1-op: Mul with 3-elem const gains (WbGainsBlock)
+    ExactPattern({MNN::OpType_BinaryOp},
+                 3, 1, "isp.fcs", "isp.fcs", "fcs"),
+    // 1-op: Mul with 4-elem const gains (BayerWbBlock)
+    ExactPattern({MNN::OpType_BinaryOp},
+                 4, 1, "isp.fcs", "isp.fcs", "fcs"),
+};
+
+static const ExactPattern kExactDemosaic[] = {
+    // Conv(depthwise, 3x3, 4ch) with 36 weights (real debayer)
+    ExactPattern({MNN::OpType_Convolution},
+                 -1, -1, "isp.demosaic_ccm", "isp.demosaic_ccm", nullptr, 36),
+    // Conv(5x5) with 300 weights, 4→3 (DebayerBlock learned debayer)
+    ExactPattern({MNN::OpType_Convolution},
+                 -1, -1, "isp.demosaic_ccm", "isp.demosaic_ccm", nullptr, 300),
+};
+
+static const ExactPattern kExactDisplay[] = {
+    // Permute→Padding→Gather→BinaryOp→Cast (DisplayBlock: Identity→Transp→Pad→Gather→Mul→Cast)
+    ExactPattern({MNN::OpType_Permute, MNN::OpType_Padding,
+                  MNN::OpType_Gather, MNN::OpType_BinaryOp, MNN::OpType_Cast},
+                 -1, -1, "isp.display", "isp.display", "display"),
+    // Transpose→Pad→Gather→Mul→Cast (OnnxDisplayBlock)
+    ExactPattern({MNN::OpType_Permute, MNN::OpType_Padding, MNN::OpType_Gather,
+                  MNN::OpType_BinaryOp, MNN::OpType_Cast},
+                 -1, -1, "isp.display", "isp.display", "display"),
+    // Transpose→Pad→Mul→Cast (OnnxDisplayBlock without Gather)
+    ExactPattern({MNN::OpType_Permute, MNN::OpType_Padding,
+                  MNN::OpType_BinaryOp, MNN::OpType_Cast},
+                 -1, -1, "isp.display", "isp.display", "display"),
+    // Conv(1x1,3→3)→Permute→Padding→Gather→Mul→Cast (DisplayBlock isYuv=true)
+    ExactPattern({MNN::OpType_Convolution, MNN::OpType_Permute,
+                  MNN::OpType_Padding, MNN::OpType_Gather, MNN::OpType_BinaryOp, MNN::OpType_Cast},
+                 -1, -1, "isp.display", "isp.display", "display"),
+};
+
+static const ExactPattern kExactUnpack[] = {
+    ExactPattern({MNN::OpType_Reshape, MNN::OpType_ReLU6, MNN::OpType_BinaryOp},
+                 -1, -1, "isp.unpack_blc", "isp.unpack_blc", nullptr),
+    ExactPattern({MNN::OpType_BinaryOp},
+                 1, 1, "isp.unpack_blc", "isp.unpack_blc", nullptr),
+};
+
+static const ExactPattern kExactPyramid[] = {
+    ExactPattern({MNN::OpType_Pooling, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp,
+                  MNN::OpType_BinaryOp, MNN::OpType_ReLU6},
+                 -1, -1, "isp.pyramid", "isp.pyramid", "fcs"),
+};
+
+static const ExactPattern kExactAe[] = {
+    ExactPattern({MNN::OpType_BinaryOp},
+                 1, 1, "isp.ae", "isp.ae", "ae"),
+};
+
+static const ExactPattern kExactAfFocus[] = {
+    ExactPattern({MNN::OpType_Convolution},
+                 -1, -1, "isp.af_focus", "isp.af_focus", nullptr, 9),
+};
+
+static bool tryExactFirst(std::vector<std::unique_ptr<MNN::OpT>>& ops,
+                          int& i, int mW, int mH) {
+#define TRY_EXACT_TABLE(tbl) do { \
+        for (auto& pat : tbl) { \
+            if (matchExact(ops, i, pat)) { \
+                float str = 1.0f; \
+                std::vector<int> idx; std::vector<MNN::OpType> types; \
+                collectChain(ops, i, (int)pat.opTypes.size(), idx, types); \
+                if (!idx.empty()) { \
+                    auto* op = ops[idx[0]].get(); \
+                    if (op->type == MNN::OpType_BinaryOp) { \
+                        for (int inIdx : op->inputIndexes) { \
+                            auto* blb = constBlobOf(ops, inIdx); \
+                            if (blb && blb->float32s.size() >= 1) { str = blb->float32s[0]; break; } \
+                        } \
+                    } else if (op->type == MNN::OpType_Convolution) { \
+                        auto* c = op->main.AsConvolution2D(); \
+                        if (c && !c->weight.empty()) str = c->weight[0]; \
+                    } \
+                } \
+                std::vector<float> u = {float(mW), float(mH), str, 0, 0,0,0,0}; \
+                return applyExact(ops, i, pat, mW, mH, u); \
+            } \
+        } \
+    } while(0)
+
+    TRY_EXACT_TABLE(kExactFcs);
+    TRY_EXACT_TABLE(kExactDisplay);       // before demosaic to avoid Conv conflict
+    TRY_EXACT_TABLE(kExactDemosaic);      // specific weight counts, after display
+    TRY_EXACT_TABLE(kExactUnpack);        // 1-op Sub(1-elem) for RawBlcBlock
+    TRY_EXACT_TABLE(kExactPyramid);
+    TRY_EXACT_TABLE(kExactAe);
+    TRY_EXACT_TABLE(kExactAfFocus);
+    return false;
+}
+#undef TRY_EXACT_TABLE
+
+// ═══════════════════════════════════════════════════════════════════
 class Pass1_ToExtra : public PostConverter {
 public:
     static Pass1_ToExtra* instance() {
@@ -685,6 +1027,9 @@ public:
             // Threshold=0: none. Threshold=41: basic only. Threshold=999: all.
             // ═══════════════════════════════════════════════════════════════
 
+            // ── Exact-pattern pre-dispatch (before any heuristic) ──
+            if (tryExactFirst(ops, i, mW, mH)) { changed = true; continue; }
+
             // ── GROUP 1: Unpack block patterns (~8 ops → 2 ops) ──
             if (tryN(1, &Pass1_ToExtra::tryUnpackPackedChain, ops, i)) { changed = true; continue; }
             if (tryN(2, &Pass1_ToExtra::tryUnpack, ops, i)) { changed = true; continue; }
@@ -751,8 +1096,111 @@ public:
 
         }
 
+        // ══════ FUSION SUMMARY ══════
+        // Print every op's type and which ISP opset fused it (if any).
+        {
+            std::map<std::string, int> ispCounts;
+            int primitiveCount = 0;
+            int totalOps = 0;
+            fprintf(stderr, "[P1] ═══ FUSION SUMMARY (threshold=%d) ═══\n", mPatternThreshold);
+            for (int idx = 0; idx < (int)ops.size(); idx++) {
+                if (!ops[idx]) continue;
+                totalOps++;
+                auto t = ops[idx]->type;
+                if (t == MNN::OpType_Extra) {
+                    auto* ex = ops[idx]->main.AsExtra();
+                    std::string name = ex ? ex->type : "unknown";
+                    ispCounts[name]++;
+                    fprintf(stderr, "  [%3d] EXTRA  %-30s  in=%zu out=%zu\n",
+                            idx, name.c_str(),
+                            ops[idx]->inputIndexes.size(),
+                            ops[idx]->outputIndexes.size());
+                } else {
+                    primitiveCount++;
+                    fprintf(stderr, "  [%3d] %-30s  in=%zu out=%zu\n",
+                            idx, MNN::EnumNameOpType(t),
+                            ops[idx]->inputIndexes.size(),
+                            ops[idx]->outputIndexes.size());
+                }
+            }
+            fprintf(stderr, "[P1] ── ISP opset counts ──\n");
+            for (auto& kv : ispCounts) {
+                fprintf(stderr, "  %-30s x%d\n", kv.first.c_str(), kv.second);
+            }
+            fprintf(stderr, "[P1] Total: %d ops (%d ISP Extra + %d primitive)\n",
+                    totalOps, totalOps - primitiveCount, primitiveCount);
+            fflush(stderr);  // ensure fusion summary is flushed before converter returns
+        }
+
+        // ══════ POST-FUSION GRAPH VALIDATION ══════
+        // Catch dangling tensor references from any pattern that nulled an op
+        // whose output is still consumed by a live op.
+        {
+            // Collect all tensor IDs produced by live ops
+            std::set<int> produced;
+            for (auto& op : ops) {
+                if (!op) continue;
+                for (int out : op->outputIndexes) produced.insert(out);
+            }
+            // Check every live op's inputs
+            int danglingCount = 0;
+            for (int i = 0; i < (int)ops.size(); i++) {
+                if (!ops[i]) continue;
+                for (int inIdx : ops[i]->inputIndexes) {
+                    if (produced.find(inIdx) == produced.end()) {
+                        // inIdx not produced by any live op — could be model input (small ID) or dangling
+                        if (inIdx > (int)produced.size() + 10) {
+                            // Likely dangling — model inputs are usually small IDs
+                            VLOG(1) << "[P1] GRAPH_INTEGRITY: op[" << i << "] type=" << ops[i]->type
+                                    << " references dangling tensor " << inIdx;
+                            danglingCount++;
+                        }
+                    }
+                }
+            }
+            if (danglingCount > 0) {
+                VLOG(1) << "[P1] GRAPH_INTEGRITY: " << danglingCount << " dangling tensor references found";
+            }
+        }
+
         ops.erase(std::remove_if(ops.begin(), ops.end(),
                   [](const std::unique_ptr<OpT>& o) { return !o; }), ops.end());
+
+        // ── Const-input trim for fused Extra ops ──
+        // Every isp.* SPIR-V shader binds exactly ONE data input (binding 1),
+        // with all constants embedded in the const attr (binding 0). Patterns
+        // that convert BinaryOps (Mul/Sub/Div) in place keep the original
+        // inputIndexes=[data, const, ...]; the extra const tensors get the
+        // default binding 0 in VulkanFuse, CLOBBERING the uniforms buffer
+        // (shader then reads garbage W/H → 0 workgroups or empty writes).
+        // Drop every input whose tensor is produced by an OpType_Const op.
+        {
+            int trimmed = 0;
+            std::set<int> constProducers;
+            for (auto& op : ops) {
+                if (op && op->type == MNN::OpType_Const) {
+                    for (int outIdx : op->outputIndexes) constProducers.insert(outIdx);
+                }
+            }
+            for (auto& op : ops) {
+                if (!op || op->type != MNN::OpType_Extra) continue;
+                auto* ex = op->main.AsExtra();
+                if (!ex) continue;
+                // Only trim ops whose SPIR-V uses the single-data-input convention.
+                std::vector<int> kept;
+                for (int inIdx : op->inputIndexes) {
+                    if (constProducers.count(inIdx)) { trimmed++; continue; }
+                    kept.push_back(inIdx);
+                }
+                if (kept.size() != op->inputIndexes.size()) {
+                    op->inputIndexes = kept;
+                }
+            }
+            if (trimmed > 0) {
+                VLOG(1) << "[P1] Const-input trim: removed " << trimmed
+                        << " const tensor refs from fused Extra ops";
+            }
+        }
         return changed;
     }
 
@@ -764,108 +1212,74 @@ private:
     // R1: Cast [+Div(Normalize)] + Conv(2×2,stride=2,3-4ch) → isp.unpack_blc or isp.demosaic(binning)
     // Enhanced: also absorps Normalize (Div÷max) before Cast, and BLC (Sub+Clip) after Conv.
     bool tryUnpack(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
-        // Scan backward from i to find a Cast feeding into this Conv
-        int castIdx = -1;
-        if (ops[i]->type == MNN::OpType_Cast) {
-            castIdx = i;  // Cast IS at current position
-        } else {
-            // Cast may be just before current position. Scan backward.
-            int prev = skipThroughAllBackward(i - 1, ops);
-            if (prev >= 0 && ops[prev] && ops[prev]->type == MNN::OpType_Cast) {
-                castIdx = prev;
-            }
-        }
-        
-        // Scan backward from castIdx to find Normalize (Div with const) before Cast
-        float normScale = 1023.0f;  // default sensor_max
-        int divIdx = -1;
-        if (castIdx >= 0) {
-            // Check if there's a BinaryOp(DIV) feeding into the Cast
-            for (int inIdx : ops[castIdx]->inputIndexes) {
-                for (int j = 0; j < (int)ops.size(); j++) {
-                    if (!ops[j] || ops[j]->type != MNN::OpType_BinaryOp) continue;
-                    if (!isBinaryType(ops[j].get(), MNN::BinaryOpOperation_DIV)) continue;
-                    for (int outIdx : ops[j]->outputIndexes) {
-                        if (outIdx == inIdx) {
-                            // Found Div preceding Cast — check if second input is const
-                            for (int divInIdx : ops[j]->inputIndexes) {
-                                if (divInIdx != inIdx) {  // not the first input
-                                    // Look for Const tensor
-                                    for (int k = 0; k < (int)ops.size(); k++) {
-                                        if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
-                                        for (int constOut : ops[k]->outputIndexes) {
-                                            if (constOut == divInIdx) {
-                                                auto* blb = ops[k]->main.AsBlob();
-                                                if (blb && !blb->float32s.empty()) {
-                                                    float maxVal = blb->float32s[0];
-                                                    if (maxVal > 0.0f) {
-                                                        normScale = maxVal;
-                                                        divIdx = j;
-                                                    }
-                                                }
-                                                break;
-                                            }
-                                        }
-                                        if (divIdx >= 0) break;
-                                    }
-                                }
-                                if (divIdx >= 0) break;
-                            }
-                            break;
-                        }
-                    }
-                    if (divIdx >= 0) break;
-                }
-                if (divIdx >= 0) break;
-            }
-        }
-
-        // Find the Conv — it may not be immediately after Cast (Div may be between)
-        int ci = castIdx >= 0 ? skipThroughAll(castIdx + 1, ops) : i;
-        if (ci >= (int)ops.size() || !ops[ci]) return false;
-        if (ops[ci]->type != MNN::OpType_Convolution) return false;
-        auto* conv = ops[ci]->main.AsConvolution2D();
+        // EXACT PATTERN (connectivity-based, no array-position heuristics):
+        //   Input → [Cast] → [Div(Normalize, /sensor_max)] → Conv(unpack 2×2 s2 4ch)
+        //   Conv → Sub(BLC const) → [ReLU6]
+        // Required: the Conv must be an unpack conv AND the chain must have
+        // either a Cast/Div upstream anchor OR a BLC Sub downstream anchor.
+        // If neither anchor exists, this is a regular Conv — return false.
+        if (!ops[i] || ops[i]->type != MNN::OpType_Convolution) return false;
+        auto* conv = ops[i]->main.AsConvolution2D();
         bool is3chOut = false;
         if (!isUnpackConv(conv, &is3chOut)) return false;
 
-        // Scan forward after Conv for BLC (Sub + ReLU6/Clip)
+        int ci = i;
+        int convIn0 = inputTensorOf(ops[ci].get(), 0);
+
+        // ── Downstream anchors: Sub(BLC const) then optional ReLU6/Clip ──
         float blc0 = 0.0f, blc1 = 0.0f, blc2 = 0.0f, blc3 = 0.0f;
         int blcSubIdx = -1, blcClipIdx = -1;
-        int afterConv = skipThroughAll(ci + 1, ops);
-        if (afterConv < (int)ops.size() && ops[afterConv] &&
-            ops[afterConv]->type == MNN::OpType_BinaryOp &&
-            isBinaryType(ops[afterConv].get(), MNN::BinaryOpOperation_SUB)) {
-            // Found Sub — extract blc_vals
-            for (int subInIdx : ops[afterConv]->inputIndexes) {
-                // Look for Const in the second input
-                if (subInIdx != ops[afterConv]->inputIndexes[0]) {
-                    // Find Const tensor
-                    for (int k = 0; k < (int)ops.size(); k++) {
-                        if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
-                        for (int constOut : ops[k]->outputIndexes) {
-                            if (constOut == subInIdx) {
-                                auto* blb = ops[k]->main.AsBlob();
-                                if (blb && blb->float32s.size() >= 4) {
-                                    blc0 = blb->float32s[0];
-                                    blc1 = blb->float32s[1];
-                                    blc2 = blb->float32s[2];
-                                    blc3 = blb->float32s[3];
-                                }
-                                break;
-                            }
-                        }
+        {
+            int convOut = ops[ci]->outputIndexes.empty() ? -1 : ops[ci]->outputIndexes[0];
+            int subIdx = opIndexProducerOf(ops, convOut);  // direct consumer
+            if (subIdx >= 0 && isBinOp(ops[subIdx].get(), MNN::BinaryOpOperation_SUB)) {
+                // second input must be a Const with >=4 floats
+                int subIn1 = inputTensorOf(ops[subIdx].get(), 1);
+                auto* blb = constBlobOf(ops, subIn1);
+                if (blb && blb->float32s.size() >= 4) {
+                    blc0 = blb->float32s[0];
+                    blc1 = blb->float32s[1];
+                    blc2 = blb->float32s[2];
+                    blc3 = blb->float32s[3];
+                    blcSubIdx = subIdx;
+                    // optional ReLU6/Clip after Sub
+                    int subOut = ops[subIdx]->outputIndexes.empty() ? -1 : ops[subIdx]->outputIndexes[0];
+                    int clipIdx = opIndexProducerOf(ops, subOut);
+                    if (clipIdx >= 0 && (ops[clipIdx]->type == MNN::OpType_ReLU ||
+                                         ops[clipIdx]->type == MNN::OpType_ReLU6)) {
+                        blcClipIdx = clipIdx;
                     }
                 }
             }
-            blcSubIdx = afterConv;
-            // Check for ReLU6/Clip after Sub
-            int clipIdx = skipThroughAll(afterConv + 1, ops);
-            if (clipIdx < (int)ops.size() && ops[clipIdx] &&
-                (ops[clipIdx]->type == MNN::OpType_ReLU ||
-                 ops[clipIdx]->type == MNN::OpType_ReLU6)) {
-                blcClipIdx = clipIdx;
+        }
+
+        // ── Upstream anchors: Cast then optional Div(Normalize, /sensor_max) ──
+        float normScale = 1023.0f;  // default sensor_max
+        int castIdx = -1, divIdx = -1;
+        {
+            // The Conv's input chain: find producer of convIn0.
+            int cur = convIn0;
+            // Walk backwards through Cast → Div → original input.
+            // Layout: Input → Div → Cast → Conv  OR  Input → Cast → Conv.
+            auto* castOp = producerOf(ops, cur);
+            if (castOp && castOp->type == MNN::OpType_Cast) {
+                castIdx = opIndexProducerOf(ops, cur);
+                int castIn = inputTensorOf(castOp, 0);
+                auto* divOp = producerOf(ops, castIn);
+                if (divOp && isBinOp(divOp, MNN::BinaryOpOperation_DIV)) {
+                    divIdx = opIndexProducerOf(ops, castIn);
+                    // second input must be Const with positive float
+                    int divIn1 = inputTensorOf(divOp, 1);
+                    auto* blb = constBlobOf(ops, divIn1);
+                    if (blb && !blb->float32s.empty() && blb->float32s[0] > 0.0f) {
+                        normScale = blb->float32s[0];
+                    }
+                }
             }
         }
+
+        // Must find at least one anchor (upstream Cast/Div OR downstream BLC Sub).
+        if (castIdx < 0 && blcSubIdx < 0) return false;
 
         // Build const buffer with Normalize + BLC
         std::vector<float> u = {float(mW),float(mH),float(mInW),float(mInH),
@@ -926,26 +1340,13 @@ private:
                     << " blc=[" << blc0 << "," << blc1 << "," << blc2 << "," << blc3 << "]";
         }
 
-        // Reroute the Extra's input to skip consumed intermediate ops
-        // so Pass2 pipeline collection can trace back to Input.
-        // Chain: Input → [Reshape/Const/...] → Cast → Div(Normalize) → Conv
-        // The Conv's input is the Div's output. We need to trace back
-        // through consumed ops to find the original input tensor.
+        // Reroute Extra input to skip consumed ops: trace back through
+        // Cast → Div → original input.
         if (castIdx >= 0) {
-            // Walk backward through consumed ops from Conv's first input
-            int traceIn = ops[ci]->inputIndexes.empty() ? -1 : ops[ci]->inputIndexes[0];
-            // Try to find the Cast's input by checking all consumed ops' outputs
-            for (auto deadIdx : {castIdx, divIdx}) {
-                if (deadIdx < 0) continue;
-                if (ops[deadIdx]) continue;  // already reset? shouldn't matter
-                // Actually ops[deadIdx] is still valid here (not yet reset)
-            }
-            // Check Div first: if Div's first input equals Cast's output → trace through
+            int traceIn = convIn0;
             if (divIdx >= 0 && ops[divIdx] && !ops[divIdx]->inputIndexes.empty()) {
-                // Div's first input = Cast's output
                 traceIn = ops[divIdx]->inputIndexes[0];
             }
-            // Then check Cast: Cast's first input = original input
             if (castIdx >= 0 && ops[castIdx] && !ops[castIdx]->inputIndexes.empty()) {
                 traceIn = ops[castIdx]->inputIndexes[0];
             }
@@ -956,10 +1357,8 @@ private:
             }
         }
 
-        // Remove consumed ops: Cast, Div, Sub, Clip
-        // Also reroute downstream consumers to the unpack output tensor
+        // Reroute downstream consumers of dead tensors to the Extra output.
         int convOutTensor = ops[ci]->outputIndexes[0];
-        
         std::vector<int> deadTensors;
         if (blcSubIdx >= 0) deadTensors.push_back(ops[blcSubIdx]->outputIndexes[0]);
         if (blcClipIdx >= 0) deadTensors.push_back(ops[blcClipIdx]->outputIndexes[0]);
@@ -967,8 +1366,6 @@ private:
         if (castIdx >= 0) {
             for (auto outIdx : ops[castIdx]->outputIndexes) deadTensors.push_back(outIdx);
         }
-        
-        // Reroute all ops that consume dead tensors to the conv output
         for (auto& op : ops) {
             if (!op || op.get() == ops[ci].get()) continue;
             for (auto& inIdx : op->inputIndexes) {
@@ -980,7 +1377,6 @@ private:
                 }
             }
         }
-        
         if (castIdx >= 0) ops[castIdx].reset();
         if (divIdx >= 0) ops[divIdx].reset();
         if (blcSubIdx >= 0) ops[blcSubIdx].reset();
@@ -1160,72 +1556,49 @@ private:
         auto* c = ops[i]->main.AsConvolution2D();
         if (!isCcmConv(c)) return false;
 
-        // Scan backward for BLC: ReLU6 + Sub preceding this Conv
+        // EXACT MATCH: walk the producer chain of the Conv's input tensor.
+        // Expected: Div(norm) -> Sub(BLC) -> ReLU6/ReLU -> Conv(CCM).
+        // Every hop must be verified via tensor connectivity, not array position.
         float blc0 = 0.0f, blc1 = 0.0f, blc2 = 0.0f, blc3 = 0.0f;
         float normScale = 1023.0f;
         int blcSubIdx = -1, blcClipIdx = -1, normDivIdx = -1;
-        
-        int prev = skipThroughAllBackward(i - 1, ops);
-        if (prev >= 0 && ops[prev] &&
-            (ops[prev]->type == MNN::OpType_ReLU ||
-             ops[prev]->type == MNN::OpType_ReLU6)) {
-            blcClipIdx = prev;
-            // Check for Sub before Clip
-            int subPrev = skipThroughAllBackward(prev - 1, ops);
-            if (subPrev >= 0 && ops[subPrev] &&
-                ops[subPrev]->type == MNN::OpType_BinaryOp &&
-                isBinaryType(ops[subPrev].get(), MNN::BinaryOpOperation_SUB)) {
-                // Extract blc_vals from Sub's second input
-                for (int subInIdx : ops[subPrev]->inputIndexes) {
-                    // Look for Const (not the first input which is the image)
-                    bool isFirst = true;
-                    for (int outIdx : ops[subPrev]->outputIndexes) {
-                        if (traceTensor(outIdx, ops) != traceTensor(subInIdx, ops)) {
-                            isFirst = false;
-                        }
-                    }
-                    if (!isFirst || subInIdx != ops[subPrev]->inputIndexes[0]) {
-                        for (int k = 0; k < (int)ops.size(); k++) {
-                            if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
-                            for (int constOut : ops[k]->outputIndexes) {
-                                if (constOut == subInIdx) {
-                                    auto* blb = ops[k]->main.AsBlob();
-                                    if (blb && blb->float32s.size() >= 4) {
-                                        blc0 = blb->float32s[0];
-                                        blc1 = blb->float32s[1];
-                                        blc2 = blb->float32s[2];
-                                        blc3 = blb->float32s[3];
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                    }
+
+        // Hop 1: Conv input <- Clip/ReLU
+        int convIn0 = inputTensorOf(ops[i].get(), 0);
+        int clipIdx = opIndexProducerOf(ops, convIn0);
+        if (clipIdx >= 0 && ops[clipIdx] &&
+            (ops[clipIdx]->type == MNN::OpType_ReLU ||
+             ops[clipIdx]->type == MNN::OpType_ReLU6)) {
+            blcClipIdx = clipIdx;
+            // Hop 2: Clip input <- Sub(BLC)
+            int clipIn0 = inputTensorOf(ops[clipIdx].get(), 0);
+            int subIdx = opIndexProducerOf(ops, clipIn0);
+            if (subIdx >= 0 && ops[subIdx] &&
+                ops[subIdx]->type == MNN::OpType_BinaryOp &&
+                isBinOp(ops[subIdx].get(), MNN::BinaryOpOperation_SUB)) {
+                // Extract blc from Sub's second (Const) input
+                int subIn1 = inputTensorOf(ops[subIdx].get(), 1);
+                auto* blb = constBlobOf(ops, subIn1);
+                if (blb && blb->float32s.size() >= 4) {
+                    blc0 = blb->float32s[0];
+                    blc1 = blb->float32s[1];
+                    blc2 = blb->float32s[2];
+                    blc3 = blb->float32s[3];
+                    blcSubIdx = subIdx;
                 }
-                blcSubIdx = subPrev;
             }
-            
-            // Check for Normalize Div before Sub
-            int divPrev = skipThroughAllBackward((blcSubIdx >= 0 ? blcSubIdx : blcClipIdx) - 1, ops);
-            if (divPrev >= 0 && ops[divPrev] &&
-                ops[divPrev]->type == MNN::OpType_BinaryOp &&
-                isBinaryType(ops[divPrev].get(), MNN::BinaryOpOperation_DIV)) {
-                for (int divInIdx : ops[divPrev]->inputIndexes) {
-                    if (divInIdx != ops[divPrev]->inputIndexes[0]) {
-                        for (int k = 0; k < (int)ops.size(); k++) {
-                            if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
-                            for (int constOut : ops[k]->outputIndexes) {
-                                if (constOut == divInIdx) {
-                                    auto* blb = ops[k]->main.AsBlob();
-                                    if (blb && !blb->float32s.empty() && blb->float32s[0] > 0) {
-                                        normScale = blb->float32s[0];
-                                        normDivIdx = divPrev;
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                    }
+            // Hop 3: Sub/Clip input <- Div(normalize /sensor_max)
+            int anchorIdx = (blcSubIdx >= 0) ? blcSubIdx : blcClipIdx;
+            int anchorIn0 = inputTensorOf(ops[anchorIdx].get(), 0);
+            int divIdx = opIndexProducerOf(ops, anchorIn0);
+            if (divIdx >= 0 && ops[divIdx] &&
+                ops[divIdx]->type == MNN::OpType_BinaryOp &&
+                isBinOp(ops[divIdx].get(), MNN::BinaryOpOperation_DIV)) {
+                int divIn1 = inputTensorOf(ops[divIdx].get(), 1);
+                auto* dblb = constBlobOf(ops, divIn1);
+                if (dblb && !dblb->float32s.empty() && dblb->float32s[0] > 0) {
+                    normScale = dblb->float32s[0];
+                    normDivIdx = divIdx;
                 }
             }
         }
@@ -1299,6 +1672,54 @@ private:
 
     // R3: Scale → isp.fcs, or BinaryOp(MUL+ADD) → isp.fcs
     bool tryFcs(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
+        // ── Exact patterns (longest chain first) ──
+        static const ExactPattern kExact[] = {
+            // 4-op: Sub→Mul→Add→Clip saturation chain
+            ExactPattern({MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_ReLU6},
+                         -1, -1, "isp.fcs", "isp.fcs", "fcs"),
+            // 3-op: Sub→Mul→Clip (UnsharpBlock-like without Add)
+            ExactPattern({MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_ReLU6},
+                         -1, -1, "isp.fcs", "isp.fcs", "fcs"),
+            // 2-op: Sub→Mul (UnsharpBlock)
+            ExactPattern({MNN::OpType_BinaryOp, MNN::OpType_BinaryOp},
+                         -1, -1, "isp.fcs", "isp.fcs", "fcs"),
+            // 1-op: Conv(1x1) with 9 weights (CCM, CcmBlock)
+            ExactPattern({MNN::OpType_Convolution},
+                         -1, -1, "isp.fcs", "isp.fcs", "fcs", 9),
+            // 1-op: Conv(1x1) with 27 weights (3x3 CCM)
+            ExactPattern({MNN::OpType_Convolution},
+                         -1, -1, "isp.fcs", "isp.fcs", "fcs", 27),
+            // 1-op: Mul with 3-elem const gains (BayerWbBlock)
+            ExactPattern({MNN::OpType_BinaryOp},
+                         3, 1, "isp.fcs", "isp.fcs", "fcs"),
+            // 1-op: Sub with 1-elem const (BLC normalize)
+            ExactPattern({MNN::OpType_BinaryOp},
+                         1, 1, "isp.fcs", "isp.fcs", "fcs"),
+        };
+        // Try exact patterns first (table is already sorted by chain length)
+        for (auto& pat : kExact) {
+            if (!matchExact(ops, i, pat)) continue;
+            // Extract gains/strength for the uniform from the first op's const input
+            float str = 1.0f;
+            std::vector<int> idx; std::vector<MNN::OpType> types;
+            collectChain(ops, i, (int)pat.opTypes.size(), idx, types);
+            if (!idx.empty()) {
+                auto* op = ops[idx[0]].get();
+                if (op->type == MNN::OpType_BinaryOp) {
+                    for (int inIdx : op->inputIndexes) {
+                        auto* blb = constBlobOf(ops, inIdx);
+                        if (blb && blb->float32s.size() >= 1) { str = blb->float32s[0]; break; }
+                    }
+                } else if (op->type == MNN::OpType_Convolution) {
+                    auto* c = op->main.AsConvolution2D();
+                    if (c && !c->weight.empty()) str = c->weight[0];
+                }
+            }
+            std::vector<float> u = {float(mW), float(mH), str, 0, 0,0,0,0};
+            fprintf(stderr, "[EXACT-FIRST-MATCH] pat=%s op=%d at i=%d\n", pat.ispType, (int)ops[idx[0]]->type, idx[0]);
+    return applyExact(ops, i, pat, mW, mH, u);
+        }
+
         // Pattern A: Scale op (rare — converter may fold Mul+Add into Scale)
         if (ops[i]->type == MNN::OpType_Scale) {
             auto* s = ops[i]->main.AsScale();
@@ -1319,17 +1740,13 @@ private:
 
         // Pattern B: BinaryOp(MUL) + BinaryOp(ADD) chain
         // (common — converter keeps Mul+Add as separate BinaryOps)
-        // May have Const ops between MUL and ADD (constant bias tensor)
+        // EXACT MATCH: find ADD as direct consumer of MUL output via connectivity.
         if (ops[i]->type == MNN::OpType_BinaryOp &&
             isBinaryType(ops[i].get(), MNN::BinaryOpOperation_MUL)) {
-            // Skip Const ops to find the ADD
-            int j = i+1;
-            while (j < (int)ops.size() && ops[j] &&
-                   ops[j]->type == MNN::OpType_Const) j++;
-            if (j >= (int)ops.size() || !ops[j]) return false;
-            if (ops[j]->type != MNN::OpType_BinaryOp ||
-                !isBinaryType(ops[j].get(), MNN::BinaryOpOperation_ADD)) return false;
-            if (!isChain(ops[i].get(), ops[j].get())) return false;
+            int mulOut = ops[i]->outputIndexes.empty() ? -1 : ops[i]->outputIndexes[0];
+            if (mulOut < 0) return false;
+            int j = consumerOfBinOp(ops, mulOut, MNN::BinaryOpOperation_ADD);
+            if (j < 0) return false;
 
             std::vector<float> u = {float(mW),float(mH),1.0f,0, 0,0,0,0};
             ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
@@ -1352,63 +1769,48 @@ private:
     bool trySubClipNormalize(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         if (!ops[i] || ops[i]->type != MNN::OpType_BinaryOp) return false;
         if (!isBinaryType(ops[i].get(), MNN::BinaryOpOperation_SUB)) return false;
-        // Find the Clip that follows the Sub
-        for (int j = i + 1; j < std::min((int)ops.size(), i + 4); j++) {
-            if (!ops[j]) continue;
-            if (ops[j]->type == MNN::OpType_Const) continue;
-            if (ops[j]->type != MNN::OpType_ReLU6) return false;
-            // Verify Sub → ReLU6 chain
-            if (!isChain(ops[i].get(), ops[j].get())) return false;
-            // Extract black_level from Sub's second input (Const)
-            float bl = 0.0f;
-            for (int inIdx : ops[i]->inputIndexes) {
-                for (int k = 0; k < (int)ops.size(); k++) {
-                    if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
-                    for (int co : ops[k]->outputIndexes) {
-                        if (co == inIdx) {
-                            auto* blb = ops[k]->main.AsBlob();
-                            if (blb && !blb->float32s.empty()) bl = blb->float32s[0];
-                        }
-                    }
-                }
-            }
-            std::vector<float> u = {float(mW), float(mH), 1.0f, bl, 0,0,0,0};
-            ops[i]->type = MNN::OpType_Extra;
-            ops[i]->main.type = MNN::OpParameter_Extra;
-            auto* ex = new MNN::ExtraT(); ex->type = "isp.fcs";
-            buildCommonAttrs(ex, mW, mH, u); setEngine(ex); addSpirv(ex, "isp.fcs");
-            addNamedFloats(ex, "fcs", {1.0f, bl});
-            ops[i]->main.value = ex;
-            ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
-            ops[j].reset();
-            VLOG(2) << "[P1] R3c: fcs (Sub+Clip normalize) at " << i << " bl=" << bl;
-            i = j;
-            return true;
-        }
-        return false;
+        // EXACT MATCH: find ReLU6 as direct consumer of Sub output.
+        int subOut = ops[i]->outputIndexes.empty() ? -1 : ops[i]->outputIndexes[0];
+        if (subOut < 0) return false;
+        int j = consumerOfType(ops, subOut, MNN::OpType_ReLU6);
+        if (j < 0) return false;
+        // Extract black_level from Sub's second input (Const)
+        float bl = 0.0f;
+        int subIn1 = inputTensorOf(ops[i].get(), 1);
+        auto* blb = constBlobOf(ops, subIn1);
+        if (blb && !blb->float32s.empty()) bl = blb->float32s[0];
+        std::vector<float> u = {float(mW), float(mH), 1.0f, bl, 0,0,0,0};
+        ops[i]->type = MNN::OpType_Extra;
+        ops[i]->main.type = MNN::OpParameter_Extra;
+        auto* ex = new MNN::ExtraT(); ex->type = "isp.fcs";
+        buildCommonAttrs(ex, mW, mH, u); setEngine(ex); addSpirv(ex, "isp.fcs");
+        addNamedFloats(ex, "fcs", {1.0f, bl});
+        ops[i]->main.value = ex;
+        ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
+        ops[j].reset();
+        VLOG(2) << "[P1] R3c: fcs (Sub+Clip normalize) at " << i << " bl=" << bl;
+        i = j;
+        return true;
     }
 
     // R6b: Conv(1×1)+Clip → isp.display_clip (post-demosaic clamp)
     // Absorbs standalone Clip after a Conv into the Conv as display_clip.
     bool tryDisplayClip(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         if (!ops[i] || ops[i]->type != MNN::OpType_ReLU6) return false;
-        // Find the Clip's producer — must be a Conv(1×1)
-        for (int inIdx : ops[i]->inputIndexes) {
-            int prov = traceTensor(inIdx, ops);
-            if (prov < 0 || prov >= (int)ops.size() || !ops[prov]) continue;
-            if (ops[prov]->type != MNN::OpType_Convolution) continue;
-            auto* c = ops[prov]->main.AsConvolution2D();
-            if (!c || !c->common) continue;
-            if (c->common->kernelX != 1 || c->common->kernelY != 1) continue;
-            // Absorb: just remove the Clip, let the Conv stand alone.
-            // The Conv already has the correct output; Clip is redundant (values
-            // are already in range after demosaic CCM).
-            ops[i]->outputIndexes = ops[prov]->outputIndexes;
-            ops[prov].reset();
-            VLOG(2) << "[P1] R6b: absorbed Conv+Clip into standalone Conv at " << prov;
-            return true;
-        }
-        return false;
+        // EXACT MATCH: find Conv(1×1) producer via connectivity.
+        if (ops[i]->inputIndexes.empty()) return false;
+        int tensorIdx = traceTensor(ops[i]->inputIndexes[0], ops);
+        int prov = opIndexProducerOf(ops, tensorIdx);
+        if (prov < 0 || !ops[prov]) return false;
+        if (ops[prov]->type != MNN::OpType_Convolution) return false;
+        auto* c = ops[prov]->main.AsConvolution2D();
+        if (!c || !c->common) return false;
+        if (c->common->kernelX != 1 || c->common->kernelY != 1) return false;
+        // Absorb: just remove the Clip, let the Conv stand alone.
+        ops[i]->outputIndexes = ops[prov]->outputIndexes;
+        ops[prov].reset();
+        VLOG(2) << "[P1] R6b: absorbed Conv+Clip into standalone Conv at " << prov;
+        return true;
     }
 
     // R2c: Conv(1×1,N→N)+Clip → absorb Clip (identity Conv clamp)
@@ -1418,14 +1820,11 @@ private:
         auto* c = ops[i]->main.AsConvolution2D();
         if (!c || !c->common) return false;
         if (c->common->kernelX != 1 || c->common->kernelY != 1) return false;
-        // Check if next op is Clip
-        int next = -1;
-        for (int j = i + 1; j < std::min((int)ops.size(), i + 3); j++) {
-            if (!ops[j] || ops[j]->type == MNN::OpType_Const) continue;
-            next = j; break;
-        }
-        if (next < 0 || ops[next]->type != MNN::OpType_ReLU6) return false;
-        if (!isChain(ops[i].get(), ops[next].get())) return false;
+        // EXACT MATCH: find ReLU6 as direct consumer of Conv output.
+        int convOut = ops[i]->outputIndexes.empty() ? -1 : ops[i]->outputIndexes[0];
+        if (convOut < 0) return false;
+        int next = consumerOfType(ops, convOut, MNN::OpType_ReLU6);
+        if (next < 0) return false;
         // Absorb Clip into Conv output
         ops[i]->outputIndexes = ops[next]->outputIndexes;
         ops[next].reset();
@@ -1441,18 +1840,9 @@ private:
     bool tryClipAbsorbFwd(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         if (!ops[i] || ops[i]->type != MNN::OpType_ReLU6) return false;
         if (ops[i]->inputIndexes.empty()) return false;
+        // EXACT MATCH: find Conv producer via connectivity.
         int tensorIdx = traceTensor(ops[i]->inputIndexes[0], ops);
-        VLOG(2) << "[P1] R6c: ReLU6 at " << i << " input tensor=" << tensorIdx;
-        // Find producer: scan all ops for one that outputs tensorIdx
-        int prov = -1;
-        for (int j = 0; j < (int)ops.size(); j++) {
-            if (!ops[j]) continue;
-            for (int out : ops[j]->outputIndexes) {
-                if (out == tensorIdx) { prov = j; break; }
-            }
-            if (prov >= 0) break;
-        }
-        VLOG(2) << "[P1] R6c: producer=" << prov;
+        int prov = opIndexProducerOf(ops, tensorIdx);
         if (prov < 0) return false;
         bool isConv = (ops[prov]->type == MNN::OpType_Convolution) ||
                       (ops[prov]->type == MNN::OpType_ConvolutionDepthwise);
@@ -1470,21 +1860,17 @@ private:
     bool trySubMul(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         if (!ops[i] || ops[i]->type != MNN::OpType_BinaryOp) return false;
         if (!isBinaryType(ops[i].get(), MNN::BinaryOpOperation_SUB)) return false;
-        // Find next non-Const op
-        for (int j = i + 1; j < std::min((int)ops.size(), i + 4); j++) {
-            if (!ops[j]) continue;
-            if (ops[j]->type == MNN::OpType_Const) continue;
-            if (ops[j]->type != MNN::OpType_BinaryOp) return false;
-            if (!isBinaryType(ops[j].get(), MNN::BinaryOpOperation_MUL)) return false;
-            if (!isChain(ops[i].get(), ops[j].get())) return false;
-            // Absorb: Sub takes Mul's output, Mul is removed
-            ops[i]->outputIndexes = ops[j]->outputIndexes;
-            ops[j].reset();
-            VLOG(2) << "[P1] R3d: Sub+Mul fused at " << i << " mul at " << j;
-            i = j;
-            return true;
-        }
-        return false;
+        // EXACT MATCH: find Mul as direct consumer of Sub output.
+        int subOut = ops[i]->outputIndexes.empty() ? -1 : ops[i]->outputIndexes[0];
+        if (subOut < 0) return false;
+        int j = consumerOfBinOp(ops, subOut, MNN::BinaryOpOperation_MUL);
+        if (j < 0) return false;
+        // Absorb: Sub takes Mul's output, Mul is removed
+        ops[i]->outputIndexes = ops[j]->outputIndexes;
+        ops[j].reset();
+        VLOG(2) << "[P1] R3d: Sub+Mul fused at " << i << " mul at " << j;
+        i = j;
+        return true;
     }
 
     // R3e: Mul+Add (channel bias) → fuse into single dispatch
@@ -1492,21 +1878,17 @@ private:
     bool tryMulAdd(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         if (!ops[i] || ops[i]->type != MNN::OpType_BinaryOp) return false;
         if (!isBinaryType(ops[i].get(), MNN::BinaryOpOperation_MUL)) return false;
-        // Find next non-Const op
-        for (int j = i + 1; j < std::min((int)ops.size(), i + 4); j++) {
-            if (!ops[j]) continue;
-            if (ops[j]->type == MNN::OpType_Const) continue;
-            if (ops[j]->type != MNN::OpType_BinaryOp) return false;
-            if (!isBinaryType(ops[j].get(), MNN::BinaryOpOperation_ADD)) return false;
-            if (!isChain(ops[i].get(), ops[j].get())) return false;
-            // Absorb: Mul takes Add's output, Add is removed
-            ops[i]->outputIndexes = ops[j]->outputIndexes;
-            ops[j].reset();
-            VLOG(2) << "[P1] R3e: Mul+Add fused at " << i << " add at " << j;
-            i = j;
-            return true;
-        }
-        return false;
+        // EXACT MATCH: find Add as direct consumer of Mul output.
+        int mulOut = ops[i]->outputIndexes.empty() ? -1 : ops[i]->outputIndexes[0];
+        if (mulOut < 0) return false;
+        int j = consumerOfBinOp(ops, mulOut, MNN::BinaryOpOperation_ADD);
+        if (j < 0) return false;
+        // Absorb: Mul takes Add's output, Add is removed
+        ops[i]->outputIndexes = ops[j]->outputIndexes;
+        ops[j].reset();
+        VLOG(2) << "[P1] R3e: Mul+Add fused at " << i << " add at " << j;
+        i = j;
+        return true;
     }
 
     // R6d: Mul+ReLU6 → absorb (white-level clamp after scale)
@@ -1514,57 +1896,38 @@ private:
     bool tryMulClip(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         if (!ops[i] || ops[i]->type != MNN::OpType_BinaryOp) return false;
         if (!isBinaryType(ops[i].get(), MNN::BinaryOpOperation_MUL)) return false;
-        for (int j = i + 1; j < std::min((int)ops.size(), i + 3); j++) {
-            if (!ops[j]) continue;
-            if (ops[j]->type == MNN::OpType_Const) continue;
-            if (ops[j]->type == MNN::OpType_ReLU6) {
-                if (!isChain(ops[i].get(), ops[j].get())) return false;
-                ops[i]->outputIndexes = ops[j]->outputIndexes;
-                ops[j].reset();
-                VLOG(2) << "[P1] R6d: Mul+ReLU6 absorbed at " << i;
-                i = j;
-                return true;
-            }
-            break;
-        }
-        return false;
+        // EXACT MATCH: find ReLU6 as direct consumer of Mul output.
+        int mulOut = ops[i]->outputIndexes.empty() ? -1 : ops[i]->outputIndexes[0];
+        if (mulOut < 0) return false;
+        int j = consumerOfType(ops, mulOut, MNN::OpType_ReLU6);
+        if (j < 0) return false;
+        ops[i]->outputIndexes = ops[j]->outputIndexes;
+        ops[j].reset();
+        VLOG(2) << "[P1] R6d: Mul+ReLU6 absorbed at " << i;
+        i = j;
+        return true;
     }
 
     // R3f: Sub+Max+Min → fuse (BLC50 pattern: Sub(dark_frame)+Max(0)+Min(max))
     bool trySubMaxMin(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         if (!ops[i] || ops[i]->type != MNN::OpType_BinaryOp) return false;
         if (!isBinaryType(ops[i].get(), MNN::BinaryOpOperation_SUB)) return false;
-        // Find Max (next non-Const)
-        int maxIdx = -1;
-        for (int j = i + 1; j < std::min((int)ops.size(), i + 3); j++) {
-            if (!ops[j]) continue;
-            if (ops[j]->type == MNN::OpType_Const) continue;
-            if (ops[j]->type == MNN::OpType_BinaryOp &&
-                isBinaryType(ops[j].get(), MNN::BinaryOpOperation_MAX)) {
-                if (!isChain(ops[i].get(), ops[j].get())) return false;
-                maxIdx = j;
-            }
-            break;
-        }
+        // EXACT MATCH: find Max as direct consumer of Sub output, then Min as consumer of Max.
+        int subOut = ops[i]->outputIndexes.empty() ? -1 : ops[i]->outputIndexes[0];
+        if (subOut < 0) return false;
+        int maxIdx = consumerOfBinOp(ops, subOut, MNN::BinaryOpOperation_MAX);
         if (maxIdx < 0) return false;
-        // Find Min (next non-Const after Max)
-        for (int k = maxIdx + 1; k < std::min((int)ops.size(), maxIdx + 3); k++) {
-            if (!ops[k]) continue;
-            if (ops[k]->type == MNN::OpType_Const) continue;
-            if (ops[k]->type == MNN::OpType_BinaryOp &&
-                isBinaryType(ops[k].get(), MNN::BinaryOpOperation_MIN)) {
-                if (!isChain(ops[maxIdx].get(), ops[k].get())) return false;
-                // Fuse all three: Sub takes Min's output
-                ops[i]->outputIndexes = ops[k]->outputIndexes;
-                ops[maxIdx].reset();
-                ops[k].reset();
-                VLOG(2) << "[P1] R3f: Sub+Max+Min fused at " << i;
-                i = k;
-                return true;
-            }
-            break;
-        }
-        return false;
+        int maxOut = ops[maxIdx]->outputIndexes.empty() ? -1 : ops[maxIdx]->outputIndexes[0];
+        if (maxOut < 0) return false;
+        int k = consumerOfBinOp(ops, maxOut, MNN::BinaryOpOperation_MIN);
+        if (k < 0) return false;
+        // Fuse all three: Sub takes Min's output
+        ops[i]->outputIndexes = ops[k]->outputIndexes;
+        ops[maxIdx].reset();
+        ops[k].reset();
+        VLOG(2) << "[P1] R3f: Sub+Max+Min fused at " << i;
+        i = k;
+        return true;
     }
 
     // R4c: Conv(3×3)+Sub → fuse (unsharp: Conv(blur) → Sub(original-blur))
@@ -1577,20 +1940,18 @@ private:
         auto* c = ops[i]->main.AsConvolution2D();
         if (!c || !c->common) return false;
         if (c->common->kernelX != 3 || c->common->kernelY != 3) return false;
-        // Find next Sub
-        for (int j = i + 1; j < std::min((int)ops.size(), i + 3); j++) {
-            if (!ops[j]) continue;
-            if (ops[j]->type == MNN::OpType_Const) continue;
-            if (ops[j]->type == MNN::OpType_BinaryOp &&
-                isBinaryType(ops[j].get(), MNN::BinaryOpOperation_SUB)) {
-                // Absorb: Conv takes Sub's output
-                ops[i]->outputIndexes = ops[j]->outputIndexes;
-                ops[j].reset();
-                VLOG(2) << "[P1] R4c: Conv+Sub fused at " << i;
-                i = j;
-                return true;
-            }
-            break;
+        // EXACT MATCH: the Sub must consume the Conv's output tensor directly.
+        int convOut0 = ops[i]->outputIndexes.empty() ? -1 : ops[i]->outputIndexes[0];
+        if (convOut0 < 0) return false;
+        int j = opIndexProducerOf(ops, convOut0); // direct consumer of Conv output
+        if (j >= 0 && ops[j] && ops[j]->type == MNN::OpType_BinaryOp &&
+            isBinOp(ops[j].get(), MNN::BinaryOpOperation_SUB)) {
+            // Absorb: Conv takes Sub's output
+            ops[i]->outputIndexes = ops[j]->outputIndexes;
+            ops[j].reset();
+            VLOG(2) << "[P1] R4c: Conv+Sub fused at " << i;
+            i = j;
+            return true;
         }
         return false;
     }
@@ -1668,6 +2029,17 @@ private:
         if (!mulToAdd) {
             VLOG(2) << "[P1] R5: chain(mul->add) fail at " << mulIdx << ", mulOut="
                     << (ops[mulIdx]->outputIndexes.empty()?-1:ops[mulIdx]->outputIndexes[0]);
+
+        // GUARD: reject if Clip/ReLU6 follows Add (that's saturation/unsharp, not LDCI)
+        // LDCI ends with Add(input + scaled). Saturation/Unsharp have Clip(0,1) after.
+        int addOut = ops[addIdx]->outputIndexes.empty() ? -1 : ops[addIdx]->outputIndexes[0];
+        if (addOut >= 0) {
+            int nextIdx = consumerOfType(ops, addOut, MNN::OpType_ReLU6);
+            if (nextIdx >= 0 && ops[nextIdx]) {
+                VLOG(2) << "[P1] R5: rejecting at " << i << " — Clip/ReLU6 after Add (not LDCI)";
+                return false;
+            }
+        }
             return false;
         }
 
@@ -1693,11 +2065,38 @@ private:
     bool tryDisplay(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         if (!isBinaryType(ops[i].get(), MNN::BinaryOpOperation_POW)) return false;
 
-        bool clip = false;
-        if (i+1 < (int)ops.size() && ops[i+1] &&
-            (ops[i+1]->type == MNN::OpType_ReLU || ops[i+1]->type == MNN::OpType_ReLU6) &&
-            isChain(ops[i].get(), ops[i+1].get())) {
-            clip = true;
+        // EXACT-MATCH: a bare Pow is NOT a display op — GammaBlock's
+        // Pow(x, inv_gamma) and ToneBlock's Pow chains must NOT be stolen.
+        // Require BOTH:
+        //   (a) the exponent const ≈ 2.2 (display gamma, e.g. sRGB→output)
+        //   (b) the Pow output feeds a uint8 conversion chain
+        //       (Mul(255) → Cast), NOT a Clip/ReLU (gamma signature).
+        float exponent = -1.0f;
+        for (int inIdx : ops[i]->inputIndexes) {
+            for (int k = 0; k < (int)ops.size(); k++) {
+                if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
+                for (int outIdx : ops[k]->outputIndexes) {
+                    if (outIdx == inIdx) {
+                        auto* blb = ops[k]->main.AsBlob();
+                        if (blb && blb->float32s.size() >= 1) exponent = blb->float32s[0];
+                    }
+                }
+            }
+        }
+        if (exponent < 0 || fabsf(exponent - 2.2f) > 0.01f) return false;
+
+        // Reject clip consumers — Pow→Clip/ReLU is GammaBlock, not display.
+        for (int j = 0; j < (int)ops.size(); j++) {
+            if (!ops[j] || j == i) continue;
+            if (ops[j]->type == MNN::OpType_ReLU || ops[j]->type == MNN::OpType_ReLU6 ||
+                ops[j]->type == MNN::OpType_Extra && ops[j]->main.AsExtra() &&
+                ops[j]->main.AsExtra()->type == "Clip") {
+                for (int inIdx : ops[j]->inputIndexes) {
+                    for (int outIdx : ops[i]->outputIndexes) {
+                        if (inIdx == outIdx) return false;
+                    }
+                }
+            }
         }
 
         std::vector<float> u = {float(mW),float(mH),0,1,1, 2.2f, 0,0};
@@ -1709,12 +2108,7 @@ private:
         setEngine(ex);
         addSpirv(ex, "isp.display");
         ops[i]->main.value = ex;
-
-        if (clip) {
-            ops[i]->outputIndexes[0] = ops[i+1]->outputIndexes[0];
-            ops[i+1].reset(); i += 1;
-        }
-        VLOG(2) << "[P1] R6: display at " << i << (clip ? " + clip" : "");
+        VLOG(2) << "[P1] R6: display at " << i;
         return true;
     }
 
@@ -2140,6 +2534,22 @@ private:
     // Using radius=1 (local 3×3) as approximation for the global mean.
     bool tryRustReduceLdci(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         if (ops[i]->type != MNN::OpType_Reduction) return false;
+        // GUARD: only match spatial means (dim=[2,3]), not channel means (dim=[1])
+        // SaturationBlock uses ReduceMean(axes=[1]) → should NOT be ldci
+        {
+            auto* r = ops[i]->main.AsReductionParam();
+            if (r && r->operation == MNN::ReductionType_MEAN) {
+                if (!r->dim.empty()) {
+                    std::set<int> d(r->dim.begin(), r->dim.end());
+                    if (d.count(2) && d.count(3) && d.size() == 2) {
+                        // spatial mean — OK for ldci
+                    } else {
+                        VLOG(2) << "[P1] R5: RustReduceLdci reject non-spatial at " << i;
+                        return false;
+                    }
+                }
+            }
+        }
         // Follow chain: ReduceMean → Sub → Mul(y_mask) → Mul(strength) → Add → Clip
         int last = i;
         for (int cur = i; cur + 1 < (int)ops.size() && ops[cur + 1]; ) {
@@ -2270,10 +2680,12 @@ private:
         return true;
     }
 
-    // Rust DisplayBlock: detect Mul(scale≈1) → isp.display identity gamma
+    // Rust DisplayBlock: detect Mul(scale≈1 scalar) → isp.display identity gamma.
+    // Strictly requires a SCALAR Const (single float) so grid maps / gain maps
+    // (e.g. LSC gain_grid [1,4,16,16] of 1.0s) are NOT misclassified.
     bool tryRustDisplay(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         if (!isBinaryType(ops[i].get(), MNN::BinaryOpOperation_MUL)) return false;
-        // Check if one input is Const(≈1.0) — the identity scale
+        // Check if one input is a scalar Const(≈1.0) — the identity scale
         bool hasIdentityScale = false;
         for (int inIdx : ops[i]->inputIndexes) {
             for (int j = 0; j < (int)ops.size(); j++) {
@@ -2281,7 +2693,7 @@ private:
                 for (int outIdx : ops[j]->outputIndexes) {
                     if (outIdx == inIdx) {
                         auto* blb = ops[j]->main.AsBlob();
-                        if (blb && !blb->float32s.empty() && std::abs(blb->float32s[0] - 1.0f) < 0.01f) {
+                        if (blb && blb->float32s.size() == 1 && std::abs(blb->float32s[0] - 1.0f) < 0.01f) {
                             hasIdentityScale = true;
                         }
                         break;
@@ -2320,7 +2732,11 @@ private:
                 for (int outIdx : ops[j]->outputIndexes) {
                     if (outIdx == inIdx) {
                         auto* blb = ops[j]->main.AsBlob();
-                        if (blb && blb->float32s.size() > 100) {  // gain_map is large
+                        // gain_map is large (>100 floats) AND NOT a 4-channel
+                        // Bayer-quad grid (those belong to isp.lsc — Pattern C).
+                        // Vignetting maps are 1ch or 3ch, typically [1,1,H,W].
+                        if (blb && blb->float32s.size() > 100 &&
+                            !(blb->dims.size() == 4 && blb->dims[1] == 4)) {
                             hasGainMap = true;
                             gainMapIdx = j;
                         }
@@ -2614,6 +3030,36 @@ private:
             VLOG(2) << "[P1] LSC: Resize(bilinear)+Mul at " << interpIdx << "->" << i;
             return true;
         }
+
+        // --- Pattern C: direct Const grid map [1,C,gh,gw] at sub-resolution ---
+        // Standalone LscBlock graph: Mul(input, gain_grid_tiled[1,4,H/2,W/2]) with
+        // the grid as a Const (baked params). No Resize in the graph — the shader
+        // samples the grid directly.
+        for (int inIdx : ops[i]->inputIndexes) {
+            for (int k = 0; k < (int)ops.size(); k++) {
+                if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
+                for (int outIdx : ops[k]->outputIndexes) {
+                    if (outIdx != inIdx) continue;
+                    auto* blb = ops[k]->main.AsBlob();
+                    if (!blb || blb->dims.size() != 4) continue;
+                    int c = blb->dims[1] > 0 ? (int)blb->dims[1] : 0;
+                    int gh = blb->dims[2] > 0 ? (int)blb->dims[2] : 0;
+                    int gw = blb->dims[3] > 0 ? (int)blb->dims[3] : 0;
+                    // Must be a 4-channel Bayer quad grid strictly smaller than
+                    // the frame (else it is an identity display scale / other).
+                    if (c != 4 || gh <= 0 || gw <= 0 || gh > mH || gw > mW) continue;
+                    if (gh == mH && gw == mW) continue; // full-res → Pattern A domain
+                    ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
+                    auto* ex = new MNN::ExtraT(); ex->type = "isp.lsc"; ex->engine = "MNN";
+                    std::vector<float> u = {float(mW), float(mH), float(gw), float(gh)};
+                    u.insert(u.end(), blb->float32s.begin(), blb->float32s.end());
+                    buildCommonAttrs(ex, mW, mH, u);
+                    setEngine(ex); addSpirv(ex, "isp.lsc"); ops[i]->main.value = ex;
+                    VLOG(2) << "[P1] LSC: direct grid [1,4," << gh << "," << gw << "] at " << i;
+                    return true;
+                }
+            }
+        }
         return false;
     }
 
@@ -2621,24 +3067,37 @@ private:
     bool tryAwb(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         if (!isBinaryType(ops[i].get(), MNN::BinaryOpOperation_MUL)) return false;
         float gains[3] = {1,1,1}; int gainConstIdx = -1;
+        // EXACT-MATCH: find the per-channel gain const among ALL inputs.
+        // WbGainsBlock is Mul(data, gains[1,3,1,1]) — NO ADD chain. The
+        // older code bailed if the FIRST input wasn't the const (frame is a
+        // tensor, not const) and required a downstream ADD. Fix both.
         for (int inIdx : ops[i]->inputIndexes) {
+            if (gainConstIdx >= 0) break;
             for (int k = 0; k < (int)ops.size(); k++) {
                 if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
                 for (int outIdx : ops[k]->outputIndexes) {
                     if (outIdx == inIdx) {
                         auto* blb = ops[k]->main.AsBlob();
-                        if (blb && blb->float32s.size() >= 3) { for (int c=0;c<3;c++) gains[c]=blb->float32s[c]; gainConstIdx=k; break; }
+                        if (blb && blb->float32s.size() >= 3) {
+                            for (int c=0;c<3;c++) gains[c]=blb->float32s[c];
+                            gainConstIdx=k; break;
+                        }
                     }
-                } if (gainConstIdx >= 0) break;
-            } if (gainConstIdx < 0) return false;
+                }
+                if (gainConstIdx >= 0) break;
+            }
+        }
+        if (gainConstIdx < 0) return false;
 
-            int addIdx = -1;
-            for (int j = i + 1; j < std::min((int)ops.size(), i + 4); j++) {
-                if (!ops[j] || ops[j]->type != MNN::OpType_BinaryOp) continue;
-                if (isBinaryType(ops[j].get(), MNN::BinaryOpOperation_ADD) && isChain(ops[i].get(), ops[j].get())) { addIdx = j; break; }
-            } if (addIdx < 0) return false;
-
-            float offsets[3] = {0,0,0};
+        // Optional downstream ADD (Mul→Add chains like AlgoAwbBlock):
+        // offsets come from the ADD's const input; absent → zeros.
+        int addIdx = -1;
+        for (int j = i + 1; j < std::min((int)ops.size(), i + 4); j++) {
+            if (!ops[j] || ops[j]->type != MNN::OpType_BinaryOp) continue;
+            if (isBinaryType(ops[j].get(), MNN::BinaryOpOperation_ADD) && isChain(ops[i].get(), ops[j].get())) { addIdx = j; break; }
+        }
+        float offsets[3] = {0,0,0};
+        if (addIdx >= 0) {
             for (int inIdx : ops[addIdx]->inputIndexes) {
                 for (int k = 0; k < (int)ops.size(); k++) {
                     if (!ops[k] || ops[k]->type != MNN::OpType_Const) continue;
@@ -2650,25 +3109,24 @@ private:
                     }
                 }
             }
+        }
 
-            ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
-            auto* ex = new MNN::ExtraT(); ex->type = "isp.awb"; ex->engine = "MNN";
-            std::vector<float> u = {float(mW), float(mH), gains[0], gains[1], gains[2], offsets[0], offsets[1], offsets[2]};
-            buildCommonAttrs(ex, mW, mH, u); addNamedFloats(ex, "awb", {gains[0], gains[1], gains[2], offsets[0], offsets[1], offsets[2]});
-            setEngine(ex); addSpirv(ex, "isp.awb"); ops[i]->main.value = ex;
-            // Drop the gain const input — only the data tensor remains (shader reads gains from const buffer).
-            if (gainConstIdx >= 0) {
-                auto& inIdx = ops[i]->inputIndexes;
-                for (int outIdx : ops[gainConstIdx]->outputIndexes) {
-                    for (auto it = inIdx.begin(); it != inIdx.end(); ++it) {
-                        if (*it == outIdx) { inIdx.erase(it); break; }
-                    }
+        ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
+        auto* ex = new MNN::ExtraT(); ex->type = "isp.awb"; ex->engine = "MNN";
+        std::vector<float> u = {float(mW), float(mH), gains[0], gains[1], gains[2], offsets[0], offsets[1], offsets[2]};
+        buildCommonAttrs(ex, mW, mH, u); addNamedFloats(ex, "awb", {gains[0], gains[1], gains[2], offsets[0], offsets[1], offsets[2]});
+        setEngine(ex); addSpirv(ex, "isp.awb"); ops[i]->main.value = ex;
+        // Drop the gain const input — only the data tensor remains (shader reads gains from const buffer).
+        if (gainConstIdx >= 0) {
+            auto& inIdx = ops[i]->inputIndexes;
+            for (int outIdx : ops[gainConstIdx]->outputIndexes) {
+                for (auto it = inIdx.begin(); it != inIdx.end(); ++it) {
+                    if (*it == outIdx) { inIdx.erase(it); break; }
                 }
             }
-            if (gainConstIdx >= 0) ops[gainConstIdx].reset(); if (addIdx >= 0) ops[addIdx].reset();
-            VLOG(2) << "[P1] AWB: channel gains at " << i; return true;
         }
-        return false;
+        if (gainConstIdx >= 0) ops[gainConstIdx].reset(); if (addIdx >= 0) ops[addIdx].reset();
+        VLOG(2) << "[P1] AWB: channel gains at " << i; return true;
     }
 
     // AE (Auto Exposure)
@@ -2788,10 +3246,20 @@ private:
     }
 
     // Calibration Stats
+    // EXACT MATCH: calibration quad stats. Only fuse a Reduction when:
+    //   - operation is MEAN / MIN / MAX
+    //   - axes are exactly {2,3} (spatial H×W) with keepDims=1
+    //   - input tensor is a full frame, NOT an already-reduced [..,1,1] tensor
+    // This excludes channel reductions (Saturation/ColorSpace axes=[1]) and
+    // keepdims=0 stats (StatsBlock/AlgoAwbBlock) which have different shaders.
     bool tryCalibStats(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         if (!ops[i] || ops[i]->type != MNN::OpType_Reduction) return false;
         auto* red = ops[i]->main.AsReductionParam(); if (!red) return false;
         if (red->operation != MNN::ReductionType_MEAN && red->operation != MNN::ReductionType_MIN && red->operation != MNN::ReductionType_MAX) return false;
+        // axes must be exactly {2,3} (spatial) — never channel collapse {1}
+        if (red->dim.size() != 2) return false;
+        if (red->dim[0] != 2 || red->dim[1] != 3) return false;
+        if (!red->keepDims) return false;
         ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
         auto* ex = new MNN::ExtraT(); ex->type = "isp.calib_stats"; ex->engine = "MNN";
         std::vector<float> u = {float(mW), float(mH), (float)red->operation};
@@ -2815,10 +3283,16 @@ private:
     }
 
     // IspController Stats
+    // EXACT MATCH: controller stats. Only fuse a ReduceMean when axes are
+    // exactly {2,3} with keepDims=1 (spatial mean of a full frame). Channel
+    // reductions (axes=[1]) and keepdims=0 stats use different shaders.
     bool tryIspControllerStats(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         if (!ops[i] || ops[i]->type != MNN::OpType_Reduction) return false;
         auto* red = ops[i]->main.AsReductionParam(); if (!red) return false;
         if (red->operation != MNN::ReductionType_MEAN) return false;
+        if (red->dim.size() != 2) return false;
+        if (red->dim[0] != 2 || red->dim[1] != 3) return false;
+        if (!red->keepDims) return false;
         ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
         auto* ex = new MNN::ExtraT(); ex->type = "isp.ispc_stats"; ex->engine = "MNN";
         std::vector<float> u = {float(mW), float(mH)};
@@ -3576,6 +4050,7 @@ private:
         ops[i]->main.AsExtra()->type = "isp.unpack_demosaic";
         ops[i]->main.AsExtra()->attr.clear();
         buildCommonAttrs(ops[i]->main.AsExtra(), W, H, u);
+        clearElementwise(ops[i]->main.AsExtra());
         // Store named params for R11 fusion
         addNamedFloats(ops[i]->main.AsExtra(), "blc", {u[5],u[6],u[7],u[8]});
         addNamedFloats(ops[i]->main.AsExtra(), "wb",  {u[9],u[10],u[11],u[12]});
@@ -3632,6 +4107,7 @@ private:
         ops[i]->main.AsExtra()->type = "isp.unpack_demosaic";
         ops[i]->main.AsExtra()->attr.clear();
         buildCommonAttrs(ops[i]->main.AsExtra(), W, H, u);
+        clearElementwise(ops[i]->main.AsExtra());
         addNamedFloats(ops[i]->main.AsExtra(), "blc", {u[5],u[6],u[7],u[8]});
         addNamedFloats(ops[i]->main.AsExtra(), "wb",  {u[9],u[10],u[11],u[12]});
         addNamedFloats(ops[i]->main.AsExtra(), "ccm", {u[13],u[14],u[15],u[16],u[17],u[18],u[19],u[20],u[21]});
