@@ -90,9 +90,16 @@ protected:
                     for (int ii = 0; ii < inside; ++ii) {
                         auto srcInside = srcOutSide + ii;
                         auto dstInside = dstOutSide + ii;
-                        float summer   = 0.0f;
+                        // Kahan compensated sum: cancels catastrophic cancellation
+                        // when axisSize is large (e.g. channel-axis reduce in ISP
+                        // pipelines where channel counts can be 1000+).
+                        float summer = 0.0f;
+                        float comp   = 0.0f;
                         for (int a = 0; a < axisSize; ++a) {
-                            summer += srcInside[a * inside];
+                            float x = srcInside[a * inside] - comp;
+                            float t = summer + x;
+                            comp   = (t - summer) - x;
+                            summer = t;
                         }
                         *dstInside = summer / (float)axisSize;
                     }
@@ -191,10 +198,14 @@ protected:
                 for (int x=remain; x<inside; ++x) {
                     auto srcX = srcOutSide + x;
                     auto dstX = dstOutSide + x;
+                    // Kahan compensated sum for the scalar remainder path.
                     float sum = 0.0f;
+                    float c   = 0.0f;
                     for (int a = 0; a < axisSize; ++a) {
-                        auto srcAxis = srcX + a * inside;
-                        sum += srcAxis[0];
+                        float x = srcX[a * inside] - c;
+                        float t = sum + x;
+                        c      = (t - sum) - x;
+                        sum    = t;
                     }
                     dstX[0] = sum;
                 }
