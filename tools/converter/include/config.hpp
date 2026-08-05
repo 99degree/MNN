@@ -80,6 +80,13 @@ public:
     bool splitQuantBlock = false;
     // Enable verbose output for each optimization pass (like LLVM's -debug-pass)
     bool dumpPass = false;
+    // ISP fusion metadata propagated from the source model (ONNX metadata_props
+    // key "isp_fusion"). Read by the IspChainFusion pass via Global<modelConfig>.
+    // "enable" activates ISP Extra-op fusion; anything else keeps primitive ops.
+    // This is a runtime switchable metadata field — no converter rebuild needed.
+    std::string ispFusionMeta = "";
+    // Pattern threshold: run try* with id <= threshold. 0=none, 41=basic, 999=all.
+    int ispFusionThreshold = 999;
 };
 
 #endif // CONFIG_HPP

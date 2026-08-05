@@ -199,6 +199,16 @@ ErrorCode GeometryComputerUtils::shapeComputeAndGeometryTransform(
                 } else {
                     MNN_ERROR("Compute Shape Error for %d\n", info.op->type());
                 }
+                // Emit input tensor shape diagnostics so the caller can tell
+                // which input failed shape inference. Format: "input 0: [N,C,H,W]"
+                for (size_t i = 0; i < info.inputs.size(); ++i) {
+                    auto t = info.inputs[i];
+                    MNN_ERROR("  input[%zu]: dims=%d ext=[", i, t->dimensions());
+                    for (int d = 0; d < t->dimensions(); ++d) {
+                        MNN_ERROR("%s%d", d > 0 ? "," : "", t->length(d));
+                    }
+                    MNN_ERROR("]\n");
+                }
                 return COMPUTE_SIZE_ERROR;
             }
             // FIXME: Find better way to may compability for old model

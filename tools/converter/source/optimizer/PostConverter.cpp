@@ -333,6 +333,14 @@ std::unique_ptr<MNN::NetT> optimizeNetImpl(std::unique_ptr<MNN::NetT>& originNet
     newNet = std::move(RunMergePass(newNet, inputs, PASS_PRIORITY_HIGH));
 
     std::vector<std::string> afterProgramConvert = {
+        // ── ISP fusion: convert standard ISP ops (Conv/BinaryOp/Pool/...)
+        // into fused VulkanFuse Extra ops carrying pre-compiled SPIR-V.
+        // Requires MNN_ISP_EMBED_SPIRV=ON for actual SPIR-V bytecode; without it,
+        // the pass is a no-op (logs a warning per missing shader).
+        // Runs early so Pass1 can match canonical Conv+Sub+Clip/etc. shapes
+        // before subsequent passes reshape the graph.
+        "IspChainFusion",
+
         // Turn BatchNormal to Scale When inference, if `forTraining` flag is set, BN will be reserved
         "TransformBatchNormal",
 
@@ -376,6 +384,12 @@ std::unique_ptr<MNN::NetT> optimizeNetImpl(std::unique_ptr<MNN::NetT>& originNet
         "RemoveCopy",
         // Add tensor dimension format convert for NC4HW4 - NHWC / NC4HW4 - NCHW
         "AddTensorFormatConverter",
+
+        // Remove spurious ConvertTensor ops inserted by AddTensorFormatConverter
+        // between Extra (isp.*) ops — these break the VulkanFuse Extra chain
+        // because ConvertTensor inserts an NC4HW4↔NCHW conversion that the
+        // custom SPIR-V doesn't handle. Must run AFTER AddTensorFormatConverter.
+        "RemoveExtraConvertTensor",
 
         // Turn group convolution to Slice - Convolution - Concat
         "TransformGroupConvolution",
