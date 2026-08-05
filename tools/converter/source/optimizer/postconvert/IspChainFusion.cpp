@@ -68,6 +68,21 @@
 
 using namespace MNN;
 
+// ── Log silencing ──────────────────────────────────────────────────────────
+// logkit's VLOG(x) is NOT verbosity-gated — it expands to
+// LogMessage(...).stream() and writes every diagnostic line to std::cout
+// unconditionally. Fusion verification now uses the mnn2json opset (JVM
+// side, see MnnJsonOpset.kt), so all in-TU diagnostic output is discarded
+// into a null sink instead of spamming the converter's stdout/stderr.
+class IspNullStreamBuf : public std::streambuf {
+public:
+    int_type overflow(int_type c) override { return c; }
+};
+static IspNullStreamBuf g_ispNullBuf;
+static std::ostream g_ispVlogSink(&g_ispNullBuf);
+#undef VLOG
+#define VLOG(x) g_ispVlogSink
+
 // ── SPIR-V bytecodes ──
 #ifdef MNN_ISP_EMBED_SPIRV
 #include "isp_spirv_embedded.h"
@@ -139,9 +154,9 @@ static void addSpirv(MNN::ExtraT* extra, const char* type) {
             return;
         }
     }
-    LOG(WARNING) << "[IspFusion] No SPIR-V for '" << type << "'\n";
+    VLOG(2) << "[IspFusion] No SPIR-V for '" << type << "'";
 #else
-    LOG(WARNING) << "[IspFusion] MNN_ISP_EMBED_SPIRV not defined\n";
+    VLOG(2) << "[IspFusion] MNN_ISP_EMBED_SPIRV not defined";
 #endif
 }
 
@@ -603,6 +618,14 @@ static bool hasExternalConsumer(const std::vector<std::unique_ptr<OpT>>& ops,
 // (sorted by opTypes.size() DESCENDING — longest match first).
 // Only if no exact pattern matches does it fall through to the old
 // heuristic code.
+struct ChainConstCheck {
+    int chainPos = 0;              // 0-based position in the collected chain
+    int inputIdx = 0;              // which input of that op is the const
+    std::vector<float> values;     // expected const values (1e-4 tol)
+    ChainConstCheck(int p, int in, std::vector<float> v)
+        : chainPos(p), inputIdx(in), values(std::move(v)) {}
+};
+
 struct ExactPattern {
     std::vector<MNN::OpType> opTypes;
     int constElems;
@@ -611,11 +634,88 @@ struct ExactPattern {
     const char* spvName;
     const char* namedKey;
     int convWeightElems = -1;
+    MNN::BinaryOpOperation binOpType = MNN::BinaryOpOperation_ADD; // default: any BinaryOp
+    std::vector<float> convWeightValues;   // if non-empty, require weight match (1e-4 tol)
+    std::vector<float> constValues;        // if non-empty, require const blob match (1e-4 tol)
+    // noFuse: match and consume the chain (advance scan) but KEEP ops primitive.
+    // Used as longest-match guard so shorter generic patterns (e.g. auto_contrast)
+    // never steal scalar control chains (algo_gamma / algo_cct).
+    bool noFuse = false;
+    // Per-position const-value checks: (chainPos, inputIdx) -> expected values.
+    std::vector<ChainConstCheck> chainConstChecks;
+    // Profile-variant disambiguation (blocks whose constants are graph Inputs):
+    //   inputTrace[k]      — required producer type of ops[idx[0]]->inputIndexes[k]
+    //                        (traced through ConvertTensor; -1 = any). Stops at Extra.
+    //   inputMustBeInput   — input indices that must be fed directly by a graph Input op.
+    //   nextOpType         — required type of the next non-CT/Const/Input op after the chain.
+    //   chainBinOps        — (chainPos, BinaryOp sub-type) requirements at chain positions.
+    std::vector<int> inputTrace;
+    std::vector<int> inputMustBeInput;
+    int nextOpType = -1;
+    int nextBinOp = -1;   // required BinaryOp sub-type of the next op (-1 = any)
+    std::vector<std::pair<int, MNN::BinaryOpOperation>> chainBinOps;
     ExactPattern(std::vector<MNN::OpType> ops, int ce, int ci,
-                 const char* isp, const char* spv, const char* nk = nullptr, int cwe = -1)
+                 const char* isp, const char* spv, const char* nk = nullptr, int cwe = -1,
+                 std::vector<float> cwv = {}, std::vector<float> cv = {})
         : opTypes(std::move(ops)), constElems(ce), constIndex(ci),
-          ispType(isp), spvName(spv), namedKey(nk), convWeightElems(cwe) {}
+          ispType(isp), spvName(spv), namedKey(nk), convWeightElems(cwe),
+          convWeightValues(std::move(cwv)), constValues(std::move(cv)) {}
+    ExactPattern(std::vector<MNN::OpType> ops, int ce, int ci,
+                 const char* isp, const char* spv, MNN::BinaryOpOperation bot,
+                 const char* nk = nullptr, int cwe = -1,
+                 std::vector<float> cwv = {}, std::vector<float> cv = {})
+        : opTypes(std::move(ops)), constElems(ce), constIndex(ci),
+          ispType(isp), spvName(spv), namedKey(nk), convWeightElems(cwe), binOpType(bot),
+          convWeightValues(std::move(cwv)), constValues(std::move(cv)) {}
+    // Guard constructor: longest-match no-fuse protection for scalar control chains.
+    ExactPattern(std::vector<MNN::OpType> ops, int ce, int ci,
+                 const char* isp, const char* spv, bool nf,
+                 std::vector<ChainConstCheck> ccc = {})
+        : opTypes(std::move(ops)), constElems(ce), constIndex(ci),
+          ispType(isp), spvName(spv), noFuse(nf), chainConstChecks(std::move(ccc)) {}
+    // Profile-variant constructor: tolerates Input-as-const and adds structural
+    // provenance disambiguation (inputTrace / inputMustBeInput / nextOpType).
+    // The 7th arg is the bool marker so this ctor never collides with the
+    // BinaryOp-sub-type ctor (whose 7th arg is the namedKey const char*).
+    ExactPattern(std::vector<MNN::OpType> ops, int ce, int ci,
+                 const char* isp, const char* spv, MNN::BinaryOpOperation bot,
+                 bool pv, std::vector<int> itr, std::vector<int> imbi = {},
+                 int nxt = -1, std::vector<std::pair<int, MNN::BinaryOpOperation>> cbo = {},
+                 int nbo = -1)
+        : opTypes(std::move(ops)), constElems(ce), constIndex(ci),
+          ispType(isp), spvName(spv), binOpType(bot),
+          inputTrace(std::move(itr)), inputMustBeInput(std::move(imbi)),
+          nextOpType(nxt), nextBinOp(nbo), chainBinOps(std::move(cbo)) {
+        (void)pv;
+    }
 };
+
+// Find the op that produces tensorId, tracing through ConvertTensor to the
+// ultimate producer. Returns MNN::OpType_Input for graph inputs, and stops
+// at Extra ops (already-fused isp.* producers return Extra, not their origin).
+static int producerTypeOf(const std::vector<std::unique_ptr<OpT>>& ops, int tensorId) {
+    for (const auto& op : ops) {
+        if (!op) continue;
+        for (int o : op->outputIndexes) {
+            if (o != tensorId) continue;
+            if (op->type == MNN::OpType_ConvertTensor && !op->inputIndexes.empty())
+                return producerTypeOf(ops, op->inputIndexes[0]);
+            return (int)op->type;
+        }
+    }
+    return (int)MNN::OpType_Input; // not produced by any op = graph input
+}
+
+// Is tensorId fed directly by a graph Input op (no ConvertTensor wrapping)?
+static bool isInputTensor(const std::vector<std::unique_ptr<OpT>>& ops, int tensorId) {
+    for (const auto& op : ops) {
+        if (!op || op->type != MNN::OpType_Input) continue;
+        for (int o : op->outputIndexes) {
+            if (o == tensorId) return true;
+        }
+    }
+    return false;
+}
 
 // Navigate ops starting at , skipping Const and ConvertTensor,
 // collecting up to  op types. Returns actual index per collected op.
@@ -626,7 +726,8 @@ static bool collectChain(const std::vector<std::unique_ptr<OpT>>& ops,
     for (int n = 0; n < count && j < (int)ops.size(); j++) {
         if (!ops[j]) continue;
         if (ops[j]->type == MNN::OpType_Const ||
-            ops[j]->type == MNN::OpType_ConvertTensor) continue;
+            ops[j]->type == MNN::OpType_ConvertTensor ||
+            ops[j]->type == MNN::OpType_Input) continue;
         indices.push_back(j);
         types.push_back(ops[j]->type);
         n++;
@@ -637,29 +738,150 @@ static bool collectChain(const std::vector<std::unique_ptr<OpT>>& ops,
 // Check if an exact pattern matches at ops[i].
 static bool matchExact(const std::vector<std::unique_ptr<OpT>>& ops,
                        int i, const ExactPattern& pat) {
-    if (i < 0 || i >= (int)ops.size() || !ops[i]) return false;
+    const bool dbg = (pat.inputMustBeInput.size() > 0 || pat.inputTrace.size() > 0 || pat.nextBinOp >= 0 || pat.chainBinOps.size() > 0);
+#define MDBG(msg) do { if (dbg) VLOG(1) << "[P1] DBG " << pat.ispType << "@" << i << " " << msg; } while(0)
+    if (i < 0 || i >= (int)ops.size() || !ops[i]) { MDBG("no-op"); return false; }
     std::vector<int> idx;
     std::vector<MNN::OpType> types;
-    if (!collectChain(ops, i, (int)pat.opTypes.size(), idx, types)) return false;
+    if (!collectChain(ops, i, (int)pat.opTypes.size(), idx, types)) { MDBG("collectChain-fail"); return false; }
     for (int k = 0; k < (int)pat.opTypes.size(); k++) {
-        if (types[k] != pat.opTypes[k]) return false;
+        if (types[k] != pat.opTypes[k]) { MDBG("optype-mismatch"); return false; }
+    }
+    // Pass1 re-entrancy guard: never re-fuse an already-fused isp.* Extra.
+    // The {Extra} pattern (GridSample→isp.warp) must only match raw ONNX
+    // Extras, not isp.* ops produced by a previous conversion round (MNN→MNN).
+    if (types[0] == MNN::OpType_Extra) {
+        auto* ex = ops[idx[0]]->main.AsExtra();
+        if (ex && ex->type.rfind("isp.", 0) == 0) { MDBG("reentrancy"); return false; }
     }
     // Check const constraint: inputIndexes[constIndex] must be a Const with constElems floats
     if (pat.constIndex >= 0 && pat.constElems >= 0) {
-        if (idx.empty()) return false;
+        if (idx.empty()) { MDBG("ce-empty"); return false; }
         auto* op = ops[idx[0]].get();
-        if (pat.constIndex >= (int)op->inputIndexes.size()) return false;
+        if (pat.constIndex >= (int)op->inputIndexes.size()) { MDBG("ce-ci-oob"); return false; }
         int tensorId = op->inputIndexes[pat.constIndex];
         auto* blb = constBlobOf(ops, tensorId);
-        if (!blb || (int)blb->float32s.size() != pat.constElems) return false;
+        if (!blb || (int)blb->float32s.size() != pat.constElems) { MDBG("ce-const-fail"); return false; }
     }
     // Check conv weight count
     if (pat.convWeightElems >= 0) {
+        if (idx.empty()) { MDBG("cwe-empty"); return false; }
+        auto* op = ops[idx[0]].get();
+        if (op->type != MNN::OpType_Convolution) { MDBG("cwe-notconv"); return false; }
+        auto* c = op->main.AsConvolution2D();
+        if (!c || (int)c->weight.size() != pat.convWeightElems) { MDBG("cwe-count"); return false; }
+    }
+    // Check conv weight VALUES (1e-4 tolerance) — disambiguates CCM identity vs
+    // BT.601 CSC vs pyramid identity when op structures are identical.
+    if (!pat.convWeightValues.empty()) {
         if (idx.empty()) return false;
         auto* op = ops[idx[0]].get();
         if (op->type != MNN::OpType_Convolution) return false;
         auto* c = op->main.AsConvolution2D();
-        if (!c || (int)c->weight.size() != pat.convWeightElems) return false;
+        if (!c || (int)c->weight.size() != (int)pat.convWeightValues.size()) return false;
+        for (size_t k = 0; k < pat.convWeightValues.size(); k++) {
+            if (std::fabs(c->weight[k] - pat.convWeightValues[k]) > 1e-4f) return false;
+        }
+    }
+    // Check const blob VALUES (1e-4 tolerance)
+    if (!pat.constValues.empty()) {
+        if (idx.empty()) return false;
+        auto* op = ops[idx[0]].get();
+        if (pat.constIndex < 0 || pat.constIndex >= (int)op->inputIndexes.size()) return false;
+        int tensorId = op->inputIndexes[pat.constIndex];
+        auto* blb = constBlobOf(ops, tensorId);
+        if (!blb || (int)blb->float32s.size() != (int)pat.constValues.size()) return false;
+        for (size_t k = 0; k < pat.constValues.size(); k++) {
+            if (std::fabs(blb->float32s[k] - pat.constValues[k]) > 1e-4f) return false;
+        }
+    }
+    // Check per-position const VALUES (1e-4 tolerance) — guards for scalar
+    // control chains (algo_gamma / algo_cct) where consts sit at later chain
+    // positions, not at idx[0].
+    for (const auto& cc : pat.chainConstChecks) {
+        if (cc.chainPos < 0 || cc.chainPos >= (int)idx.size()) return false;
+        auto* op = ops[idx[cc.chainPos]].get();
+        if (cc.inputIdx < 0 || cc.inputIdx >= (int)op->inputIndexes.size()) return false;
+        int tensorId = op->inputIndexes[cc.inputIdx];
+        auto* blb = constBlobOf(ops, tensorId);
+        if (!blb || (int)blb->float32s.size() != (int)cc.values.size()) return false;
+        for (size_t k = 0; k < cc.values.size(); k++) {
+            if (std::fabs(blb->float32s[k] - cc.values[k]) > 1e-4f) return false;
+        }
+    }
+    // Profile-variant input provenance: required producer types through CT.
+    // (Inputs are legal producers — the block constants are graph Inputs.)
+    if (!pat.inputTrace.empty()) {
+        if (idx.empty()) { MDBG("itr-empty"); return false; }
+        auto* op = ops[idx[0]].get();
+        for (int k = 0; k < (int)pat.inputTrace.size(); k++) {
+            int req = pat.inputTrace[k];
+            if (req < 0) continue;
+            if (k >= (int)op->inputIndexes.size()) { MDBG("itr-oob"); return false; }
+            if (producerTypeOf(ops, op->inputIndexes[k]) != req) { MDBG("itr-producer"); return false; }
+        }
+    }
+    // Profile-variant: inputs that must be fed directly by a graph Input op.
+    for (int inIdx : pat.inputMustBeInput) {
+        if (idx.empty()) { MDBG("imbi-empty"); return false; }
+        auto* op = ops[idx[0]].get();
+        if (inIdx < 0 || inIdx >= (int)op->inputIndexes.size()) { MDBG("imbi-oob"); return false; }
+        if (!isInputTensor(ops, op->inputIndexes[inIdx])) { MDBG("imbi-notinput"); return false; }
+    }
+    // Profile-variant: required type of the next non-CT/Const/Input op.
+    // Scan from the END of the matched chain (idx.back()+1), not the loop
+    // index i — the chain may have skipped leading Input/CT anchors (e.g. a
+    // 1-op anchored at i=27 with idx=[28]), in which case scanning from i+1
+    // would hit the chain op itself and spuriously fail.
+    if (pat.nextOpType >= 0) {
+        bool found = false;
+        int scanFrom = idx.empty() ? i : idx.back() + 1;
+        for (int j = scanFrom; j < (int)ops.size(); j++) {
+            if (!ops[j]) continue;
+            if (ops[j]->type == MNN::OpType_Const ||
+                ops[j]->type == MNN::OpType_ConvertTensor ||
+                ops[j]->type == MNN::OpType_Input) continue;
+            if ((int)ops[j]->type != pat.nextOpType) { MDBG("nxt-type"); return false; }
+            found = true;
+            break;
+        }
+        if (!found) { MDBG("nxt-notfound"); return false; }
+    }
+    // Profile-variant: required BinaryOp sub-type of the next op.
+    // Disambiguates RawBlcBlock (SUB → next REALDIV = Normalize) from
+    // BlcBlock (SUB → next MUL = Lsc/BayerWb) without tracing through
+    // already-fused producers (crop/pyramid Extras).
+    if (pat.nextBinOp >= 0) {
+        bool found = false;
+        int scanFrom = idx.empty() ? i : idx.back() + 1;
+        for (int j = scanFrom; j < (int)ops.size(); j++) {
+            if (!ops[j]) continue;
+            if (ops[j]->type == MNN::OpType_Const ||
+                ops[j]->type == MNN::OpType_ConvertTensor ||
+                ops[j]->type == MNN::OpType_Input) continue;
+            if (ops[j]->type != MNN::OpType_BinaryOp) { MDBG("nbo-notbinop"); return false; }
+            auto* nb = ops[j]->main.AsBinaryOp();
+            if (!nb || (int)nb->opType != pat.nextBinOp) { MDBG("nbo-optype"); return false; }
+            found = true;
+            break;
+        }
+        if (!found) { MDBG("nbo-notfound"); return false; }
+    }
+    // Per-position BinaryOp sub-type requirements (e.g. tryFcs 2-op must be Sub→Mul).
+    for (const auto& cb : pat.chainBinOps) {
+        if (cb.first < 0 || cb.first >= (int)idx.size()) return false;
+        auto* op = ops[idx[cb.first]].get();
+        if (op->type != MNN::OpType_BinaryOp) return false;
+        auto* bin = op->main.AsBinaryOp();
+        if (!bin || bin->opType != cb.second) return false;
+    }
+    // Check BinaryOp sub-type (Mul vs Div vs Add vs Sub)
+    if (pat.binOpType != MNN::BinaryOpOperation_ADD) {
+        if (idx.empty()) return false;
+        auto* op = ops[idx[0]].get();
+        if (op->type != MNN::OpType_BinaryOp) return false;
+        auto* bin = op->main.AsBinaryOp();
+        if (!bin || bin->opType != pat.binOpType) return false;
     }
     return true;
 }
@@ -677,6 +899,26 @@ static bool applyExact(std::vector<std::unique_ptr<OpT>>& ops, int& i,
     ex->type = pat.ispType;
     ex->engine = "MNN";
     buildCommonAttrs(ex, mW, mH, u);
+    // Stride-2 ops (pyramid / demosaic_ccm / unpack_blc) halve resolution:
+    // clear elementwise flag so ShapeExtra doesn't copy input shape, and
+    // override global_size to reflect the 2× downscale in spatial dims.
+    if (pat.ispType && (strcmp(pat.ispType, "isp.pyramid") == 0 || strcmp(pat.ispType, "isp.demosaic_ccm") == 0 ||
+        strcmp(pat.ispType, "isp.unpack_blc") == 0 || strcmp(pat.ispType, "isp.unpack_demosaic") == 0)) {
+        clearElementwise(ex);
+        int outC = (pat.ispType && (strcmp(pat.ispType, "isp.pyramid") == 0 || strcmp(pat.ispType, "isp.unpack_blc") == 0)) ? 4 : 3;
+        // Override global_size to [W/2, H/2, outC] → ShapeExtra output [1, outC, H/2, W/2]
+        for (auto& a : ex->attr) {
+            if (a->key == "global_size") {
+                auto* lst = a->list.get();
+                if (lst && lst->i.size() >= 3) {
+                    lst->i[0] = mW / 2;  // gx
+                    lst->i[1] = mH / 2;  // gy
+                    lst->i[2] = outC;     // gz = channel count
+                }
+                break;
+            }
+        }
+    }
     setEngine(ex);
     addSpirv(ex, pat.spvName);
     if (pat.namedKey && pat.namedKey[0]) {
@@ -693,6 +935,7 @@ static bool applyExact(std::vector<std::unique_ptr<OpT>>& ops, int& i,
     i = idx.back();
     VLOG(2) << "[P1] EXACT " << pat.ispType << " at " << idx[0]
             << " chain=" << idx.size();
+    { std::string cs; for (int k = 0; k < (int)idx.size(); k++) { if (k) cs += ","; cs += std::to_string(idx[k]); } VLOG(2) << "[P1] CONSUME " << cs; }
     return true;
 }
 
@@ -712,12 +955,15 @@ static const ExactPattern kExactFcs[] = {
 };
 
 static const ExactPattern kExactDemosaic[] = {
-    // Conv(depthwise, 3x3, 4ch) with 36 weights (real debayer)
-    ExactPattern({MNN::OpType_Convolution},
-                 -1, -1, "isp.demosaic_ccm", "isp.demosaic_ccm", nullptr, 36),
     // Conv(5x5) with 300 weights, 4→3 (DebayerBlock learned debayer)
     ExactPattern({MNN::OpType_Convolution},
                  -1, -1, "isp.demosaic_ccm", "isp.demosaic_ccm", nullptr, 300),
+    // Conv(depthwise, 3x3, 4ch) with 36 weights (real debayer)
+    ExactPattern({MNN::OpType_Convolution},
+                 -1, -1, "isp.demosaic_ccm", "isp.demosaic_ccm", nullptr, 36),
+    // Conv(1x1, 12 weights, 4→3)→ReLU6 (Clip) with runtime-fused weights (DemosaicCcmBlock)
+    ExactPattern({MNN::OpType_Convolution, MNN::OpType_ReLU6},
+                 -1, -1, "isp.demosaic_ccm", "isp.demosaic_ccm", nullptr, 12),
 };
 
 static const ExactPattern kExactDisplay[] = {
@@ -740,21 +986,41 @@ static const ExactPattern kExactDisplay[] = {
 };
 
 static const ExactPattern kExactUnpack[] = {
+    // 2-op: Reshape→ReLU6→BinaryOp (RawBlcBlock variant)
     ExactPattern({MNN::OpType_Reshape, MNN::OpType_ReLU6, MNN::OpType_BinaryOp},
                  -1, -1, "isp.unpack_blc", "isp.unpack_blc", nullptr),
-    ExactPattern({MNN::OpType_BinaryOp},
-                 1, 1, "isp.unpack_blc", "isp.unpack_blc", nullptr),
+    // 1-op: Sub with 1-elem const (RawBlcBlock) — checked via constElems
+    // Note: must be BinaryOp(SUB), but matchExact only checks type. This is
+    // handled by tryUnpack heuristic (id=2) which checks SUB specifically.
+    // Leaving here would steal NormalizeBlock's Div(1-elem). So we rely on tryN.
 };
 
 static const ExactPattern kExactPyramid[] = {
-    ExactPattern({MNN::OpType_Pooling, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp,
-                  MNN::OpType_BinaryOp, MNN::OpType_ReLU6},
-                 -1, -1, "isp.pyramid", "isp.pyramid", "fcs"),
+    // CfaBlock: Conv(2x2, stride=2, 16 weights, 1→4) → pyramid (Bayer quad unpack)
+    ExactPattern({MNN::OpType_Convolution},
+                 -1, -1, "isp.pyramid", "isp.pyramid", nullptr, 16),
+    // CfaBlock variant: Conv(2x2, stride=2, 4 weights, 1→4) → pyramid
+    ExactPattern({MNN::OpType_Convolution},
+                 -1, -1, "isp.pyramid", "isp.pyramid", nullptr, 4),
+};
+
+static const ExactPattern kExactColorspace[] = {
+    // CscBlock: Conv(1x1, 3→3, 9 weights) with 3-elem bias → isp.colorspace
+    // Must run BEFORE kExactFcs (which also matches 9-weight Conv)
+    ExactPattern({MNN::OpType_Convolution},
+                 -1, -1, "isp.colorspace", "isp.colorspace", "colorspace", 9),
+};
+
+static const ExactPattern kExactNormalize[] = {
+    // NormalizeBlock: Cast→Div(1-elem const) → isp.fcs
+    ExactPattern({MNN::OpType_Cast, MNN::OpType_BinaryOp},
+                 1, 1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_DIV),
 };
 
 static const ExactPattern kExactAe[] = {
+    // WbGainsBlock: Mul(3-elem gains) → isp.ae
     ExactPattern({MNN::OpType_BinaryOp},
-                 1, 1, "isp.ae", "isp.ae", "ae"),
+                 3, 1, "isp.ae", "isp.ae", MNN::BinaryOpOperation_MUL),
 };
 
 static const ExactPattern kExactAfFocus[] = {
@@ -762,11 +1028,440 @@ static const ExactPattern kExactAfFocus[] = {
                  -1, -1, "isp.af_focus", "isp.af_focus", nullptr, 9),
 };
 
+// CalibrationBlock: isp.calib_stats (21-op chain)
+static const ExactPattern kExactCalibrationBlock[] = {
+ExactPattern({MNN::OpType_Reduction, MNN::OpType_Squeeze, MNN::OpType_BinaryOp, MNN::OpType_Reduction, MNN::OpType_Squeeze, MNN::OpType_Reduction, MNN::OpType_Squeeze, MNN::OpType_Reduction, MNN::OpType_Squeeze, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_Squeeze, MNN::OpType_Reduction, MNN::OpType_Reshape, MNN::OpType_Reduction, MNN::OpType_Reshape, MNN::OpType_Reduction, MNN::OpType_Reshape, MNN::OpType_Reduction, MNN::OpType_Reshape, MNN::OpType_Concat}, -1, -1, "isp.calib_stats", "isp.calib_stats"),
+};
+
+// UnifiedStatsBlock: isp.ispc_stats (19-op chain)
+static const ExactPattern kExactUnifiedStatsBlock[] = {
+ExactPattern({MNN::OpType_Reduction, MNN::OpType_Squeeze, MNN::OpType_StridedSlice, MNN::OpType_StridedSlice, MNN::OpType_StridedSlice, MNN::OpType_Convolution, MNN::OpType_Reduction, MNN::OpType_Squeeze, MNN::OpType_Reduction, MNN::OpType_Squeeze, MNN::OpType_Reduction, MNN::OpType_Squeeze, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_Concat, MNN::OpType_Squeeze}, -1, -1, "isp.ispc_stats", "isp.ispc_stats"),
+};
+
+// DisplayBlock: isp.display (16-op chain)
+static const ExactPattern kExactDisplayBlock[] = {
+ExactPattern({MNN::OpType_Permute, MNN::OpType_Padding, MNN::OpType_Shape, MNN::OpType_Rank, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_Unsqueeze, MNN::OpType_BinaryOp, MNN::OpType_Unsqueeze, MNN::OpType_StridedSlice, MNN::OpType_Squeeze, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_GatherV2, MNN::OpType_BinaryOp, MNN::OpType_Cast}, -1, -1, "isp.display", "isp.display"),
+};
+
+// FcsBlock: isp.fcs (13-op chain)
+static const ExactPattern kExactFcsBlock[] = {
+ExactPattern({MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_ConvolutionDepthwise, MNN::OpType_UnaryOp, MNN::OpType_BinaryOp, MNN::OpType_ReLU6, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_ReLU6}, 1, 1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_SUB),
+};
+
+// ToneBlock: isp.tone (12-op chain)
+static const ExactPattern kExactToneBlock[] = {
+ExactPattern({MNN::OpType_BinaryOp, MNN::OpType_UnaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_UnaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_ReLU, MNN::OpType_BinaryOp, MNN::OpType_ReLU6}, 1, 0, "isp.tone", "isp.tone", MNN::BinaryOpOperation_SUB),
+};
+
+// AlgoAwbBlock: isp.awb (11-op chain)
+static const ExactPattern kExactAlgoAwbBlock[] = {
+ExactPattern({MNN::OpType_Reduction, MNN::OpType_StridedSlice, MNN::OpType_StridedSlice, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_StridedSlice, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_Concat, MNN::OpType_Reshape}, -1, -1, "isp.awb", "isp.awb"),
+};
+
+// AlgoAeBlock: isp.ae (9-op chain)
+static const ExactPattern kExactAlgoAeBlock[] = {
+ExactPattern({MNN::OpType_StridedSlice, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_UnaryOp, MNN::OpType_BinaryOp, MNN::OpType_ReLU6, MNN::OpType_BinaryOp, MNN::OpType_UnaryOp, MNN::OpType_ReLU6}, -1, -1, "isp.ae", "isp.ae"),
+};
+
+// FocusBlock: isp.af_focus (8-op chain)
+static const ExactPattern kExactFocusBlock[] = {
+ExactPattern({MNN::OpType_Convolution, MNN::OpType_Convolution, MNN::OpType_UnaryOp, MNN::OpType_Convolution, MNN::OpType_UnaryOp, MNN::OpType_BinaryOp, MNN::OpType_Reduction, MNN::OpType_Squeeze}, -1, -1, "isp.af_focus", "isp.af_focus", nullptr, 3),
+};
+
+// YuvSatBlock: isp.fcs (7-op chain)
+static const ExactPattern kExactYuvSatBlock[] = {
+ExactPattern({MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_ReLU6}, 1, 1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_SUB),
+};
+
+// AutoContrastBlock: isp.auto_contrast (6-op chain)
+static const ExactPattern kExactAutoContrastBlock[] = {
+    // Value-constrained FIRST: real AutoContrastBlock always has the four=4.0
+    // const at chain pos 2 input 1 (scaledS = diffSq * 4.0). This shadows the
+    // generic entry below for the real block while failing on scalar control
+    // chains (algo_gamma Log→Div→Mul→Add→Mul→Sub and algo_cct n²→n³→… windows
+    // have NO 4.0 const at that position).
+    ExactPattern({MNN::OpType_UnaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp}, -1, -1, "isp.auto_contrast", "isp.auto_contrast", false, {ChainConstCheck(2, 1, {4.0f})}),
+    // existing generic pattern (kept — duplicated; shadowed by the entry above)
+    ExactPattern({MNN::OpType_UnaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp}, -1, -1, "isp.auto_contrast", "isp.auto_contrast"),
+};
+
+// ── no-fuse guards for scalar control chains ──
+// algo_gamma / algo_cct are SCALAR camera-control chains ([1]-elem outputs) that
+// MUST stay primitive. They get consumed by longest-match guards BEFORE any
+// shorter generic image pattern (e.g. the 6-op isp.auto_contrast) can steal a
+// sub-window and fuse it as a GPU shader running on scalar inputs (→ wrong
+// shapes → heap corruption → SIGSEGV in Module output path).
+
+// algo_gamma (8-op): Add(ag,eps)→Log→Div(ln10)→Mul(k1)→Add(base_gamma)→Mul(k2)→Sub→Clip
+// NOTE: MNN folds Div(x,const) into Mul(x,1/const): op[2] const = 1/ln10 = 0.434294
+static const ExactPattern kExactAlgoGammaChain[] = {
+// variant A: Div folded → Mul with 1/ln10 = 0.434294 at pos2 input1
+ExactPattern({MNN::OpType_BinaryOp, MNN::OpType_UnaryOp, MNN::OpType_BinaryOp,
+              MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp,
+              MNN::OpType_BinaryOp, MNN::OpType_ReLU6},
+             -1, -1, "isp.noop_gamma", "isp.noop_gamma", /*noFuse=*/true,
+             {ChainConstCheck(0, 1, {1e-6f}),      // eps
+              ChainConstCheck(2, 1, {0.434294f}),  // 1/ln10 (Div folded to Mul)
+              ChainConstCheck(3, 0, {0.2f}),       // k1
+              ChainConstCheck(4, 0, {2.2f}),       // base_gamma
+              ChainConstCheck(5, 0, {0.3f})}),     // k2
+// variant B: Div kept → const ln10 = 2.302585 at pos2 input1
+ExactPattern({MNN::OpType_BinaryOp, MNN::OpType_UnaryOp, MNN::OpType_BinaryOp,
+              MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp,
+              MNN::OpType_BinaryOp, MNN::OpType_ReLU6},
+             -1, -1, "isp.noop_gamma", "isp.noop_gamma", /*noFuse=*/true,
+             {ChainConstCheck(0, 1, {1e-6f}),      // eps
+              ChainConstCheck(2, 1, {2.302585f}),  // ln10 (Div kept)
+              ChainConstCheck(3, 0, {0.2f}),       // k1
+              ChainConstCheck(4, 0, {2.2f}),       // base_gamma
+              ChainConstCheck(5, 0, {0.3f})}),     // k2
+};
+
+// algo_cct (21-op): Slice×3→Add×3→Div×2→Sub×2→Add→Div→SQUARE→Mul×4→Add×3→Clip
+// (n2 = SQUARE from Mul(nRatio,nRatio)); variant A: n2 is UnaryOp
+// MNN topological order: ...n2, n3, term3, term2, sum1, term1, sum2, cct_raw, frame
+// → term1 const c1 sits at chain pos 17 (not 16); c0 at pos 19.
+static const ExactPattern kExactAlgoCctChain[] = {
+ExactPattern({MNN::OpType_StridedSlice, MNN::OpType_StridedSlice, MNN::OpType_BinaryOp,
+              MNN::OpType_StridedSlice, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp,
+              MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp,
+              MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp,
+              MNN::OpType_UnaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp,
+              MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp,
+              MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_ReLU6},
+             -1, -1, "isp.noop_cct", "isp.noop_cct", /*noFuse=*/true,
+             {ChainConstCheck(5, 1, {1e-6f}),        // eps in sum_eps
+              ChainConstCheck(7, 1, {0.332f}),       // r_ref in r_shift
+              ChainConstCheck(9, 1, {0.1858f}),      // b_ref in b_shift
+              ChainConstCheck(14, 1, {-449.0f}),     // c3 in term3
+              ChainConstCheck(15, 1, {3525.0f}),     // c2 in term2
+              ChainConstCheck(17, 1, {-6823.3f}),    // c1 in term1 (pos 17)
+              ChainConstCheck(19, 1, {5520.33f})}),  // c0 in cct_raw
+};
+
+// algo_cct variant B: n2 stays BinaryOp MUL (Mul(nRatio,nRatio) not folded)
+static const ExactPattern kExactAlgoCctChainMul[] = {
+ExactPattern({MNN::OpType_StridedSlice, MNN::OpType_StridedSlice, MNN::OpType_BinaryOp,
+              MNN::OpType_StridedSlice, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp,
+              MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp,
+              MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp,
+              MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp,
+              MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp,
+              MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_ReLU6},
+             -1, -1, "isp.noop_cct", "isp.noop_cct", /*noFuse=*/true,
+             {ChainConstCheck(5, 1, {1e-6f}),        // eps in sum_eps
+              ChainConstCheck(7, 1, {0.332f}),       // r_ref in r_shift
+              ChainConstCheck(9, 1, {0.1858f}),      // b_ref in b_shift
+              ChainConstCheck(14, 1, {-449.0f}),     // c3 in term3
+              ChainConstCheck(15, 1, {3525.0f}),     // c2 in term2
+              ChainConstCheck(17, 1, {-6823.3f}),    // c1 in term1 (pos 17)
+              ChainConstCheck(19, 1, {5520.33f})}),  // c0 in cct_raw
+};
+
+// EeBlock: isp.ee (6-op chain)
+static const ExactPattern kExactEeBlock[] = {
+ExactPattern({MNN::OpType_ConvolutionDepthwise, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_ReLU6, MNN::OpType_BinaryOp, MNN::OpType_ReLU6}, -1, -1, "isp.ee", "isp.ee"),
+};
+
+// FastEeBlock: isp.ee (6-op chain)
+static const ExactPattern kExactFastEeBlock[] = {
+ExactPattern({MNN::OpType_ConvolutionDepthwise, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_ReLU6, MNN::OpType_BinaryOp, MNN::OpType_ReLU6}, -1, -1, "isp.ee", "isp.ee"),
+};
+
+// LdciBlock: isp.ldci (6-op chain)
+static const ExactPattern kExactLdciBlock[] = {
+ExactPattern({MNN::OpType_Pooling, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_ReLU6}, -1, -1, "isp.ldci", "isp.ldci"),
+};
+
+// RefYuvSatBlock: isp.fcs (6-op chain)
+static const ExactPattern kExactRefYuvSatBlock[] = {
+ExactPattern({MNN::OpType_StridedSlice, MNN::OpType_StridedSlice, MNN::OpType_BinaryOp, MNN::OpType_Convolution, MNN::OpType_ReLU6, MNN::OpType_Concat}, -1, -1, "isp.fcs", "isp.fcs"),
+};
+
+// BilateralBlock: isp.bilateral (5-op chain)
+static const ExactPattern kExactBilateralBlock[] = {
+ExactPattern({MNN::OpType_ConvolutionDepthwise, MNN::OpType_ConvolutionDepthwise, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp}, -1, -1, "isp.bilateral", "isp.bilateral"),
+};
+
+// LocalContrastBlock: isp.fcs (5-op chain)
+static const ExactPattern kExactLocalContrastBlock[] = {
+ExactPattern({MNN::OpType_Pooling, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_ReLU6}, -1, -1, "isp.fcs", "isp.fcs"),
+};
+
+// SaturationBlock: isp.fcs (5-op chain)
+static const ExactPattern kExactSaturationBlock[] = {
+ExactPattern({MNN::OpType_Reduction, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_ReLU6}, -1, -1, "isp.fcs", "isp.fcs"),
+};
+
+// UnsharpBlock: isp.fcs (5-op chain)
+static const ExactPattern kExactUnsharpBlock[] = {
+ExactPattern({MNN::OpType_Pooling, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_ReLU6}, -1, -1, "isp.fcs", "isp.fcs"),
+};
+
+// RefToneBlock: isp.tone (4-op chain)
+static const ExactPattern kExactRefToneBlock[] = {
+ExactPattern({MNN::OpType_BinaryOp, MNN::OpType_ReLU, MNN::OpType_BinaryOp, MNN::OpType_ReLU6}, 1, 1, "isp.tone", "isp.tone", MNN::BinaryOpOperation_MUL),
+};
+
+// DemosaicCcmBlock: isp.demosaic_ccm (2-op chain)
+static const ExactPattern kExactDemosaicCcmBlock[] = {
+ExactPattern({MNN::OpType_Convolution, MNN::OpType_ReLU6}, -1, -1, "isp.demosaic_ccm", "isp.demosaic_ccm", nullptr, 12),
+};
+
+// RefCcmBlock: isp.fcs (2-op chain)
+static const ExactPattern kExactRefCcmBlock[] = {
+ExactPattern({MNN::OpType_Convolution, MNN::OpType_BinaryOp}, -1, -1, "isp.fcs", "isp.fcs", nullptr, 9),
+};
+
+// VignettingBlock: isp.vignetting (2-op chain)
+static const ExactPattern kExactVignettingBlock[] = {
+ExactPattern({MNN::OpType_BinaryOp, MNN::OpType_ReLU6}, 1024, 1, "isp.vignetting", "isp.vignetting", MNN::BinaryOpOperation_MUL),
+};
+
+// BayerWbBlock: isp.fcs (1-op chain)
+// Matches ANY BinaryOp(MUL) with 3 or 4 const elements — no scalar value check.
+static const ExactPattern kExactBayerWbBlock[] = {
+ExactPattern({MNN::OpType_BinaryOp}, 4, 1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_MUL),
+ExactPattern({MNN::OpType_BinaryOp}, 3, 1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_MUL),
+};
+
+// BlcBlock: isp.fcs (1-op chain)
+// Matches ANY BinaryOp(SUB) with 4 const elements — no scalar value check.
+static const ExactPattern kExactBlcBlock[] = {
+ExactPattern({MNN::OpType_BinaryOp}, 4, 1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_SUB),
+};
+
+// CcmBlock: isp.fcs (1-op chain)
+// Matches ANY Convolution with 9 weights — no weight value check.
+static const ExactPattern kExactCcmBlock[] = {
+ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.fcs", "isp.fcs", nullptr, 9),
+};
+
+// CfaBlock: isp.pyramid (1-op chain)
+// Matches ANY Convolution with 16 weights — no weight value check.
+static const ExactPattern kExactCfaBlock[] = {
+ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.pyramid", "isp.pyramid", nullptr, 16),
+};
+
+// ColorSpaceBlock: isp.colorspace (1-op chain)
+static const ExactPattern kExactColorSpaceBlock[] = {
+ExactPattern({MNN::OpType_MatMul}, -1, -1, "isp.colorspace", "isp.colorspace"),
+};
+
+// CscBlock: isp.colorspace (1-op chain)
+// Matches ANY Convolution with 9 weights — no weight value check.
+static const ExactPattern kExactCscBlock[] = {
+ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.colorspace", "isp.colorspace", nullptr, 9),
+};
+
+// DebayerBlock: isp.demosaic_ccm (1-op chain)
+static const ExactPattern kExactDebayerBlock[] = {
+ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.demosaic_ccm", "isp.demosaic_ccm", nullptr, 300),
+};
+
+// EdgeDemosaicBlock: isp.demosaic_ccm (1-op chain)
+static const ExactPattern kExactEdgeDemosaicBlock[] = {
+ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.demosaic_ccm", "isp.demosaic_ccm", nullptr, 108),
+};
+
+// GammaBlock: isp.gamma (1-op chain)
+// Matches ANY BinaryOp(POW) with 1-elem const exponent — no scalar value check.
+// The algo_gamma guard (8-op noFuse, kExactAlgoGammaChain) runs first and
+// protects scalar control chains, so this only matches standalone gamma curve ops.
+static const ExactPattern kExactGammaBlock[] = {
+ExactPattern({MNN::OpType_BinaryOp}, 1, 1, "isp.gamma", "isp.gamma", MNN::BinaryOpOperation_POW),
+};
+
+// HqLinearDemosaic: isp.demosaic_ccm (1-op chain)
+static const ExactPattern kExactHqLinearDemosaic[] = {
+ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.demosaic_ccm", "isp.demosaic_ccm", nullptr, 300),
+};
+
+// LscBlock: isp.lsc (1-op chain)
+static const ExactPattern kExactLscBlock[] = {
+ExactPattern({MNN::OpType_BinaryOp}, 1024, 1, "isp.lsc", "isp.lsc", MNN::BinaryOpOperation_MUL),
+};
+
+// NormalizeBlock: isp.fcs (1-op chain)
+// Matches ANY BinaryOp(MUL) with 1 const element — no scalar value check.
+static const ExactPattern kExactNormalizeBlock[] = {
+ExactPattern({MNN::OpType_BinaryOp}, 1, 1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_MUL),
+};
+
+// RawBlcBlock: isp.unpack_blc (1-op chain)
+// Matches ANY BinaryOp(SUB) with 1 const element — no scalar value check.
+static const ExactPattern kExactRawBlcBlock[] = {
+ExactPattern({MNN::OpType_BinaryOp}, 1, 1, "isp.unpack_blc", "isp.unpack_blc", MNN::BinaryOpOperation_SUB),
+};
+
+// RefBayerWbBlock: isp.fcs (1-op chain)
+// Matches ANY BinaryOp(MUL) with 4 const elements — no scalar value check.
+static const ExactPattern kExactRefBayerWbBlock[] = {
+ExactPattern({MNN::OpType_BinaryOp}, 4, 1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_MUL),
+};
+
+// RefCscBlock: isp.colorspace (1-op chain)
+// Matches ANY Convolution with 9 weights — no weight value check.
+static const ExactPattern kExactRefCscBlock[] = {
+ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.colorspace", "isp.colorspace", nullptr, 9),
+};
+
+// RefDebayerBlock: isp.demosaic_ccm (1-op chain)
+static const ExactPattern kExactRefDebayerBlock[] = {
+ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.demosaic_ccm", "isp.demosaic_ccm", nullptr, 300),
+};
+
+// WbGainsBlock: isp.awb (1-op chain)
+// Matches ANY BinaryOp(MUL) with 3 const elements — no scalar value check.
+static const ExactPattern kExactWbGainsBlock[] = {
+ExactPattern({MNN::OpType_BinaryOp}, 3, 1, "isp.awb", "isp.awb", MNN::BinaryOpOperation_MUL),
+};
+
+// --- BEGIN_GENERATED_PRE_PASS1_TABLES ---
+// ═══════════════════════════════════════════════════════════════
+//  AUTO-GENERATED from clean PRE-PASS1 dumps (fusion disabled)
+//  Profile-enabled blocks ONLY (PipelineProfile.kt buildBlocks)
+//  Value-constrained: binOp/constElems/constVals/convW/convVals
+// ═══════════════════════════════════════════════════════════════
+
+// ═══════════════════════════════════════════════════════════════
+//  AUTO-GENERATED from clean PRE-PASS1 dumps (fusion disabled)
+//  Value-constrained: binOp/constElems/constVals/convW/convVals
+// ═══════════════════════════════════════════════════════════════
+
+static const ExactPattern kExactGeneratedDispatch[] = {
+    // DisplayBlockYuv (chain=17)
+        ExactPattern({MNN::OpType_Convolution, MNN::OpType_Permute, MNN::OpType_Padding, MNN::OpType_Shape, MNN::OpType_Rank, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_Unsqueeze, MNN::OpType_BinaryOp, MNN::OpType_Unsqueeze, MNN::OpType_StridedSlice, MNN::OpType_Squeeze, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_GatherV2, MNN::OpType_BinaryOp, MNN::OpType_Cast}, -1, -1, "isp.display", "isp.display", nullptr, 9, {1, 0, 1.402, 1, -0.344, -0.714, 1, 1.772, 0}),
+    // DisplayBlock (chain=16)
+        ExactPattern({MNN::OpType_Permute, MNN::OpType_Padding, MNN::OpType_Shape, MNN::OpType_Rank, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_Unsqueeze, MNN::OpType_BinaryOp, MNN::OpType_Unsqueeze, MNN::OpType_StridedSlice, MNN::OpType_Squeeze, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_GatherV2, MNN::OpType_BinaryOp, MNN::OpType_Cast}, -1, -1, "isp.display", "isp.display"),
+    // BadPixelBlock (chain=10)
+        ExactPattern({MNN::OpType_BinaryOp, MNN::OpType_Pooling, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_ReLU6, MNN::OpType_BinaryOp, MNN::OpType_Pooling, MNN::OpType_BinaryOp, MNN::OpType_ReLU6, MNN::OpType_BinaryOp}, 1, 0, "isp.dpc", "isp.dpc", MNN::BinaryOpOperation_SUB, nullptr, -1, {}, {0}),
+    // YuvSatBlock (chain=7)
+        ExactPattern({MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_ReLU6}, 1, 1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_SUB, nullptr, -1, {}, {0.5}),
+    // AutoContrastBlock (chain=6)
+        ExactPattern({MNN::OpType_UnaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp}, -1, -1, "isp.auto_contrast", "isp.auto_contrast"),
+    // ChromaticAberration (chain=6)
+        ExactPattern({MNN::OpType_StridedSlice, MNN::OpType_GridSample, MNN::OpType_StridedSlice, MNN::OpType_StridedSlice, MNN::OpType_GridSample, MNN::OpType_Concat}, -1, -1, "isp.warp", "isp.warp"),
+    // BilateralBlock (chain=5)
+        ExactPattern({MNN::OpType_ConvolutionDepthwise, MNN::OpType_ConvolutionDepthwise, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp}, -1, -1, "isp.bilateral", "isp.bilateral", nullptr, 15, {0.0625, 0.25, 0.375, 0.25, 0.0625, 0.0625, 0.25, 0.375, 0.25, 0.0625, 0.0625, 0.25, 0.375, 0.25, 0.0625}),
+    // LocalContrastBlock (chain=5)
+        ExactPattern({MNN::OpType_Pooling, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_ReLU6}, -1, -1, "isp.fcs", "isp.fcs"),
+    // SaturationBlock (chain=5)
+        ExactPattern({MNN::OpType_Reduction, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_ReLU6}, -1, -1, "isp.fcs", "isp.fcs"),
+    // UnsharpBlock (chain=5)
+        ExactPattern({MNN::OpType_Pooling, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_ReLU6}, -1, -1, "isp.fcs", "isp.fcs"),
+    // VignettingBlock (chain=2)
+        ExactPattern({MNN::OpType_BinaryOp, MNN::OpType_ReLU6}, 1024, 1, "isp.vignetting", "isp.vignetting", MNN::BinaryOpOperation_MUL, nullptr, -1, {}),
+    // BayerWbBlock (chain=1)
+        ExactPattern({MNN::OpType_BinaryOp}, 4, 1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_MUL, nullptr, -1, {}, {1, 1, 1, 1}),
+    // BlcBlock (chain=1)
+        ExactPattern({MNN::OpType_BinaryOp}, 4, 1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_SUB, nullptr, -1, {}, {0, 0, 0, 0}),
+    // CcmBlock (chain=1)
+        ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.fcs", "isp.fcs", nullptr, 9, {1, 1, 1, 1, 1, 1, 1, 1, 1}),
+    // CfaBlock (chain=1)
+        ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.pyramid", "isp.pyramid", nullptr, 16, {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}),
+    // CropBlock (chain=1)
+        ExactPattern({MNN::OpType_StridedSlice}, -1, -1, "isp.fcs", "isp.fcs"),
+    // CscBlock (chain=1)
+        ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.colorspace", "isp.colorspace", nullptr, 9, {0.299, 0.587, 0.114, -0.169, -0.331, 0.5, 0.5, -0.419, -0.081}),
+    // CscBlockYuv2Rgb (chain=1)
+        ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.colorspace", "isp.colorspace", nullptr, 9, {1, 0, 1.402, 1, -0.344, -0.714, 1, 1.772, 0}),
+    // DebayerBlock (chain=1)
+        ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.demosaic_ccm", "isp.demosaic_ccm", nullptr, 300),
+    // DownscaleBlock (chain=1)
+        ExactPattern({MNN::OpType_Interp}, -1, -1, "isp.interp", "isp.interp"),
+    // EdgeDemosaicBlock (chain=1)
+        ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.demosaic_ccm", "isp.demosaic_ccm", nullptr, 108),
+    // GammaBlock (chain=1)
+        ExactPattern({MNN::OpType_BinaryOp}, 1, 1, "isp.gamma", "isp.gamma", MNN::BinaryOpOperation_POW, nullptr, -1, {}, {1}),
+    // LscBlock (chain=1)
+        ExactPattern({MNN::OpType_BinaryOp}, 1024, 1, "isp.lsc", "isp.lsc", MNN::BinaryOpOperation_MUL, nullptr, -1, {}),
+    // NormalizeBlock (chain=1)
+        ExactPattern({MNN::OpType_BinaryOp}, 1, 1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_MUL, nullptr, -1, {}, {1}),
+    // RawBlcBlock (chain=1)
+        ExactPattern({MNN::OpType_BinaryOp}, 1, 1, "isp.unpack_blc", "isp.unpack_blc", MNN::BinaryOpOperation_SUB, nullptr, -1, {}, {0}),
+};
+
+// Total tables: 25
+
+// --- END_GENERATED_PRE_PASS1_TABLES ---
+
+// ═══════════════════════════════════════════════════════════════════
+// PROFILE-VARIANT tables: profile pass0 graphs feed block constants as
+// graph Inputs (runtime tensors), not Const ops — so the generated
+// (value-constrained) patterns can never match those blocks. These variants
+// relax the const check and disambiguate by structural provenance:
+//   inputTrace         — required producer op type (through ConvertTensor)
+//   inputMustBeInput   — input fed directly by a graph Input
+//   nextOpType         — required type of the next non-CT/Const/Input op
+//   chainBinOps        — per-chain-position BinaryOp sub-type
+// Sorted longest-first; RawBlcBlock MUST precede BlcBlock (both 1-op SUB
+// with an Input at input[1] — RawBlc wins via the StridedSlice trace).
+//
+// Derived from the MANUAL ALIGNMENT report (align_profile_blocks.py):
+//   .agent/data/tmp/alignment_report.txt
+static const ExactPattern kExactProfileVariants[] = {
+    // BayerWbBlock (4-op, gains-reorder wiring): profile adds
+    // Reshape→Conv(gains reorder)→Reshape→MUL (standalone is bare MUL 4e).
+    ExactPattern({MNN::OpType_Reshape, MNN::OpType_Convolution, MNN::OpType_Reshape, MNN::OpType_BinaryOp},
+                 -1, -1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_ADD, true, {}, {}, -1,
+                 {{3, MNN::BinaryOpOperation_MUL}}),
+    // VignettingBlock (2-op): MUL(radius map Input)→ReLU6 (standalone const 1024e).
+    ExactPattern({MNN::OpType_BinaryOp, MNN::OpType_ReLU6},
+                 -1, -1, "isp.vignetting", "isp.vignetting", MNN::BinaryOpOperation_MUL, true, {}, {1}),
+    // RawBlcBlock (1-op): SUB with input1 = graph Input (tile const) whose next
+    // op is REALDIV (Normalize). nextBinOp disambiguates from BlcBlock (next MUL)
+    // without tracing through the already-fused crop Extra.
+    ExactPattern({MNN::OpType_BinaryOp},
+                 -1, -1, "isp.unpack_blc", "isp.unpack_blc", MNN::BinaryOpOperation_SUB, true, {}, {1}, -1, {},
+                 MNN::BinaryOpOperation_REALDIV),
+    // BlcBlock (1-op): SUB with input1 = graph Input (blc offset) whose next op
+    // is MUL (Lsc or BayerWb).
+    ExactPattern({MNN::OpType_BinaryOp},
+                 -1, -1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_SUB, true, {}, {1}, -1, {},
+                 MNN::BinaryOpOperation_MUL),
+    // BlcBlock variant (REF/INF, no Lsc): next op is the BayerWb gains-reorder
+    // Reshape (Reshape→Conv→Reshape→MUL), not a MUL.
+    ExactPattern({MNN::OpType_BinaryOp},
+                 -1, -1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_SUB, true, {}, {1},
+                 MNN::OpType_Reshape),
+    // NormalizeBlock (1-op): profile emits REALDIV (x / sensor_max);
+    // standalone emits MUL(1/max) which the generated pattern handles.
+    ExactPattern({MNN::OpType_BinaryOp},
+                 -1, -1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_REALDIV, true, {}),
+    // GammaBlock (1-op): POW with gamma as graph Input (standalone const {2.2}).
+    ExactPattern({MNN::OpType_BinaryOp},
+                 -1, -1, "isp.gamma", "isp.gamma", MNN::BinaryOpOperation_POW, true, {}),
+    // LscBlock (1-op): MUL(gain grid Input). In profiles the gain grid is a
+    // graph Input (standalone bakes a 1024e const which the generated LscBlock
+    // pattern handles). Fused as isp.fcs: per-pixel gain ops are opset-
+    // equivalent to the fcs family (user directive: leave as-is).
+    ExactPattern({MNN::OpType_BinaryOp},
+                 -1, -1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_MUL, true, {}, {1}),
+    // CcmBlock (1-op): dynamic (w=0) convolution — matrix is a graph Input
+    // (standalone bakes 9 weights which the generated CcmBlock pattern handles).
+    ExactPattern({MNN::OpType_Convolution},
+                 -1, -1, "isp.fcs", "isp.fcs", "fcs", 0),
+};
+
 static bool tryExactFirst(std::vector<std::unique_ptr<MNN::OpT>>& ops,
                           int& i, int mW, int mH) {
+    bool matched = false;
 #define TRY_EXACT_TABLE(tbl) do { \
         for (auto& pat : tbl) { \
             if (matchExact(ops, i, pat)) { \
+                matched = true; \
+                if (pat.noFuse) { \
+                    /* Guard: consume chain (advance scan past it) but keep ops primitive. */ \
+                    std::vector<int> gidx; std::vector<MNN::OpType> gtypes; \
+                    collectChain(ops, i, (int)pat.opTypes.size(), gidx, gtypes); \
+                    int guardEnd = gidx.empty() ? i : gidx.back(); \
+                    VLOG(2) << "[P1] GUARD(noFuse) " << pat.ispType \
+                            << " at " << i << " chain=" << (int)gidx.size() \
+                            << " end=" << guardEnd; \
+                    i = guardEnd; \
+                    return true; \
+                } \
                 float str = 1.0f; \
                 std::vector<int> idx; std::vector<MNN::OpType> types; \
                 collectChain(ops, i, (int)pat.opTypes.size(), idx, types); \
@@ -788,13 +1483,45 @@ static bool tryExactFirst(std::vector<std::unique_ptr<MNN::OpT>>& ops,
         } \
     } while(0)
 
-    TRY_EXACT_TABLE(kExactFcs);
-    TRY_EXACT_TABLE(kExactDisplay);       // before demosaic to avoid Conv conflict
-    TRY_EXACT_TABLE(kExactDemosaic);      // specific weight counts, after display
-    TRY_EXACT_TABLE(kExactUnpack);        // 1-op Sub(1-elem) for RawBlcBlock
-    TRY_EXACT_TABLE(kExactPyramid);
-    TRY_EXACT_TABLE(kExactAe);
-    TRY_EXACT_TABLE(kExactAfFocus);
+
+
+
+    // ── GLOBAL LONGEST-FIRST dispatch (all tables merged & sorted) ──
+    // Same length → generated (value-constrained) before existing generic.
+    // Only tables for PROFILE-ENABLED blocks are dispatched (PipelineProfile.kt
+    // buildBlocks). Disabled tables (definitions retained for reference):
+    //   AlgoCct*, Calibration, UnifiedStats, FcsBlock, ToneBlock, AlgoAwb,
+    //   AlgoAe, AlgoGamma, Focus, Ee*, FastEe, Ldci, RefYuvSat,
+    //   RefTone, Unpack, DemosaicCcm, RefCcm, Demosaic, ColorSpace, HqLinear,
+    //   RefBayerWb, RefCsc, RefDebayer, WbGains, Fcs(1op), Pyramid, Colorspace,
+    //   Ae, AfFocus.
+    TRY_EXACT_TABLE(kExactGeneratedDispatch);          // generated from pre-pass1 dumps (profile blocks only)
+    TRY_EXACT_TABLE(kExactProfileVariants);          // profile Input-const variants (structural)
+    TRY_EXACT_TABLE(kExactDisplayBlock);          // 16-op (gen)
+    TRY_EXACT_TABLE(kExactYuvSatBlock);          // 7-op (gen)
+    TRY_EXACT_TABLE(kExactAutoContrastBlock);          // 6-op (gen)
+    TRY_EXACT_TABLE(kExactDisplay);          // 6-op (existing)
+    TRY_EXACT_TABLE(kExactBilateralBlock);          // 5-op (gen)
+    TRY_EXACT_TABLE(kExactLocalContrastBlock);          // 5-op (gen)
+    TRY_EXACT_TABLE(kExactSaturationBlock);          // 5-op (gen)
+    TRY_EXACT_TABLE(kExactUnsharpBlock);          // 5-op (gen)
+    TRY_EXACT_TABLE(kExactVignettingBlock);          // 2-op (gen)
+    TRY_EXACT_TABLE(kExactNormalize);          // 2-op (existing)
+    TRY_EXACT_TABLE(kExactBayerWbBlock);          // 1-op (gen)
+    TRY_EXACT_TABLE(kExactBlcBlock);          // 1-op (gen)
+    TRY_EXACT_TABLE(kExactCcmBlock);          // 1-op (gen)
+    TRY_EXACT_TABLE(kExactCfaBlock);          // 1-op (gen)
+    TRY_EXACT_TABLE(kExactCscBlock);          // 1-op (gen)
+    TRY_EXACT_TABLE(kExactDebayerBlock);          // 1-op (gen)
+    TRY_EXACT_TABLE(kExactEdgeDemosaicBlock);          // 1-op (gen)
+    TRY_EXACT_TABLE(kExactGammaBlock);          // 1-op (gen)
+    TRY_EXACT_TABLE(kExactLscBlock);          // 1-op (gen)
+    TRY_EXACT_TABLE(kExactNormalizeBlock);          // 1-op (gen)
+    TRY_EXACT_TABLE(kExactRawBlcBlock);          // 1-op (gen)
+
+    // ── FAIL CASE: no exact pattern matched at i. ──
+    // The op is left untouched → stays in the primitive opset (surfaced by the
+    // JSON opset gate, not by converter logging).
     return false;
 }
 #undef TRY_EXACT_TABLE
@@ -811,18 +1538,24 @@ public:
     // "full" = all patterns including new reduction/scalar ops.
     // Set via ONNX metadata: isp_fusion_level=basic|full
     mutable int mPatternThreshold = 999;  // run try* with id <= threshold
+    mutable int mUnmatchedTryN = 0;       // count tryN matches that exact patterns missed
 
     // Try a numbered pattern: runs only if id <= threshold.
     // threshold=0 means no patterns, 999 means all.
+    // Increments mUnmatchedTryN when a match fires (indicates missing exact pattern).
     typedef std::function<bool(std::vector<std::unique_ptr<MNN::OpT>>&, int&)> TryFn;
     bool tryN(int id, TryFn fn, std::vector<std::unique_ptr<MNN::OpT>>& ops, int& i) const {
-        if (id <= mPatternThreshold) return fn(ops, i);
+        if (id <= mPatternThreshold) {
+            if (fn(ops, i)) { mUnmatchedTryN++; return true; }
+        }
         return false;
     }
     // Helper: wrap member function as TryFn
     typedef bool (Pass1_ToExtra::*MemberFn)(std::vector<std::unique_ptr<MNN::OpT>>&, int&) const;
     bool tryN(int id, MemberFn fn, std::vector<std::unique_ptr<MNN::OpT>>& ops, int& i) const {
-        if (id <= mPatternThreshold) return (this->*fn)(ops, i);
+        if (id <= mPatternThreshold) {
+            if ((this->*fn)(ops, i)) { mUnmatchedTryN++; return true; }
+        }
         return false;
     }
 
@@ -1022,55 +1755,33 @@ public:
             // Special: tryIspControllerStats before tryCalibStats (more specific).
 
             // ═══════════════════════════════════════════════════════════════
-            // NUMBERED PATTERNS — incremental threshold testing.
-            // Patterns 1-41: pre-existing (basic). Patterns 42-50: new ISP ops.
-            // Threshold=0: none. Threshold=41: basic only. Threshold=999: all.
+            // ═══════════════════════════════════════════════════════════════
+            // Heuristic try* helpers are DISABLED for blocks NOT used in any
+            // pipeline profile (PipelineProfile.kt buildBlocks). Fusion is now
+            // 100% exact-match-table driven for the profile-enabled blocks:
+            //   RawInput, Crop, RawBlc, Normalize, BadPixel, Cfa, Blc, Lsc,
+            //   BayerWb, EdgeDemosaic, Debayer, Ccm, Downscale, Gamma,
+            //   ChromaticAberration, Vignetting, Saturation, Bilateral,
+            //   LocalContrast, AutoContrast, Csc, Unsharp, YuvSat, Display.
+            // Kept try* helpers are exact fallbacks for those blocks only.
+            // Removed: Unpack*, Ldci*, Ee*, Fcs, Demosaic, DemosaicInterp,
+            //   SubMaxMin, ClipAbsorbFwd, SubClipNormalize, SubMul, MulAdd,
+            //   MulClip, ConvSub, Warp, Argb/Yuv420/Grayscale, AfFocus, Awb,
+            //   Tone, Ae, IspControllerStats, CalibStats, EisGyro, Denoise.
             // ═══════════════════════════════════════════════════════════════
 
             // ── Exact-pattern pre-dispatch (before any heuristic) ──
             if (tryExactFirst(ops, i, mW, mH)) { changed = true; continue; }
 
-            // ── GROUP 1: Unpack block patterns (~8 ops → 2 ops) ──
-            if (tryN(1, &Pass1_ToExtra::tryUnpackPackedChain, ops, i)) { changed = true; continue; }
-            if (tryN(2, &Pass1_ToExtra::tryUnpack, ops, i)) { changed = true; continue; }
-            if (tryN(3, &Pass1_ToExtra::tryUnpackRust, ops, i)) { changed = true; continue; }
-
-            // ── GROUP 2: Multi-op block patterns (3-4 ops) ──
-            if (tryN(4, &Pass1_ToExtra::tryLdci, ops, i)) { changed = true; continue; }
-            if (tryN(5, &Pass1_ToExtra::tryRustReduceLdci, ops, i)) { changed = true; continue; }
+            // ── Profile-enabled multi-op blocks ──
             if (tryN(6, &Pass1_ToExtra::tryAutoContrast, ops, i)) { changed = true; continue; }
-            if (tryN(7, &Pass1_ToExtra::trySubMaxMin, ops, i)) { changed = true; continue; }
 
-            // ── GROUP 3: Absorption rules (MUST run before block rules) ──
-            if (tryN(8, &Pass1_ToExtra::tryClipAbsorbFwd, ops, i)) { changed = true; continue; }
-
-            // ── GROUP 4: Block patterns (1-2 ops, scan i+4) ──
-            if (tryN(9, &Pass1_ToExtra::tryDemosaic, ops, i)) { changed = true; continue; }
-            if (tryN(10, &Pass1_ToExtra::tryDemosaicInterp, ops, i)) { changed = true; continue; }
-            if (tryN(11, &Pass1_ToExtra::tryEe, ops, i)) { changed = true; continue; }
-            if (tryN(12, &Pass1_ToExtra::tryRustConvEe, ops, i)) { changed = true; continue; }
-            if (tryN(13, &Pass1_ToExtra::tryRustConvFcs, ops, i)) { changed = true; continue; }
-            if (tryN(14, &Pass1_ToExtra::tryGaussianDenoise, ops, i)) { changed = true; continue; }
-            if (tryN(15, &Pass1_ToExtra::tryRustExtraEe, ops, i)) { changed = true; continue; }
-            if (tryN(16, &Pass1_ToExtra::trySubClipNormalize, ops, i)) { changed = true; continue; }
-            if (tryN(17, &Pass1_ToExtra::trySubMul, ops, i)) { changed = true; continue; }
-            if (tryN(18, &Pass1_ToExtra::tryMulAdd, ops, i)) { changed = true; continue; }
-            if (tryN(19, &Pass1_ToExtra::tryMulClip, ops, i)) { changed = true; continue; }
-            if (tryN(20, &Pass1_ToExtra::tryConvSub, ops, i)) { changed = true; continue; }
-
-            // ── GROUP 5: Single-op patterns (1 op) ──
-            if (tryN(21, &Pass1_ToExtra::tryFcs, ops, i)) { changed = true; continue; }
-            if (tryN(22, &Pass1_ToExtra::tryArgbConvert, ops, i)) { changed = true; continue; }
-            if (tryN(23, &Pass1_ToExtra::tryYuv420Convert, ops, i)) { changed = true; continue; }
-            if (tryN(24, &Pass1_ToExtra::tryGrayscale, ops, i)) { changed = true; continue; }
+            // ── Profile-enabled single-op / block patterns ──
             if (tryN(25, &Pass1_ToExtra::tryDisplay, ops, i)) { changed = true; continue; }
             if (tryN(26, &Pass1_ToExtra::tryPyramid, ops, i)) { changed = true; continue; }
-            if (tryN(27, &Pass1_ToExtra::tryWarp, ops, i)) { changed = true; continue; }
             if (tryN(28, &Pass1_ToExtra::tryRustDisplay, ops, i)) { changed = true; continue; }
             if (tryN(29, &Pass1_ToExtra::tryVignetting, ops, i)) { changed = true; continue; }
             if (tryN(30, &Pass1_ToExtra::tryLsc, ops, i)) { changed = true; continue; }
-
-            // ── GROUP 6: cam_app ISP block patterns ──
             if (tryN(31, &Pass1_ToExtra::tryUnsharp, ops, i)) { changed = true; continue; }
             if (tryN(32, &Pass1_ToExtra::trySaturation, ops, i)) { changed = true; continue; }
             if (tryN(33, &Pass1_ToExtra::tryBadPixel, ops, i)) { changed = true; continue; }
@@ -1082,55 +1793,14 @@ public:
             if (tryN(39, &Pass1_ToExtra::tryBLC, ops, i)) { changed = true; continue; }
             if (tryN(40, &Pass1_ToExtra::tryNormalize, ops, i)) { changed = true; continue; }
             if (tryN(41, &Pass1_ToExtra::tryDemosaicStandalone, ops, i)) { changed = true; continue; }
-
-            // ── GROUP 7: NEW ISP ops (require SPIR-V shaders) ──
-            if (tryN(42, &Pass1_ToExtra::tryAfFocus, ops, i)) { changed = true; continue; }
             if (tryN(43, &Pass1_ToExtra::tryDpc, ops, i)) { changed = true; continue; }
-            if (tryN(44, &Pass1_ToExtra::tryAwb, ops, i)) { changed = true; continue; }
-            if (tryN(45, &Pass1_ToExtra::tryTone, ops, i)) { changed = true; continue; }
-            if (tryN(46, &Pass1_ToExtra::tryAe, ops, i)) { changed = true; continue; }
             if (tryN(47, &Pass1_ToExtra::tryGamma, ops, i)) { changed = true; continue; }
-            if (tryN(48, &Pass1_ToExtra::tryIspControllerStats, ops, i)) { changed = true; continue; }
-            if (tryN(49, &Pass1_ToExtra::tryCalibStats, ops, i)) { changed = true; continue; }
-            if (tryN(50, &Pass1_ToExtra::tryEisGyro, ops, i)) { changed = true; continue; }
 
         }
 
-        // ══════ FUSION SUMMARY ══════
-        // Print every op's type and which ISP opset fused it (if any).
-        {
-            std::map<std::string, int> ispCounts;
-            int primitiveCount = 0;
-            int totalOps = 0;
-            fprintf(stderr, "[P1] ═══ FUSION SUMMARY (threshold=%d) ═══\n", mPatternThreshold);
-            for (int idx = 0; idx < (int)ops.size(); idx++) {
-                if (!ops[idx]) continue;
-                totalOps++;
-                auto t = ops[idx]->type;
-                if (t == MNN::OpType_Extra) {
-                    auto* ex = ops[idx]->main.AsExtra();
-                    std::string name = ex ? ex->type : "unknown";
-                    ispCounts[name]++;
-                    fprintf(stderr, "  [%3d] EXTRA  %-30s  in=%zu out=%zu\n",
-                            idx, name.c_str(),
-                            ops[idx]->inputIndexes.size(),
-                            ops[idx]->outputIndexes.size());
-                } else {
-                    primitiveCount++;
-                    fprintf(stderr, "  [%3d] %-30s  in=%zu out=%zu\n",
-                            idx, MNN::EnumNameOpType(t),
-                            ops[idx]->inputIndexes.size(),
-                            ops[idx]->outputIndexes.size());
-                }
-            }
-            fprintf(stderr, "[P1] ── ISP opset counts ──\n");
-            for (auto& kv : ispCounts) {
-                fprintf(stderr, "  %-30s x%d\n", kv.first.c_str(), kv.second);
-            }
-            fprintf(stderr, "[P1] Total: %d ops (%d ISP Extra + %d primitive)\n",
-                    totalOps, totalOps - primitiveCount, primitiveCount);
-            fflush(stderr);  // ensure fusion summary is flushed before converter returns
-        }
+        // ══════ ASSERT: all patterns should be covered by exact match ══════
+        // If tryN helpers still fire, the exact pattern tables are incomplete.
+        assert(mUnmatchedTryN == 0 && "tryN helpers fired — add missing exact patterns to tryExactFirst tables");
 
         // ══════ POST-FUSION GRAPH VALIDATION ══════
         // Catch dangling tensor references from any pattern that nulled an op
@@ -1680,9 +2350,12 @@ private:
             // 3-op: Sub→Mul→Clip (UnsharpBlock-like without Add)
             ExactPattern({MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_ReLU6},
                          -1, -1, "isp.fcs", "isp.fcs", "fcs"),
-            // 2-op: Sub→Mul (UnsharpBlock)
+            // 2-op: Sub→Mul (UnsharpBlock) — require idx[1] to be MUL. Without
+            // this, the profile LITE Normalize REALDIV→BadPixel SUB chain [8,9]
+            // is stolen as isp.fcs and BadPixelBlock never fuses.
             ExactPattern({MNN::OpType_BinaryOp, MNN::OpType_BinaryOp},
-                         -1, -1, "isp.fcs", "isp.fcs", "fcs"),
+                         -1, -1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_ADD, true, {}, {}, -1,
+                         {{1, MNN::BinaryOpOperation_MUL}}),
             // 1-op: Conv(1x1) with 9 weights (CCM, CcmBlock)
             ExactPattern({MNN::OpType_Convolution},
                          -1, -1, "isp.fcs", "isp.fcs", "fcs", 9),
@@ -1716,7 +2389,6 @@ private:
                 }
             }
             std::vector<float> u = {float(mW), float(mH), str, 0, 0,0,0,0};
-            fprintf(stderr, "[EXACT-FIRST-MATCH] pat=%s op=%d at i=%d\n", pat.ispType, (int)ops[idx[0]]->type, idx[0]);
     return applyExact(ops, i, pat, mW, mH, u);
         }
 
@@ -2029,18 +2701,20 @@ private:
         if (!mulToAdd) {
             VLOG(2) << "[P1] R5: chain(mul->add) fail at " << mulIdx << ", mulOut="
                     << (ops[mulIdx]->outputIndexes.empty()?-1:ops[mulIdx]->outputIndexes[0]);
+            return false;
+        }
 
         // GUARD: reject if Clip/ReLU6 follows Add (that's saturation/unsharp, not LDCI)
         // LDCI ends with Add(input + scaled). Saturation/Unsharp have Clip(0,1) after.
-        int addOut = ops[addIdx]->outputIndexes.empty() ? -1 : ops[addIdx]->outputIndexes[0];
-        if (addOut >= 0) {
-            int nextIdx = consumerOfType(ops, addOut, MNN::OpType_ReLU6);
-            if (nextIdx >= 0 && ops[nextIdx]) {
-                VLOG(2) << "[P1] R5: rejecting at " << i << " — Clip/ReLU6 after Add (not LDCI)";
-                return false;
+        {
+            int addOut = ops[addIdx]->outputIndexes.empty() ? -1 : ops[addIdx]->outputIndexes[0];
+            if (addOut >= 0) {
+                int nextIdx = consumerOfType(ops, addOut, MNN::OpType_ReLU6);
+                if (nextIdx >= 0 && ops[nextIdx]) {
+                    VLOG(2) << "[P1] R5: rejecting at " << i << " — Clip/ReLU6 after Add (not LDCI)";
+                    return false;
+                }
             }
-        }
-            return false;
         }
 
         std::vector<float> u = {float(mW),float(mH),0.5f,1.0f, 0,0,0,0};
@@ -3180,6 +3854,22 @@ private:
     bool tryTone(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         if (!ops[i] || ops[i]->type != MNN::OpType_BinaryOp) return false;
         auto* bin = ops[i]->main.AsBinaryOp(); if (!bin || bin->opType != MNN::BinaryOpOperation_POW) return false;
+        // ToneBlock guard: the first non-CT/Const/Input op after the POW must be
+        // ReLU6 (real ToneBlock: POW→ReLU6 adjacency). Gamma's POW is followed by
+        // a data op (Input/MUL) so tryTone can never steal GammaBlock — in HEAVY/
+        // PRO it was fusing Gamma+Vignetting+Saturation as isp.tone.
+        {
+            bool adjReLU6 = false;
+            for (int j = i + 1; j < (int)ops.size(); j++) {
+                if (!ops[j]) continue;
+                if (ops[j]->type == MNN::OpType_Const ||
+                    ops[j]->type == MNN::OpType_ConvertTensor ||
+                    ops[j]->type == MNN::OpType_Input) continue;
+                adjReLU6 = (ops[j]->type == MNN::OpType_ReLU6);
+                break;
+            }
+            if (!adjReLU6) return false;
+        }
         float gamma = 2.2f;
         // Try to read gamma from the const input
         for (int inIdx : ops[i]->inputIndexes) {
@@ -3757,473 +4447,11 @@ public:
     }
 
     bool onExecute(std::unique_ptr<MNN::NetT>& net) const override {
-        auto& ops = net->oplists;
-        bool changed = false;
-
-        // Extract dimensions from the first Extra op's output_shape
-        for (auto& op : ops) {
-            if (op && op->type == MNN::OpType_Extra && op->main.AsExtra()) {
-                auto* ex = op->main.AsExtra();
-                for (auto& attr : ex->attr) {
-                    if (attr && attr->key == "output_shape" && attr->tensor &&
-                        attr->tensor->int32s.size() >= 4) {
-                        mH = attr->tensor->int32s[2];
-                        mW = attr->tensor->int32s[3];
-                        break;
-                    }
-                }
-                if (mW > 0 && mH > 0) break;
-            }
-        }
-        if (mW == 0 || mH == 0) {
-            mW = 1920; mH = 1080;
-        }
-
-        // Walk in pipeline order: after Pass1 the ops form a linear chain
-        // Input → Extra(unpack) → Extra(demosaic) → Extra(fcs) → ...
-        // Collect consecutive Extra ops and fuse adjacent valid pairs.
-        bool any = true;
-        while (any) {
-            any = false;
-
-            // Collect pipeline Extras in tensor chain order from Input
-            std::vector<int> extras;
-            {
-                int cur = -1;
-                for (auto& op : ops)
-                    if (op && op->type == MNN::OpType_Input && !op->outputIndexes.empty())
-                        { cur = op->outputIndexes[0]; break; }
-                // Try chain order first (tracing tensor from Input)
-                if (cur >= 0) {
-                    while (cur >= 0) {
-                        bool found = false;
-                        for (int j = 0; j < (int)ops.size(); j++) {
-                            if (!ops[j] || ops[j]->type != MNN::OpType_Extra) continue;
-                            for (int inIdx : ops[j]->inputIndexes)
-                                if (traceTensor(inIdx, ops) == cur) {
-                                    extras.push_back(j);
-                                    cur = ops[j]->outputIndexes.empty() ? -1 : ops[j]->outputIndexes[0];
-                                    found = true; break;
-                                }
-                            if (found) break;
-                        }
-                        if (!found) break;
-                    }
-                }
-                // If chain tracing failed, fall back to scanning all Extras
-                // and linking them by their tensor positions
-                if (extras.size() < 2) {
-                    extras.clear();
-                    for (int j = 0; j < (int)ops.size(); j++) {
-                        if (ops[j] && ops[j]->type == MNN::OpType_Extra) {
-                            extras.push_back(j);
-                        }
-                    }
-                    VLOG(1) << "[P2] fallback scan found " << extras.size() << " Extras";
-                }
-            }
-            if (extras.size() < 2) break;
-
-            // R10: unpack_blc + demosaic_ccm → unpack_demosaic
-            for (size_t k = 0; k + 1 < extras.size(); k++) {
-                int i = extras[k], j = extras[k+1];
-                if (isExtraOfType(ops[i].get(), "isp.unpack_blc") &&
-                    isExtraOfType(ops[j].get(), "isp.demosaic_ccm") &&
-                    matchUnpackDemosaic(ops, i, j)) {
-                    any = true; break;
-                }
-            }
-            if (any) continue;
-
-            // R10b: unpack_blc + isp.demosaic(algorithm=binning) → unpack_demosaic
-            for (size_t k = 0; k + 1 < extras.size(); k++) {
-                int i = extras[k], j = extras[k+1];
-                if (isExtraOfType(ops[i].get(), "isp.unpack_blc") &&
-                    isExtraOfTypeWithAlgo(ops[j].get(), "isp.demosaic", "binning") &&
-                    matchUnpackDemosaicFromUnified(ops, i, j)) {
-                    any = true; break;
-                }
-            }
-            if (any) continue;
-
-            // R8: fcs + display → fcs_display (must fire before R9 to avoid ee_ldci
-            //     blocking the fcs+display adjacency)
-            for (size_t k = 0; k + 1 < extras.size(); k++) {
-                int i = extras[k], j = extras[k+1];
-                if (isExtraOfType(ops[i].get(), "isp.fcs") &&
-                    isExtraOfType(ops[j].get(), "isp.display") &&
-                    matchFcsDisplay(ops, i, j)) {
-                    any = true; break;
-                }
-            }
-            if (any) continue;
-
-            // R9: ee + ldci → ee_ldci
-            for (size_t k = 0; k + 1 < extras.size(); k++) {
-                int i = extras[k], j = extras[k+1];
-                if (!ops[i] || !ops[j]) continue;
-                if ((isExtraOfType(ops[i].get(), "isp.ee") && isExtraOfType(ops[j].get(), "isp.ldci")) ||
-                    (isExtraOfType(ops[i].get(), "isp.ldci") && isExtraOfType(ops[j].get(), "isp.ee"))) {
-                    if (matchEeLdci(ops, i, j)) { any = true; break; }
-                }
-            }
-            if (any) continue;
-
-            // R11: unpack_demosaic + fcs_display → unpack_demosaic (fuse display gamma)
-            for (size_t k = 0; k + 1 < extras.size(); k++) {
-                int i = extras[k], j = extras[k+1];
-                if ((isExtraOfType(ops[i].get(), "isp.unpack_demosaic") &&
-                     isExtraOfType(ops[j].get(), "isp.fcs_display")) &&
-                    matchUnpackDisplay(ops, i, j)) {
-                    any = true; break;
-                }
-            }
-            if (any) continue;
-
-            // R12: unpack_demosaic + fcs → unpack_demosaic (fuse FCS into unpack shader)
-            for (size_t k = 0; k + 1 < extras.size(); k++) {
-                int i = extras[k], j = extras[k+1];
-                if (matchUnpackFcs(ops, i, j)) {
-                    any = true; break;
-                }
-            }
-            if (any) continue;
-
-            // R11b: unpack_demosaic + ... + display → unpack_demosaic (fuse display gamma)
-            // After R12 and R9, we may have unpack_demosaic_fcs, ee_ldci, display.
-            // This rule skips over cosmetic intermediates (ee_ldci, ee, ldci, fcs)
-            // to absorb display gamma directly into unpack_demosaic.
-            for (size_t k = 0; k + 1 < extras.size(); k++) {
-                int i = extras[k];
-                if (!isExtraOfType(ops[i].get(), "isp.unpack_demosaic")) continue;
-                // Find display somewhere after i, skipping only cosmetic extras
-                for (size_t kk = k + 1; kk < extras.size(); kk++) {
-                    int mid = extras[kk];
-                    if (isExtraOfType(ops[mid].get(), "isp.display")) {
-                        if (matchUnpackDisplayDirect(ops, i, mid)) {
-                            any = true; break;
-                        }
-                    }
-                    // Allow cosmetic intermediates
-                    if (!isExtraOfType(ops[mid].get(), "isp.ee_ldci") &&
-                        !isExtraOfType(ops[mid].get(), "isp.ee") &&
-                        !isExtraOfType(ops[mid].get(), "isp.ldci") &&
-                        !isExtraOfType(ops[mid].get(), "isp.fcs")) {
-                        break;  // non-cosmetic op in between → stop
-                    }
-                }
-                if (any) break;
-            }
-            if (any) continue;
-
-            break;
-        }
-
-        ops.erase(std::remove_if(ops.begin(), ops.end(),
-                  [](const std::unique_ptr<OpT>& o) { return !o; }), ops.end());
-        if (changed) VLOG(1) << "[P2] Fusion complete: " << ops.size() << " ops";
-        return changed;
-    }
-
-private:
-    mutable int mW = 1920, mH = 1080;
-
-    bool merge2(MNN::NetT* net, const std::vector<int>& idx,
-                const char* fusedType, const std::vector<float>& uniforms) {
-        auto* first = net->oplists[idx[0]].get();
-        auto* last  = net->oplists[idx.back()].get();
-
-        first->main.AsExtra()->type = fusedType;
-        first->main.AsExtra()->attr.clear();  // drop old attrs
-        buildCommonAttrs(first->main.AsExtra(), mW, mH, uniforms);
-        setEngine(first->main.AsExtra());
-        addSpirv(first->main.AsExtra(), fusedType);
-        first->outputIndexes[0] = last->outputIndexes[0];
-
-        for (size_t k = 1; k < idx.size(); k++)
-            net->oplists[idx[k]].reset();
-        return true;
-    }
-
-    // R8: isp.fcs + isp.display → isp.fcs_display (pair at indices i,j)
-    bool matchFcsDisplay(std::vector<std::unique_ptr<OpT>>& ops, int i, int j) const {
-        VLOG(1) << "[P2] R8: FcsDisplay at " << i << "+" << j;
-        auto* fcs = ops[i]->main.AsExtra();
-        int W, H;
-        getExtraDims(ops[i], W, H);
-        // Read fcs strength from named attrs
-        auto fcsVals = getNamedFloats(fcs, "fcs");
-        float str = (fcsVals.size() >= 1) ? fcsVals[0] : 1.0f;
-        std::vector<float> u = {float(W),float(H), str,0, 2.2f,0, 0,0,0};
-        ops[i]->main.AsExtra()->type = "isp.fcs_display";
-        ops[i]->main.AsExtra()->attr.clear();
-        buildCommonAttrs(ops[i]->main.AsExtra(), W, H, u);
-        addNamedFloats(ops[i]->main.AsExtra(), "fcs",     {str, 0.0f});
-        addNamedFloats(ops[i]->main.AsExtra(), "display", {2.2f, 0.0f});
-        setEngine(ops[i]->main.AsExtra());
-        addSpirv(ops[i]->main.AsExtra(), "isp.fcs_display");
-        ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
-        ops[j].reset();
-        return true;
-    }
-
-    // R9: isp.ee + isp.ldci → isp.ee_ldci (pair at indices i,j, either order)
-    bool matchEeLdci(std::vector<std::unique_ptr<OpT>>& ops, int i, int j) const {
-        // Determine order: ee→ldci or ldci→ee
-        bool ldciFirst = isExtraOfType(ops[i].get(), "isp.ldci");
-        int keepIdx = ldciFirst ? j : i;  // keep the FIRST in chain order (ee)
-        int resetIdx = ldciFirst ? i : j; // reset the SECOND
-        
-        std::string order = ldciFirst ? "ldci→ee" : "ee→ldci";
-        VLOG(1) << "[P2] R9: EeLdci at " << i << "+" << j << " (" << order << ")";
-        int W, H;
-        getExtraDims(ops[keepIdx], W, H);
-        if (W <= 0 || H <= 0) getExtraDims(ops[resetIdx], W, H);
-        if (W <= 0 || H <= 0) { W = 1920; H = 1080; }
-        std::vector<float> u = {float(W),float(H), 0.5f,0.01f, 0.5f,1.0f, 0,0};
-        // Read named params from source ops
-        auto* eeEx = ops[ldciFirst ? j : i]->main.AsExtra();
-        auto* ldciEx = ops[ldciFirst ? i : j]->main.AsExtra();
-        auto eeVals = getNamedFloats(eeEx, "ee");
-        auto ldciVals = getNamedFloats(ldciEx, "ldci");
-        if (eeVals.size() >= 2) { u[2] = eeVals[0]; u[3] = eeVals[1]; }
-        if (ldciVals.size() >= 2) { u[4] = ldciVals[0]; u[5] = ldciVals[1]; }
-        ops[keepIdx]->main.AsExtra()->type = "isp.ee_ldci";
-        ops[keepIdx]->main.AsExtra()->attr.clear();
-        buildCommonAttrs(ops[keepIdx]->main.AsExtra(), W, H, u);
-        addNamedFloats(ops[keepIdx]->main.AsExtra(), "ee",   {u[2], u[3]});
-        addNamedFloats(ops[keepIdx]->main.AsExtra(), "ldci", {u[4], u[5]});
-        setEngine(ops[keepIdx]->main.AsExtra());
-        addSpirv(ops[keepIdx]->main.AsExtra(), "isp.ee_ldci");
-        ops[keepIdx]->outputIndexes[0] = ops[resetIdx]->outputIndexes[0];
-        ops[resetIdx].reset();
-        return true;
-    }
-
-    // R10: isp.unpack_blc + isp.demosaic_ccm → isp.unpack_demosaic
-    // Extract W,H from an existing Extra op's output_shape attribute
-    void getExtraDims(const std::unique_ptr<OpT>& op, int& W, int& H) const {
-        W = 1920; H = 1080;
-        if (!op || op->type != MNN::OpType_Extra) return;
-        auto* ex = op->main.AsExtra();
-        if (!ex) return;
-        for (auto& attr : ex->attr) {
-            if (attr && attr->key == "output_shape" && attr->tensor &&
-                attr->tensor->int32s.size() >= 4) {
-                H = attr->tensor->int32s[2];
-                W = attr->tensor->int32s[3];
-                break;
-            }
-        }
-    }
-
-    // R10: isp.unpack_blc + isp.demosaic_ccm → isp.unpack_demosaic (pair at i,j)
-    bool matchUnpackDemosaic(std::vector<std::unique_ptr<OpT>>& ops, int i, int j) const {
-        VLOG(1) << "[P2] R10: UnpackDemosaic at " << i << "+" << j;
-        int W, H;
-        getExtraDims(ops[j], W, H);   // demosaic dims (output=FHD)
-        int inpW = W*2, inpH = H*2;    // input dims (Bayer=4K)
-
-        // Build const buffer for unpack_demosaic:
-        // [dims4, smax, blc4, wb4, ccm9, fcs2, bayer_pat, gamma]
-        std::vector<float> u = {float(W),float(H), float(inpW),float(inpH), 1023,
-                                0,0,0,0, 1,1,1,1,
-                                1,0,0, 0,1,0, 0,0,1,
-                                1.0f, 0.0f,  // fcs_str=1.0, fcs_off=0.0 (default)
-                                0,0};  // bayer_pattern=0(RGGB), gamma=0
-
-        // Read blc/wb from unpack_blc's const buffer (positions [5..12])
-        auto unpackConst = getExtraConst(ops[i]);
-        if (unpackConst.size() >= 13) {
-            u[5] = unpackConst[5];  u[6] = unpackConst[6];
-            u[7] = unpackConst[7];  u[8] = unpackConst[8];
-            u[9] = unpackConst[9];  u[10] = unpackConst[10];
-            u[11] = unpackConst[11]; u[12] = unpackConst[12];
-        }
-
-        // Read CCM from demosaic_ccm's const buffer (positions [5..13])
-        auto ccmConst = getExtraConst(ops[j]);
-        if (ccmConst.size() >= 14) {
-            for (int k = 0; k < 9; k++) u[13 + k] = ccmConst[5 + k];
-        }
-
-        ops[i]->main.AsExtra()->type = "isp.unpack_demosaic";
-        ops[i]->main.AsExtra()->attr.clear();
-        buildCommonAttrs(ops[i]->main.AsExtra(), W, H, u);
-        clearElementwise(ops[i]->main.AsExtra());
-        // Store named params for R11 fusion
-        addNamedFloats(ops[i]->main.AsExtra(), "blc", {u[5],u[6],u[7],u[8]});
-        addNamedFloats(ops[i]->main.AsExtra(), "wb",  {u[9],u[10],u[11],u[12]});
-        addNamedFloats(ops[i]->main.AsExtra(), "ccm", {u[13],u[14],u[15],u[16],u[17],u[18],u[19],u[20],u[21]});
-        setEngine(ops[i]->main.AsExtra());
-        addSpirv(ops[i]->main.AsExtra(), "isp.unpack_demosaic");
-        ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
-        ops[j].reset();
-        return true;
-    }
-
-    // Check if Extra op has a specific type AND algorithm attribute
-    static bool isExtraOfTypeWithAlgo(const OpT* op, const char* type, const char* algo) {
-        if (!op || op->type != MNN::OpType_Extra) return false;
-        auto* e = op->main.AsExtra();
-        if (!e || e->type != type) return false;
-        for (auto& attr : e->attr) {
-            if (attr && attr->key == "algorithm") {
-                return attr->s == algo;
-            }
-        }
-        return false;
-    }
-
-    // R10b: isp.unpack_blc + isp.demosaic(algorithm=binning) → unpack_demosaic
-    // Same as R10 but for the unified isp.demosaic opset with algorithm=binning.
-    bool matchUnpackDemosaicFromUnified(std::vector<std::unique_ptr<OpT>>& ops, int i, int j) const {
-        VLOG(1) << "[P2] R10b: UnpackDemosaicFromUnified at " << i << "+" << j;
-        int W, H;
-        getExtraDims(ops[j], W, H);
-        int inpW = W*2, inpH = H*2;
-
-        std::vector<float> u = {float(W),float(H), float(inpW),float(inpH), 1023,
-                                0,0,0,0, 1,1,1,1,
-                                1,0,0, 0,1,0, 0,0,1,
-                                1.0f, 0.0f,  // fcs_str, fcs_off
-                                0,0};  // bayer_pattern=0(RGGB), gamma=0
-
-        // Read blc/wb from unpack_blc's const buffer
-        auto unpackConst = getExtraConst(ops[i]);
-        if (unpackConst.size() >= 13) {
-            u[5] = unpackConst[5];  u[6] = unpackConst[6];
-            u[7] = unpackConst[7];  u[8] = unpackConst[8];
-            u[9] = unpackConst[9];  u[10] = unpackConst[10];
-            u[11] = unpackConst[11]; u[12] = unpackConst[12];
-        }
-
-        // Read CCM from demosaic's const buffer (positions [5..13])
-        auto dmConst = getExtraConst(ops[j]);
-        if (dmConst.size() >= 14) {
-            for (int k = 0; k < 9; k++) u[13 + k] = dmConst[5 + k];
-        }
-
-        ops[i]->main.AsExtra()->type = "isp.unpack_demosaic";
-        ops[i]->main.AsExtra()->attr.clear();
-        buildCommonAttrs(ops[i]->main.AsExtra(), W, H, u);
-        clearElementwise(ops[i]->main.AsExtra());
-        addNamedFloats(ops[i]->main.AsExtra(), "blc", {u[5],u[6],u[7],u[8]});
-        addNamedFloats(ops[i]->main.AsExtra(), "wb",  {u[9],u[10],u[11],u[12]});
-        addNamedFloats(ops[i]->main.AsExtra(), "ccm", {u[13],u[14],u[15],u[16],u[17],u[18],u[19],u[20],u[21]});
-        setEngine(ops[i]->main.AsExtra());
-        addSpirv(ops[i]->main.AsExtra(), "isp.unpack_demosaic");
-        ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
-        ops[j].reset();
-        return true;
-    }
-
-    // R11: isp.unpack_demosaic + isp.fcs_display → unpack_demosaic (no separate display)
-    // Fuses display gamma correction into the unpack_demosaic shader by writing
-    // display gamma and fcs params into the const buffer at positions [22..24].
-    bool matchUnpackDisplay(std::vector<std::unique_ptr<OpT>>& ops, int i, int j) const {
-        VLOG(1) << "[P2] R11: UnpackDisplay at " << i << "+" << j;
-        
-        // Read fcs_str, fcs_off, display_gamma from fcs_display's named attrs
-        auto* fcsDispEx = ops[j]->main.AsExtra();
-        auto fcsVals = getNamedFloats(fcsDispEx, "fcs");
-        auto dispVals = getNamedFloats(fcsDispEx, "display");
-        float fcs_str = (fcsVals.size() >= 1) ? fcsVals[0] : 1.0f;
-        float fcs_off = (fcsVals.size() >= 2) ? fcsVals[1] : 0.0f;
-        float gamma = (dispVals.size() >= 1) ? dispVals[0] : 2.2f;
-        
-        // Update unpack_demosaic const buffer: positions [22..25]
-        // Layout: [22]=fcs_str, [23]=fcs_off, [24]=bayer_pattern, [25]=display_gamma
-        auto* ex = ops[i]->main.AsExtra();
-        for (auto& attr : ex->attr) {
-            if (attr && attr->key == "const" && attr->tensor &&
-                attr->tensor->dataType == MNN::DataType_DT_FLOAT &&
-                attr->tensor->float32s.size() >= 26) {
-                attr->tensor->float32s[22] = fcs_str;
-                attr->tensor->float32s[23] = fcs_off;
-                // Position 24 is bayer_pattern (preserved from unpack)
-                // Position 25 is display gamma (0=none, >0=apply gamma)
-                attr->tensor->float32s[25] = gamma;
-                break;
-            }
-        }
-        
-        VLOG(1) << "[P2] R11: UnpackDisplay at " << i << "+" << j
-                << " (fcs_str=" << fcs_str << " fcs_off=" << fcs_off
-                << " gamma=" << gamma << ")";
-        
-        // Redirect output through fcs_display's output, remove fcs_display
-        ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
-        ops[j].reset();
-        return true;
-    }
-
-    // R12: isp.unpack_demosaic + isp.fcs → isp.unpack_demosaic (fuse FCS into unpack shader)
-    // FCS is a trivial linear transform that can run in the unpack shader.
-    // Eliminates one GPU dispatch and one buffer roundtrip.
-    bool matchUnpackFcs(std::vector<std::unique_ptr<OpT>>& ops, int i, int j) const {
-        if (!isExtraOfType(ops[i].get(), "isp.unpack_demosaic")) return false;
-        if (!isExtraOfType(ops[j].get(), "isp.fcs")) return false;
-        // Check if unpack_demosaic output feeds into fcs (skip intermediate Const/Mul ops)
-        if (!isChainSkipCT(ops[i].get(), ops[j].get(), ops)) return false;
-
-        // Read FCS params from named attrs
-        auto* fcsEx = ops[j]->main.AsExtra();
-        auto fcsVals = getNamedFloats(fcsEx, "fcs");
-        float fcs_str = (fcsVals.size() >= 1) ? fcsVals[0] : 1.0f;
-        float fcs_off = (fcsVals.size() >= 2) ? fcsVals[1] : 0.0f;
-
-        // Update unpack_demosaic const buffer: write fcs params at positions [22..23]
-        auto* ex = ops[i]->main.AsExtra();
-        for (auto& attr : ex->attr) {
-            if (attr && attr->key == "const" && attr->tensor &&
-                attr->tensor->dataType == MNN::DataType_DT_FLOAT &&
-                attr->tensor->float32s.size() >= 24) {
-                attr->tensor->float32s[22] = fcs_str;
-                attr->tensor->float32s[23] = fcs_off;
-                break;
-            }
-        }
-
-        VLOG(1) << "[P2] R12: UnpackFcs at " << i << "+" << j
-                << " (str=" << fcs_str << " off=" << fcs_off << ")";
-
-        // Redirect unpack_demosaic output to fcs output, remove fcs
-        ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
-        ops[j].reset();
-        return true;
-    }
-
-    // R11b: isp.unpack_demosaic + ... + isp.display → isp.unpack_demosaic
-    // Absorbs display gamma into unpack_demosaic's const buffer even when
-    // cosmetic ops (ee_ldci, ee, ldci, fcs) are between them.
-    // This handles the case where FCS is already fused into unpack_demosaic
-    // and EE+LDCI are fused into ee_ldci, leaving:
-    //   [unpack_demosaic_fcs, ee_ldci, display]
-    bool matchUnpackDisplayDirect(
-        std::vector<std::unique_ptr<OpT>>& ops, int i, int j) const {
-        auto* dispEx = ops[j]->main.AsExtra();
-        auto dispVals = getNamedFloats(dispEx, "display");
-        float gamma = (dispVals.size() >= 1) ? dispVals[0] : 2.2f;
-        
-        // Write gamma into unpack_demosaic's const buffer at position [25]
-        // Layout: [24]=bayer_pattern, [25]=display_gamma (0=none, >0=apply gamma)
-        auto* ex = ops[i]->main.AsExtra();
-        for (auto& attr : ex->attr) {
-            if (attr && attr->key == "const" && attr->tensor &&
-                attr->tensor->dataType == MNN::DataType_DT_FLOAT &&
-                attr->tensor->float32s.size() >= 26) {
-                attr->tensor->float32s[25] = gamma;
-                break;
-            }
-        }
-        
-        VLOG(1) << "[P2] R11b: UnpackDisplayDirect at " << i << "+" << j
-                << " (gamma=" << gamma << ")";
-        
-        // Redirect unpack_demosaic output to display output, remove display
-        ops[i]->outputIndexes[0] = ops[j]->outputIndexes[0];
-        ops[j].reset();
+        // ═══ PASS2 FUSION DISABLED (session goal) ═══
+        // Merging isp.* Extras is deferred: Pass1 pattern matching is the
+        // focus of validation. Pass2 renamed isp.display→isp.fcs_display
+        // (R8 rule), breaking the 1:1 profile gate.
+        (void)net;
         return true;
     }
 
@@ -4334,10 +4562,8 @@ public:
                 }
             }
             if (!enableIsp) {
-                fprintf(stderr, "[IspFusion] DISABLED (default). Pass isp_fusion=enable metadata to activate.\n");
                 return true;  // skip fusion, pass through as-is
             }
-            fprintf(stderr, "[IspFusion] ENABLED via ONNX metadata (isp_fusion=enable).\n");
         }
 
         VLOG(1) << "[IspFusion] === Pre-pass: Remove Identity ops ===";
@@ -4350,68 +4576,6 @@ public:
         Pass2_FuseExtra::instance()->onExecute(net);
 
         VLOG(1) << "[IspFusion] Complete: " << net->oplists.size() << " ops";
-
-        // ═══ DIAGNOSTIC: Warn if primitive ops remain after ISP fusion ═══
-        // After Pass1+Pass2, ISP-pattern ops should be Extra(isp.*) types.
-        // Any remaining Conv/BinaryOp/UnaryOp/Pooling/Reduction may indicate
-        // incomplete fusion or non-ISP ops.
-        {
-            int ispCount = 0, primCount = 0;
-            std::map<std::string, int> ispTypes;
-            std::map<MNN::OpType, int> primTypes;
-            for (size_t i = 0; i < net->oplists.size(); i++) {
-                auto& op = net->oplists[i];
-                if (!op) continue;
-                if (op->type == MNN::OpType_Extra) {
-                    auto* ex = op->main.AsExtra();
-                    if (ex && ex->type.size() > 4 && ex->type.substr(0, 4) == "isp.") {
-                        ispCount++;
-                        ispTypes[ex->type]++;
-                    }
-                } else if (op->type == MNN::OpType_Convolution ||
-                           op->type == MNN::OpType_BinaryOp ||
-                           op->type == MNN::OpType_UnaryOp ||
-                           op->type == MNN::OpType_Pooling ||
-                           op->type == MNN::OpType_Reduction ||
-                           op->type == MNN::OpType_Scale ||
-                           op->type == MNN::OpType_ReLU ||
-                           op->type == MNN::OpType_ReLU6 ||
-                           op->type == MNN::OpType_Cast ||
-                           op->type == MNN::OpType_Eltwise) {
-                    primCount++;
-                    primTypes[op->type]++;
-                }
-            }
-            if (ispCount > 0) {
-                fprintf(stderr, "[IspFusion] ISP opsets in use (%d total):\n", ispCount);
-                for (auto& kv : ispTypes) {
-                    fprintf(stderr, "  %-30s  x%d\n", kv.first.c_str(), kv.second);
-                }
-            }
-            if (primCount > 0) {
-                fprintf(stderr, "[IspFusion] WARNING: %d primitive ops remain after ISP fusion:\n", primCount);
-                for (auto& kv : primTypes) {
-                    fprintf(stderr, "  %-30s  x%d\n", MNN::EnumNamesOpType()[kv.first], kv.second);
-                }
-            } else {
-                fprintf(stderr, "[IspFusion] OK: All ISP-pattern ops converted to Extra.\n");
-            }
-        }
-
-        // Debug: dump all op types
-        for (size_t i = 0; i < net->oplists.size(); i++) {
-            auto& op = net->oplists[i];
-            if (op && op->type == MNN::OpType_Extra) {
-                auto* ex = op->main.AsExtra();
-                fprintf(stderr, "  [%zu] Extra(%s)", i, ex->type.c_str());
-                for (auto& a : ex->attr) {
-                    if (a && a->key == "optimized_dispatch") fprintf(stderr, " od=%d", a->b ? 1 : 0);
-                }
-                fprintf(stderr, "\n");
-            } else if (op) {
-                fprintf(stderr, "  [%zu] %s\n", i, MNN::EnumNamesOpType()[op->type]);
-            }
-        }
         return true;
     }
 };
