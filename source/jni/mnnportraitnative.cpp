@@ -76,3 +76,29 @@ Java_com_taobao_android_mnn_MNNPortraitNative_nativeConvertMaskToPixelsMultiChan
 
     return arr;
 }
+
+extern "C" JNIEXPORT jint JNICALL Java_com_taobao_android_mnn_MNNPortraitNative_nativeTensorGetData(JNIEnv *env, jclass type,
+                                                                                                     jlong tensorPtr,
+                                                                                                     jfloatArray dest) {
+    auto tensor = reinterpret_cast<MNN::Tensor *>(tensorPtr);
+    if (nullptr == dest) {
+        std::unique_ptr<MNN::Tensor> hostTensor(new MNN::Tensor(tensor, tensor->getDimensionType(), false));
+        return hostTensor->elementSize();
+    }
+    auto length = env->GetArrayLength(dest);
+    std::unique_ptr<MNN::Tensor> hostTensor(new MNN::Tensor(tensor, tensor->getDimensionType(), true));
+    tensor->copyToHostTensor(hostTensor.get());
+    tensor = hostTensor.get();
+
+    auto size = tensor->elementSize();
+    if (length < size) {
+        MNN_ERROR("Can't copy buffer, length no enough");
+        return JNI_FALSE;
+    }
+    auto destPtr = env->GetFloatArrayElements(dest, nullptr);
+    ::memcpy(destPtr, tensor->host<float>(), size * sizeof(float));
+    env->ReleaseFloatArrayElements(dest, destPtr, 0);
+
+    return JNI_TRUE;
+}
+
