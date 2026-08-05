@@ -1012,10 +1012,20 @@ static const ExactPattern kExactColorspace[] = {
 };
 
 static const ExactPattern kExactNormalize[] = {
-    // NormalizeBlock: Cast→RealDiv(1-elem const, FP division) → isp.fcs
+    // NormalizeBlock: Cast→RealDiv(sensor_max Input, FP division) → isp.fcs
     // NOTE: uses REALDIV (floating-point), not DIV (integer).
-    ExactPattern({MNN::OpType_Cast, MNN::OpType_BinaryOp},
-                 1, 1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_REALDIV),
+    // 2-op entry (new lib pass1): Cast(DT_VARIANT→DT_FLOAT) survives because
+    // INT16→DT_INT32 mapping makes the Cast valid. Chain = Cast→BinaryOp(REALDIV).
+    // Profile-variant ctor: const checks apply to idx[0] (the Cast, 1 input) so
+    // they must stay off; per-position chainBinOps pins idx[1] to REALDIV.
+    // Mirrors kExactRawBlcBlock's 2-op Cast→SUB entry.
+    ExactPattern({MNN::OpType_Cast, MNN::OpType_BinaryOp}, -1, -1,
+                 "isp.fcs", "isp.fcs",
+                 MNN::BinaryOpOperation_ADD, true, {}, {}, -1,
+                 {{1, MNN::BinaryOpOperation_REALDIV}}, -1),
+    // 1-op fallback: REALDIV with no Cast (old lib pass1, INT16→DT_FLOAT folded).
+    ExactPattern({MNN::OpType_BinaryOp},
+                 -1, -1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_REALDIV, true, {}),
 };
 
 static const ExactPattern kExactAe[] = {
