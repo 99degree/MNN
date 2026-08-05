@@ -106,7 +106,11 @@ ErrorCode VulkanGridSample::onEncode(const std::vector<Tensor*>& inputs, const s
 class VulkanGridSampleCreator : public VulkanBackend::Creator {
 public:
     virtual VulkanBasicExecution* onCreate(const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs, const MNN::Op* op, Backend* bn) const override {
-        MNN_ASSERT(outputs[0]->getType().code == halide_type_float);
+        // Graceful fallback: Vulkan GridSample only supports FLOAT. Return nullptr
+        // so the Session routes the op to the CPU backend instead of aborting.
+        if (outputs[0]->getType().code != halide_type_float) {
+            return nullptr;
+        }
         return new VulkanGridSample(op, bn);
     }
 };

@@ -86,13 +86,24 @@ ErrorCode VulkanPool::onEncode(const std::vector<Tensor*>& inputs, const std::ve
             padHeight    = 0;
         }
 
-        if(mCommon->padType() == PoolPadType_SAME){
+        auto padType = mCommon->padType();
+        if (padType == PoolPadType_SAME) {
             int padNeededWidth  = (output->width() - 1) * strideWidth + kernelWidth - input->width();
             int padNeededHeight = (output->height() - 1) * strideHeight + kernelHeight - input->height();
             padWidth            = padNeededWidth > 0 ? padNeededWidth / 2 : 0;
             padHeight           = padNeededHeight > 0 ? padNeededHeight / 2 : 0;
-        } else if (mCommon->padType() == PoolPadType_VALID) {
+        } else if (padType == PoolPadType_VALID) {
             padWidth = padHeight = 0;
+        }
+        // Caffe pad mode: explicit 4-entry pads() array [top, left, bottom, right]
+        // overrides padX()/padY() which are computed elsewhere and may be wrong
+        // for non-symmetric pads (e.g. when converter emits asymmetric border).
+        if (!mCommon->isGlobal() && mCommon->pads() != nullptr && padType == PoolPadType_CAFFE) {
+            if (mCommon->pads()->size() == 4) {
+                padHeight = mCommon->pads()->data()[0];
+                padWidth  = mCommon->pads()->data()[1];
+            }
+            padType = PoolPadType_VALID;
         }
 
         pool->pad[0]        = padWidth;
@@ -104,7 +115,7 @@ ErrorCode VulkanPool::onEncode(const std::vector<Tensor*>& inputs, const std::ve
 
         auto countType = mCommon->countType();
         if (countType == AvgPoolCountType_DEFAULT) {
-            if (mCommon->padType() == PoolPadType_CAFFE) {
+            if (padType == PoolPadType_CAFFE) {
                 countType = AvgPoolCountType_INCLUDE_PADDING;
             } else {
                 countType = AvgPoolCountType_EXCLUDE_PADDING;
@@ -133,6 +144,13 @@ class VulkanPoolCreator : public VulkanBackend::Creator {
 public:
     virtual VulkanBasicExecution* onCreate(const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs, const MNN::Op* op,
                                 Backend* backend) const override {
+        // Vulkan pool shader only implements MAXPOOL and AVEPOOL. Other pool
+        // types (L2Pool, StochasticPool) fall back to the CPU backend, which
+        // has full coverage via CPUPool.
+        auto poolType = op->main_as_Pool()->type();
+        if (poolType != PoolType_MAXPOOL && poolType != PoolType_AVEPOOL) {
+            return nullptr;
+        }
         return new VulkanPool(op, backend, outputs[0]);
     }
 };
