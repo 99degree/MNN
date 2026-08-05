@@ -408,3 +408,10 @@ apps/iOS/MNNLLMChat/MNNLLMiOS/LocalModel/Qwen2.5-Omni-3B-MNN
 # smoke models converted on the host by ./test.sh local (sources are fetched
 # into /smoke_sources/, then MNNConvert writes the .caffe.mnn here)
 /resource/model/**/*.caffe.mnn
+
+# agent scratch artifacts (never commit)
+.agent/
+.lancedb_agent_index/
+*.o.tmp
+*.bak
+test_vulkan_check
