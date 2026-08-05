@@ -1,4 +1,23 @@
 file(GLOB_RECURSE OPTIMIZER_SRC ${CMAKE_CURRENT_LIST_DIR}/*.cpp)
+# Per-format extra optimizer passes are compiled only when the corresponding
+# converter backend is enabled; this keeps the existing code present in the
+# tree without pulling in deps of disabled backends.
+if(NOT MNN_BUILD_CONVERTER_TFLITE)
+    file(GLOB TFLITEXTRA_SRC ${CMAKE_CURRENT_LIST_DIR}/tflitextra/*.cpp)
+    list(REMOVE_ITEM OPTIMIZER_SRC ${TFLITEXTRA_SRC})
+endif()
+if(NOT MNN_BUILD_CONVERTER_TENSORFLOW)
+    file(GLOB TFEXTRA_SRC ${CMAKE_CURRENT_LIST_DIR}/tfextra/*.cpp)
+    list(REMOVE_ITEM OPTIMIZER_SRC ${TFEXTRA_SRC})
+endif()
+if(NOT MNN_BUILD_CONVERTER_CAFFE)
+    file(GLOB CAFFEEXTRA_SRC ${CMAKE_CURRENT_LIST_DIR}/caffeextra/*.cpp)
+    list(REMOVE_ITEM OPTIMIZER_SRC ${CAFFEEXTRA_SRC})
+endif()
+if(NOT MNN_BUILD_TORCH)
+    file(GLOB TORCHEXTRA_SRC ${CMAKE_CURRENT_LIST_DIR}/torchextra/*.cpp)
+    list(REMOVE_ITEM OPTIMIZER_SRC ${TORCHEXTRA_SRC})
+endif()
 add_library(MNNConverterOpt OBJECT ${OPTIMIZER_SRC})
 # MNN_compression.ph.h
 add_dependencies(MNNConverterOpt MNNCompress)
