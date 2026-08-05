@@ -1012,9 +1012,10 @@ static const ExactPattern kExactColorspace[] = {
 };
 
 static const ExactPattern kExactNormalize[] = {
-    // NormalizeBlock: Cast→Div(1-elem const) → isp.fcs
+    // NormalizeBlock: Cast→RealDiv(1-elem const, FP division) → isp.fcs
+    // NOTE: uses REALDIV (floating-point), not DIV (integer).
     ExactPattern({MNN::OpType_Cast, MNN::OpType_BinaryOp},
-                 1, 1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_DIV),
+                 1, 1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_REALDIV),
 };
 
 static const ExactPattern kExactAe[] = {
@@ -1288,10 +1289,18 @@ static const ExactPattern kExactNormalizeBlock[] = {
 ExactPattern({MNN::OpType_BinaryOp}, 1, 1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_MUL),
 };
 
-// RawBlcBlock: isp.unpack_blc (1-op chain)
-// Matches ANY BinaryOp(SUB) with 1 const element — no scalar value check.
+// RawBlcBlock: isp.unpack_blc (2-op Cast→SUB chain for new lib)
+// New lib preserves INT32 input → inserts Cast(DT_VARIANT→DT_FLOAT) before
+// the SUB (input - offset). Old lib converted input to FLOAT → no Cast.
+// 2-op entry (Cast→SUB) fires first; 1-op SUB is fallback for old lib.
 static const ExactPattern kExactRawBlcBlock[] = {
-ExactPattern({MNN::OpType_BinaryOp}, 1, 1, "isp.unpack_blc", "isp.unpack_blc", MNN::BinaryOpOperation_SUB),
+    // 2-op: Cast→SUB (new lib pass1)
+    ExactPattern({MNN::OpType_Cast, MNN::OpType_BinaryOp}, -1, -1,
+                 "isp.unpack_blc", "isp.unpack_blc",
+                 MNN::BinaryOpOperation_ADD, true, {}, {}, -1,
+                 {{1, MNN::BinaryOpOperation_SUB}}, -1),
+    // 1-op: SUB with 1 const element (old lib pass1, no Cast)
+    ExactPattern({MNN::OpType_BinaryOp}, 1, 1, "isp.unpack_blc", "isp.unpack_blc", MNN::BinaryOpOperation_SUB),
 };
 
 // RefBayerWbBlock: isp.fcs (1-op chain)
@@ -4523,46 +4532,17 @@ public:
         // JNI path:   OnnxPreprocessor.injectMetadata(onnx, "isp_fusion", "enable")
         {
             bool enableIsp = false;
-            // PRIMARY: modelConfig metadata field (propagated from ONNX
-            // metadata_props "isp_fusion" in cli.cpp before optimizeNet).
-            // This is the runtime-switchable metadata path — reliable because
-            // it rides on the modelConfig object that survives all passes.
+            // FORMAT-BASED GATE: fusion ONLY for MNN→MNN pass2.
+            // ONNX→MNN pass1 always stays primitive (no fusion).
+            // modelConfig is set by cli.cpp based on input format, or by the
+            // JNI bridge (mnn_convert_api.cpp) for MNN→MNN.
             auto* cfg = Global<modelConfig>::Get();
-            if (cfg != nullptr && cfg->ispFusionMeta.size() >= 6 &&
-                cfg->ispFusionMeta.substr(0, 6) == "enable") {
+            if (cfg != nullptr && cfg->model == modelConfig::MNN) {
                 enableIsp = true;
             }
-            // Fallback A: ExtraInfo buffer (ONNX metadata_props stored here as ExtraT flatbuffer)
-            if (!enableIsp && net->extraInfo && !net->extraInfo->buffer.empty()) {
-                auto* exInfo = flatbuffers::GetRoot<MNN::Extra>(net->extraInfo->buffer.data());
-                if (exInfo && exInfo->attr()) {
-                    for (auto* a : *exInfo->attr()) {
-                        if (a && a->key() && a->key()->str() == "isp_fusion" &&
-                            a->s() && a->s()->str().substr(0, 6) == "enable") {
-                            enableIsp = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            // Also check first op if it's a Meta Extra op
-            if (!enableIsp && !net->oplists.empty()) {
-                auto& first = net->oplists[0];
-                if (first && first->type == MNN::OpType_Extra) {
-                    auto* ex = first->main.AsExtra();
-                    if (ex && ex->type == "Meta") {
-                        for (auto& a : ex->attr) {
-                            if (a && a->key == "isp_fusion" && a->s.size() >= 6 &&
-                                a->s.substr(0, 6) == "enable") {
-                                enableIsp = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
             if (!enableIsp) {
-                return true;  // skip fusion, pass through as-is
+                VLOG(1) << "[IspFusion] input is not MNN — skipping ISP fusion (pass1 simple convert)";
+                return true;
             }
         }
 
