@@ -95,10 +95,13 @@ ErrorCode VulkanPool::onEncode(const std::vector<Tensor*>& inputs, const std::ve
         } else if (padType == PoolPadType_VALID) {
             padWidth = padHeight = 0;
         }
+        // Caffe pad mode: explicit 4-entry pads() array [top, left, bottom, right]
+        // overrides padX()/padY() which are computed elsewhere and may be wrong
+        // for non-symmetric pads (e.g. when converter emits asymmetric border).
         if (!mCommon->isGlobal() && mCommon->pads() != nullptr && padType == PoolPadType_CAFFE) {
             if (mCommon->pads()->size() == 4) {
                 padHeight = mCommon->pads()->data()[0];
-                padWidth = mCommon->pads()->data()[1];
+                padWidth  = mCommon->pads()->data()[1];
             }
             padType = PoolPadType_VALID;
         }
@@ -141,6 +144,13 @@ class VulkanPoolCreator : public VulkanBackend::Creator {
 public:
     virtual VulkanBasicExecution* onCreate(const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs, const MNN::Op* op,
                                 Backend* backend) const override {
+        // Vulkan pool shader only implements MAXPOOL and AVEPOOL. Other pool
+        // types (L2Pool, StochasticPool) fall back to the CPU backend, which
+        // has full coverage via CPUPool.
+        auto poolType = op->main_as_Pool()->type();
+        if (poolType != PoolType_MAXPOOL && poolType != PoolType_AVEPOOL) {
+            return nullptr;
+        }
         return new VulkanPool(op, backend, outputs[0]);
     }
 };

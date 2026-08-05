@@ -270,12 +270,24 @@ public:
         const bool single = inputs.size() == 1 && outputs.size() == 1;
         const bool binary = inputs.size() == 2 && outputs.size() == 2;
         bool binaryC4 = false;
+        // Vulkan LayerNorm shader only supports rank==2 (batch + channel) in C4 mode;
+        // higher-rank C4 (with spatial dims) fails the area!=1 check downstream and
+        // group>1 LayerNorm has no shader at all. Reject here so the Session routes
+        // these unsupported configs to CPULayerNorm rather than returning NOT_SUPPORT
+        // mid-execute.
+        auto layer_norm_param = op->main_as_LayerNorm();
+        if (nullptr != layer_norm_param && layer_norm_param->group() > 1) {
+            return nullptr;
+        }
         if (single && (op->defaultDimentionFormat() == MNN_DATA_FORMAT_NC4HW4 ||
                        TensorUtils::getDescribe(inputs[0])->dimensionFormat == MNN_DATA_FORMAT_NC4HW4)) {
+            if (inputs[0]->dimensions() != 2 || inputs[0]->length(1) <= 0) {
+                return nullptr;
+            }
             TensorUtils::getDescribe(inputs[0])->dimensionFormat = MNN_DATA_FORMAT_NC4HW4;
             TensorUtils::getDescribe(outputs[0])->dimensionFormat = MNN_DATA_FORMAT_NC4HW4;
         } else if (binary && op->defaultDimentionFormat() == MNN_DATA_FORMAT_NC4HW4) {
-            if (inputs[0]->dimensions() < 2 ||
+            if (inputs[0]->dimensions() != 2 ||
                 (inputs[0]->length(1) > 0 && inputs[0]->length(1) % 4 != 0)) {
                 return nullptr;
             }

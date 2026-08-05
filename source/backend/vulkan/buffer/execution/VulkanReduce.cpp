@@ -41,14 +41,48 @@ ErrorCode VulkanReduce::onEncode(const std::vector<Tensor*>& inputs, const std::
     auto outputTensor = vkBn->getBuffer(outputs[0]);
     auto ptr = reinterpret_cast<constBuffer*>(mConstBuffer->map());
     ::memset(ptr, 0, sizeof(constBuffer));
-    auto axisPos = mOp->main_as_ReductionParam()->dim()->data()[0];
-    auto axis = inputs[0]->length(axisPos);
+    auto reduce = mOp->main_as_ReductionParam();
+    auto dimParam = reduce->dim();
+    int rank = inputs[0]->dimensions();
+    // Resolve axes: handle null dim (reduce all), negative axes, and multi-axis.
+    // Caller (Creator) has validated that axes are sorted+contiguous; here we
+    // just normalize negatives and compute the combined reduce window.
+    int axisCount = (nullptr == dimParam) ? rank : dimParam->size();
+    int axes[MNN_MAX_TENSOR_DIM];
+    if (nullptr == dimParam) {
+        for (int i = 0; i < rank; ++i) {
+            axes[i] = i;
+        }
+    } else {
+        for (int i = 0; i < axisCount; ++i) {
+            int a = dimParam->data()[i];
+            if (a < 0) {
+                a += rank;
+            }
+            axes[i] = a;
+        }
+    }
+    int minAxis = rank;
+    int maxAxis = -1;
+    for (int i = 0; i < axisCount; ++i) {
+        if (axes[i] < minAxis) {
+            minAxis = axes[i];
+        }
+        if (axes[i] > maxAxis) {
+            maxAxis = axes[i];
+        }
+    }
+    // Combined axis length: product of all reduced dims (sorted, contiguous by Creator check).
+    int axis = 1;
+    for (int i = minAxis; i <= maxAxis; ++i) {
+        axis *= inputs[0]->length(i);
+    }
     int inside = 1;
-    for (int i=axisPos+1; i<inputs[0]->dimensions(); ++i) {
+    for (int i = maxAxis + 1; i < rank; ++i) {
         inside *= inputs[0]->length(i);
     }
     int outside = 1;
-    for (int i=0; i<axisPos; ++i) {
+    for (int i = 0; i < minAxis; ++i) {
         outside *= inputs[0]->length(i);
     }
     ptr->c = outside;
@@ -120,6 +154,51 @@ public:
         auto shader = _getShaderName(op, isint, vkBn->useFP16());
         if (shader.empty()) {
             return nullptr;
+        }
+        // Validate reduction axes for Vulkan kernel constraints.
+        // The reduce shader performs a single contiguous-window reduction per
+        // (outside, inside) pair, so it requires axes to be sorted and
+        // contiguous. Non-contiguous multi-axis reduce must fall back to CPU
+        // (CPUReduction handles arbitrary axes correctly).
+        auto reduce = op->main_as_ReductionParam();
+        auto dimParam = reduce->dim();
+        int rank = input0->dimensions();
+        int axisCount = (nullptr == dimParam) ? rank : dimParam->size();
+        if (axisCount <= 0 || axisCount > rank) {
+            return nullptr;
+        }
+        int axes[MNN_MAX_TENSOR_DIM];
+        if (nullptr == dimParam) {
+            for (int i = 0; i < rank; ++i) {
+                axes[i] = i;
+            }
+        } else {
+            for (int i = 0; i < axisCount; ++i) {
+                int a = dimParam->data()[i];
+                if (a < 0) {
+                    a += rank;
+                }
+                if (a < 0 || a >= rank) {
+                    return nullptr;
+                }
+                axes[i] = a;
+            }
+        }
+        // Insertion sort (axisCount is small).
+        for (int i = 1; i < axisCount; ++i) {
+            int key = axes[i];
+            int j = i - 1;
+            while (j >= 0 && axes[j] > key) {
+                axes[j + 1] = axes[j];
+                --j;
+            }
+            axes[j + 1] = key;
+        }
+        // Require sorted+contiguous.
+        for (int i = 1; i < axisCount; ++i) {
+            if (axes[i] != axes[i - 1] + 1) {
+                return nullptr;
+            }
         }
         return new VulkanReduce(shader, op, backend);
     }
