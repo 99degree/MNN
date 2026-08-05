@@ -496,6 +496,22 @@ void Interpreter::resizeSession(Session* session, int needRelloc) {
     session->resize();
 }
 
+ErrorCode Interpreter::tryResizeSession(Session* session) {
+    return tryResizeSession(session, 0);
+}
+
+ErrorCode Interpreter::tryResizeSession(Session* session, int needRelloc) {
+    std::unique_lock<std::mutex> _l(mNet->lock);
+    if (mNet->buffer.get() == nullptr) {
+        MNN_ERROR("The model buffer has been released. Can't resize session\n");
+        return OUT_OF_MEMORY;
+    }
+    if (1 == needRelloc) {
+        session->setNeedMalloc(true);
+    }
+    return session->resize();
+}
+
 ErrorCode Interpreter::runSessionWithCallBack(const Session* session, const TensorCallBack& before,
                                               const TensorCallBack& after, bool sync) const {
     auto beforeWrap = [&before](const std::vector<Tensor*>& tensors, const OperatorInfo* info) {

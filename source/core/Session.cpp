@@ -331,6 +331,25 @@ ErrorCode Session::resize() {
         for (auto& iter : mPipelines) {
             auto error = iter->encode(debug, permitCodegen);
             if (NO_ERROR != error) {
+                // Distinguish the failure mode so the caller can decide whether
+                // to retry with smaller input, different backend, or give up.
+                switch (error) {
+                    case COMPUTE_SIZE_ERROR:
+                        MNN_ERROR("Session::resize: shape inference failed (COMPUTE_SIZE_ERROR). "
+                                  "Inspect the per-op input shape dump above.\n");
+                        break;
+                    case OUT_OF_MEMORY:
+                        MNN_ERROR("Session::resize: shape inference OK but pipeline construction hit OOM "
+                                  "(OUT_OF_MEMORY). Try smaller batch or lower precision.\n");
+                        break;
+                    case NOT_SUPPORT:
+                        MNN_ERROR("Session::resize: op not supported by selected backend "
+                                  "(NOT_SUPPORT). Inspect Creator-side logs for the unsupported op.\n");
+                        break;
+                    default:
+                        MNN_ERROR("Session::resize: encode() failed with error code %d.\n", (int)error);
+                        break;
+                }
                 return error;
             }
         }
@@ -357,6 +376,12 @@ ErrorCode Session::resize() {
         for (auto& iter : mPipelines) {
             auto error = iter->allocMemory(firstMalloc, forbidReplace);
             if (NO_ERROR != error) {
+                if (error == OUT_OF_MEMORY) {
+                    MNN_ERROR("Session::resize: tensor allocation hit OOM. Try smaller batch "
+                              "or call onReleaseMemory() to reclaim intermediate buffers.\n");
+                } else {
+                    MNN_ERROR("Session::resize: allocMemory() failed with error code %d.\n", (int)error);
+                }
                 return error;
             }
         }
