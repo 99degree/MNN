@@ -633,29 +633,6 @@ bool Cli::convertModel(modelConfig& modelPath) {
         // can honor preserveInputType (int16/uint16/float16 kept as-is) via Global<modelConfig>.
         Global<modelConfig>::Reset(&modelPath);
         parseRes = onnx2MNNNet(modelPath.modelFile, modelPath.bizCode, netT, metaOp.get(), inputNames);
-        // Propagate ONNX metadata_props (e.g. "isp_fusion=enable") into the
-        // modelConfig so PostConverters (IspChainFusion) can read it via
-        // Global<modelConfig> during optimizeNet. writeFb packs the same
-        // metaOp into netT->extraInfo->buffer at the very end, too late for
-        // the optimization passes, so this early copy is what makes the
-        // runtime-switchable metadata field actually reach the fusion pass.
-        if (parseRes == 0) {
-            auto* exMeta = metaOp->main.AsExtra();
-            if (exMeta != nullptr) {
-                for (auto& attr : exMeta->attr) {
-                    if (attr != nullptr && attr->key == "isp_fusion") {
-                        modelPath.ispFusionMeta = attr->s;
-                        // Parse "enable:N" format — threshold embedded in value
-                        std::string val = attr->s;
-                        if (val.rfind("enable:", 0) == 0) {
-                            modelPath.ispFusionThreshold = std::stoi(val.substr(7));
-                        } else {
-                            // isp_fusion metadata value without threshold — pass through as-is
-                        }
-                    }
-                }
-            }
-        }
     } else if (modelPath.model == modelConfig::TFLITE) {
         if (modelPath.mnn2json) {
             if (dumpTflite2Json(modelPath.modelFile.c_str(), modelPath.MNNModel.c_str())) {

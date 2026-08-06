@@ -54,8 +54,6 @@ Control flags (all part of `modelConfig`):
 
 | Flag | Effect |
 |---|---|
-| `--isp_fusion=<enable\|disable\|N>` (`ispFusionMeta`) | Enable/disable the pass, set pattern threshold. |
-| `--isp_fusion_threshold=N` (`ispFusionThreshold`) | Max pattern id to try during dispatch. |
 | `--dumpPass` (`dumpPass`) | Per-pass verbose diagnostics. |
 
 ## 4. All `modelConfig` Flags That Affect Optimization
@@ -65,8 +63,6 @@ Control flags (all part of `modelConfig`):
 | `optimizeLevel` | `1` | Gates optimization for `MNN → MNN` only. |
 | `saveStaticModel` | `false` | Skips optimization for `MNN → MNN`. |
 | `forTraining` | `false` | Selects training-safe optimization paths. |
-| `ispFusionMeta` | `""` | ISP fusion metadata from ONNX `metadata_props`. |
-| `ispFusionThreshold` | `999` | Max pattern id for ISP dispatch. |
 | `dumpPass` | `false` | Verbose per-pass output. |
 | `convertMatmulToConv` | `false` | Convert MatMul to Conv where profitable. |
 | `groupConvNative` | `false` | Prefer native group convolution. |

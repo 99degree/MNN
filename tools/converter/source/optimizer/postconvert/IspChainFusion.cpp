@@ -1555,43 +1555,25 @@ public:
         return &p;
     }
 
-    // Pattern level filter: "basic" = pre-existing ISP patterns only,
-    // "full" = all patterns including new reduction/scalar ops.
-    // Set via ONNX metadata: isp_fusion_level=basic|full
-    mutable int mPatternThreshold = 999;  // run try* with id <= threshold
-    mutable int mUnmatchedTryN = 0;       // count tryN matches that exact patterns missed
+    // Count tryN matches that exact patterns missed (must stay 0 — see assert below).
+    mutable int mUnmatchedTryN = 0;
 
-    // Try a numbered pattern: runs only if id <= threshold.
-    // threshold=0 means no patterns, 999 means all.
     // Increments mUnmatchedTryN when a match fires (indicates missing exact pattern).
     typedef std::function<bool(std::vector<std::unique_ptr<MNN::OpT>>&, int&)> TryFn;
-    bool tryN(int id, TryFn fn, std::vector<std::unique_ptr<MNN::OpT>>& ops, int& i) const {
-        if (id <= mPatternThreshold) {
-            if (fn(ops, i)) { mUnmatchedTryN++; return true; }
-        }
+    bool tryN(TryFn fn, std::vector<std::unique_ptr<MNN::OpT>>& ops, int& i) const {
+        if (fn(ops, i)) { mUnmatchedTryN++; return true; }
         return false;
     }
     // Helper: wrap member function as TryFn
     typedef bool (Pass1_ToExtra::*MemberFn)(std::vector<std::unique_ptr<MNN::OpT>>&, int&) const;
-    bool tryN(int id, MemberFn fn, std::vector<std::unique_ptr<MNN::OpT>>& ops, int& i) const {
-        if (id <= mPatternThreshold) {
-            if ((this->*fn)(ops, i)) { mUnmatchedTryN++; return true; }
-        }
+    bool tryN(MemberFn fn, std::vector<std::unique_ptr<MNN::OpT>>& ops, int& i) const {
+        if ((this->*fn)(ops, i)) { mUnmatchedTryN++; return true; }
         return false;
     }
 
     bool onExecute(std::unique_ptr<MNN::NetT>& net) const override {
         auto& ops = net->oplists;
         bool changed = false;
-
-        // Read pattern threshold from modelConfig
-        {
-            auto* cfg = Global<modelConfig>::Get();
-            if (cfg != nullptr) {
-                mPatternThreshold = cfg->ispFusionThreshold;
-                VLOG(2) << "[P1] Pattern threshold from modelConfig: " << mPatternThreshold;
-            }
-        }
 
         // Extract input dimensions from the Input op
         // IMPORTANT: ONNX dynamic dims are -1 (e.g. [1,1,-1,-1]); only accept
@@ -1795,27 +1777,27 @@ public:
             if (tryExactFirst(ops, i, mW, mH)) { changed = true; continue; }
 
             // ── Profile-enabled multi-op blocks ──
-            if (tryN(6, &Pass1_ToExtra::tryAutoContrast, ops, i)) { changed = true; continue; }
+            if (tryN(&Pass1_ToExtra::tryAutoContrast, ops, i)) { changed = true; continue; }
 
             // ── Profile-enabled single-op / block patterns ──
-            if (tryN(25, &Pass1_ToExtra::tryDisplay, ops, i)) { changed = true; continue; }
-            if (tryN(26, &Pass1_ToExtra::tryPyramid, ops, i)) { changed = true; continue; }
-            if (tryN(28, &Pass1_ToExtra::tryRustDisplay, ops, i)) { changed = true; continue; }
-            if (tryN(29, &Pass1_ToExtra::tryVignetting, ops, i)) { changed = true; continue; }
-            if (tryN(30, &Pass1_ToExtra::tryLsc, ops, i)) { changed = true; continue; }
-            if (tryN(31, &Pass1_ToExtra::tryUnsharp, ops, i)) { changed = true; continue; }
-            if (tryN(32, &Pass1_ToExtra::trySaturation, ops, i)) { changed = true; continue; }
-            if (tryN(33, &Pass1_ToExtra::tryBadPixel, ops, i)) { changed = true; continue; }
-            if (tryN(34, &Pass1_ToExtra::tryBayerWb, ops, i)) { changed = true; continue; }
-            if (tryN(35, &Pass1_ToExtra::tryBilateral, ops, i)) { changed = true; continue; }
-            if (tryN(36, &Pass1_ToExtra::tryYuvSat, ops, i)) { changed = true; continue; }
-            if (tryN(37, &Pass1_ToExtra::tryYuvSat7, ops, i)) { changed = true; continue; }
-            if (tryN(38, &Pass1_ToExtra::tryBayerWbReshape, ops, i)) { changed = true; continue; }
-            if (tryN(39, &Pass1_ToExtra::tryBLC, ops, i)) { changed = true; continue; }
-            if (tryN(40, &Pass1_ToExtra::tryNormalize, ops, i)) { changed = true; continue; }
-            if (tryN(41, &Pass1_ToExtra::tryDemosaicStandalone, ops, i)) { changed = true; continue; }
-            if (tryN(43, &Pass1_ToExtra::tryDpc, ops, i)) { changed = true; continue; }
-            if (tryN(47, &Pass1_ToExtra::tryGamma, ops, i)) { changed = true; continue; }
+            if (tryN(&Pass1_ToExtra::tryDisplay, ops, i)) { changed = true; continue; }
+            if (tryN(&Pass1_ToExtra::tryPyramid, ops, i)) { changed = true; continue; }
+            if (tryN(&Pass1_ToExtra::tryRustDisplay, ops, i)) { changed = true; continue; }
+            if (tryN(&Pass1_ToExtra::tryVignetting, ops, i)) { changed = true; continue; }
+            if (tryN(&Pass1_ToExtra::tryLsc, ops, i)) { changed = true; continue; }
+            if (tryN(&Pass1_ToExtra::tryUnsharp, ops, i)) { changed = true; continue; }
+            if (tryN(&Pass1_ToExtra::trySaturation, ops, i)) { changed = true; continue; }
+            if (tryN(&Pass1_ToExtra::tryBadPixel, ops, i)) { changed = true; continue; }
+            if (tryN(&Pass1_ToExtra::tryBayerWb, ops, i)) { changed = true; continue; }
+            if (tryN(&Pass1_ToExtra::tryBilateral, ops, i)) { changed = true; continue; }
+            if (tryN(&Pass1_ToExtra::tryYuvSat, ops, i)) { changed = true; continue; }
+            if (tryN(&Pass1_ToExtra::tryYuvSat7, ops, i)) { changed = true; continue; }
+            if (tryN(&Pass1_ToExtra::tryBayerWbReshape, ops, i)) { changed = true; continue; }
+            if (tryN(&Pass1_ToExtra::tryBLC, ops, i)) { changed = true; continue; }
+            if (tryN(&Pass1_ToExtra::tryNormalize, ops, i)) { changed = true; continue; }
+            if (tryN(&Pass1_ToExtra::tryDemosaicStandalone, ops, i)) { changed = true; continue; }
+            if (tryN(&Pass1_ToExtra::tryDpc, ops, i)) { changed = true; continue; }
+            if (tryN(&Pass1_ToExtra::tryGamma, ops, i)) { changed = true; continue; }
 
         }
 
@@ -4532,22 +4514,14 @@ public:
 class IspChainFusion : public PostConverter {
 public:
     virtual bool onExecute(std::unique_ptr<MNN::NetT>& net) const override {
-        // ── Check ONNX metadata for ISP enable flag ──
-        // ISP fusion is OFF by default. To enable, the ONNX source must
-        // have metadata_props { "isp_fusion", "enable" }.
-        //
-        // This keeps the converter safe: without the flag, it produces
-        // primitive ops (Conv, BinaryOp, etc.) that all backends handle.
-        // With the flag, ISP fusion runs and embeds SPIR-V into Extra ops.
-        //
-        // Kotlin API: MnnConvert.convert(onnxBytes, ispFusion = true)
-        // JNI path:   OnnxPreprocessor.injectMetadata(onnx, "isp_fusion", "enable")
+        // ── Format-based ISP enable gate ──
+        // Fusion runs ONLY for MNN→MNN pass2; ONNX→MNN pass1 always stays
+        // primitive (Conv, BinaryOp, etc.) so all backends handle it. With
+        // fusion, ISP Extra ops embed SPIR-V instead.
+        // modelConfig is set by cli.cpp based on input format, or by the
+        // JNI bridge (mnn_convert_api.cpp) for MNN→MNN.
         {
             bool enableIsp = false;
-            // FORMAT-BASED GATE: fusion ONLY for MNN→MNN pass2.
-            // ONNX→MNN pass1 always stays primitive (no fusion).
-            // modelConfig is set by cli.cpp based on input format, or by the
-            // JNI bridge (mnn_convert_api.cpp) for MNN→MNN.
             auto* cfg = Global<modelConfig>::Get();
             if (cfg != nullptr && cfg->model == modelConfig::MNN) {
                 enableIsp = true;
