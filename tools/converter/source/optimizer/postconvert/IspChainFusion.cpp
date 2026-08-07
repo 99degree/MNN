@@ -119,6 +119,9 @@ static void addSpirv(MNN::ExtraT* extra, const char* type) {
         {"isp.demosaic_binning", g_unpack_blc_spv,      g_unpack_blc_spv_len},
         {"isp.demosaic_bilinear", g_demosaic_interp_spv, g_demosaic_interp_spv_len},
         {"isp.demosaic_mhc",     g_demosaic_mhc_spv,     g_demosaic_mhc_spv_len},
+        {"isp.demosaic_edge",   g_demosaic_spv,        g_demosaic_spv_len},
+        {"isp.demosaic_a",      g_demosaic_spv,        g_demosaic_spv_len},
+        {"isp.demosaic_debayer",g_demosaic_spv,        g_demosaic_spv_len},
         {"isp.grayscale",       g_grayscale_spv,       g_grayscale_spv_len},
         {"isp.argb_convert",    g_argb_convert_spv,    g_argb_convert_spv_len},
         {"isp.yuv420_convert",  g_yuv420_convert_spv,  g_yuv420_convert_spv_len},
@@ -740,13 +743,24 @@ static bool collectChain(const std::vector<std::unique_ptr<OpT>>& ops,
 static bool matchExact(const std::vector<std::unique_ptr<OpT>>& ops,
                        int i, const ExactPattern& pat) {
     const bool dbg = (pat.inputMustBeInput.size() > 0 || pat.inputTrace.size() > 0 || pat.nextBinOp >= 0 || pat.chainBinOps.size() > 0);
+    // Always log at VLOG(2) for key ISP blocks (demosaic_ccm, ee) to diagnose fusion failures.
+    const bool keyBlock = (std::string(pat.ispType) == "isp.demosaic_ccm" ||
+                           std::string(pat.ispType) == "isp.ee");
 #define MDBG(msg) do { if (dbg) VLOG(1) << "[P1] DBG " << pat.ispType << "@" << i << " " << msg; } while(0)
-    if (i < 0 || i >= (int)ops.size() || !ops[i]) { MDBG("no-op"); return false; }
+#define KLOG(msg) do { if (keyBlock) VLOG(2) << "[P1] KEY " << pat.ispType << "@" << i << " " << msg; } while(0)
+    if (i < 0 || i >= (int)ops.size() || !ops[i]) { MDBG("no-op"); KLOG("no-op"); return false; }
     std::vector<int> idx;
     std::vector<MNN::OpType> types;
-    if (!collectChain(ops, i, (int)pat.opTypes.size(), idx, types)) { MDBG("collectChain-fail"); return false; }
+    if (!collectChain(ops, i, (int)pat.opTypes.size(), idx, types)) {
+        KLOG("collectChain-fail need=" << (int)pat.opTypes.size());
+        MDBG("collectChain-fail"); return false;
+    }
     for (int k = 0; k < (int)pat.opTypes.size(); k++) {
-        if (types[k] != pat.opTypes[k]) { MDBG("optype-mismatch"); return false; }
+        if (types[k] != pat.opTypes[k]) {
+            KLOG("optype-mismatch[" << k << "] got=" << MNN::EnumNameOpType(types[k])
+                 << " want=" << MNN::EnumNameOpType(pat.opTypes[k]));
+            MDBG("optype-mismatch"); return false;
+        }
     }
     // Pass1 re-entrancy guard: never re-fuse an already-fused isp.* Extra.
     // The {Extra} pattern (GridSample→isp.warp) must only match raw ONNX
@@ -764,20 +778,28 @@ static bool matchExact(const std::vector<std::unique_ptr<OpT>>& ops,
         auto* blb = constBlobOf(ops, tensorId);
         if (!blb || (int)blb->float32s.size() != pat.constElems) { MDBG("ce-const-fail"); return false; }
     }
-    // Check conv weight count
+    // Check conv weight count — works for both Convolution and ConvolutionDepthwise
+    // (both use Convolution2D flatbuffer layout with weight[]).
     if (pat.convWeightElems >= 0) {
         if (idx.empty()) { MDBG("cwe-empty"); return false; }
         auto* op = ops[idx[0]].get();
-        if (op->type != MNN::OpType_Convolution) { MDBG("cwe-notconv"); return false; }
+        if (op->type != MNN::OpType_Convolution && op->type != MNN::OpType_ConvolutionDepthwise) {
+            KLOG("cwe-notconv got=" << MNN::EnumNameOpType(op->type));
+            MDBG("cwe-notconv"); return false;
+        }
         auto* c = op->main.AsConvolution2D();
-        if (!c || (int)c->weight.size() != pat.convWeightElems) { MDBG("cwe-count"); return false; }
+        int actualW = c ? (int)c->weight.size() : -1;
+        if (!c || actualW != pat.convWeightElems) {
+            KLOG("cwe-count got=" << actualW << " want=" << pat.convWeightElems);
+            MDBG("cwe-count"); return false;
+        }
     }
     // Check conv weight VALUES (1e-4 tolerance) — disambiguates CCM identity vs
     // BT.601 CSC vs pyramid identity when op structures are identical.
     if (!pat.convWeightValues.empty()) {
         if (idx.empty()) return false;
         auto* op = ops[idx[0]].get();
-        if (op->type != MNN::OpType_Convolution) return false;
+        if (op->type != MNN::OpType_Convolution && op->type != MNN::OpType_ConvolutionDepthwise) return false;
         auto* c = op->main.AsConvolution2D();
         if (!c || (int)c->weight.size() != (int)pat.convWeightValues.size()) return false;
         for (size_t k = 0; k < pat.convWeightValues.size(); k++) {
@@ -884,6 +906,7 @@ static bool matchExact(const std::vector<std::unique_ptr<OpT>>& ops,
         auto* bin = op->main.AsBinaryOp();
         if (!bin || bin->opType != pat.binOpType) return false;
     }
+    KLOG("MATCH");
     return true;
 }
 
@@ -1177,6 +1200,11 @@ ExactPattern({MNN::OpType_StridedSlice, MNN::OpType_StridedSlice, MNN::OpType_Bi
               ChainConstCheck(19, 1, {5520.33f})}),  // c0 in cct_raw
 };
 
+// EeBlock atomic: isp.ee (1-op ConvDW with 27 weights = 3ch × 3×3 unsharp kernel)
+static const ExactPattern kExactEeAtomicBlock[] = {
+ExactPattern({MNN::OpType_ConvolutionDepthwise}, -1, -1, "isp.ee", "isp.ee", nullptr, 27),
+};
+
 // EeBlock: isp.ee (6-op chain)
 static const ExactPattern kExactEeBlock[] = {
 ExactPattern({MNN::OpType_ConvolutionDepthwise, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_ReLU6, MNN::OpType_BinaryOp, MNN::OpType_ReLU6}, -1, -1, "isp.ee", "isp.ee"),
@@ -1284,14 +1312,23 @@ static const ExactPattern kExactCscBlock[] = {
 ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.colorspace", "isp.colorspace", nullptr, 9),
 };
 
-// DebayerBlock: isp.demosaic_ccm (1-op chain)
+// DebayerBlock: isp.demosaic_debayer (1-op chain)
+// Conv [3,4,5,5] = 300 weights (5x5 learned debayer 4ch→3ch)
 static const ExactPattern kExactDebayerBlock[] = {
-ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.demosaic_ccm", "isp.demosaic_ccm", nullptr, 300),
+ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.demosaic_debayer", "isp.demosaic_debayer", nullptr, 300),
 };
 
-// EdgeDemosaicBlock: isp.demosaic_ccm (1-op chain)
+// DemosaicBlock: isp.demosaic_a (1-op chain)
+// Conv1x1 [3,4,1,1] = 12 weights, standalone bayer→RGB without clip/CCM.
+// Heavy profile uses this variant (no ReLU6 following the Conv).
+static const ExactPattern kExactDemosaicABlock[] = {
+ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.demosaic_a", "isp.demosaic_a", nullptr, 12),
+};
+
+// EdgeDemosaicBlock: isp.demosaic_edge (1-op chain)
+// Conv [3,4,3,3] = 108 weights (3x3 kernel, edge-aware 4ch→3ch)
 static const ExactPattern kExactEdgeDemosaicBlock[] = {
-ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.demosaic_ccm", "isp.demosaic_ccm", nullptr, 108),
+ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.demosaic_edge", "isp.demosaic_edge", nullptr, 108),
 };
 
 // GammaBlock: isp.gamma (1-op chain)
@@ -1302,9 +1339,10 @@ static const ExactPattern kExactGammaBlock[] = {
 ExactPattern({MNN::OpType_BinaryOp}, 1, 1, "isp.gamma", "isp.gamma", MNN::BinaryOpOperation_POW),
 };
 
-// HqLinearDemosaic: isp.demosaic_ccm (1-op chain)
+// HqLinearDemosaic: isp.demosaic_debayer (1-op chain)
+// Conv [3,4,5,5] = 300 weights (5x5 linear demosaic 4ch→3ch)
 static const ExactPattern kExactHqLinearDemosaic[] = {
-ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.demosaic_ccm", "isp.demosaic_ccm", nullptr, 300),
+ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.demosaic_debayer", "isp.demosaic_debayer", nullptr, 300),
 };
 
 // LscBlock: isp.lsc (1-op chain)
@@ -1344,9 +1382,9 @@ static const ExactPattern kExactRefCscBlock[] = {
 ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.colorspace", "isp.colorspace", nullptr, 9),
 };
 
-// RefDebayerBlock: isp.demosaic_ccm (1-op chain)
+// RefDebayerBlock: isp.demosaic_debayer (1-op chain)
 static const ExactPattern kExactRefDebayerBlock[] = {
-ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.demosaic_ccm", "isp.demosaic_ccm", nullptr, 300),
+ExactPattern({MNN::OpType_Convolution}, -1, -1, "isp.demosaic_debayer", "isp.demosaic_debayer", nullptr, 300),
 };
 
 // WbGainsBlock: isp.awb (1-op chain)
@@ -1557,6 +1595,9 @@ static bool tryExactFirst(std::vector<std::unique_ptr<MNN::OpT>>& ops,
     TRY_EXACT_TABLE(kExactGammaBlock);          // 1-op (gen)
     TRY_EXACT_TABLE(kExactLscBlock);          // 1-op (gen)
     TRY_EXACT_TABLE(kExactNormalizeBlock);          // 1-op (gen)
+    TRY_EXACT_TABLE(kExactDemosaicCcmBlock);          // 2-op (Conv+ReLU6, 12 weights)
+    TRY_EXACT_TABLE(kExactDemosaicABlock);             // 1-op (Conv 1x1, 12 weights, standalone demosaic)
+    TRY_EXACT_TABLE(kExactEeAtomicBlock);             // 1-op (ConvDW, 27 weights)
     TRY_EXACT_TABLE(kExactRawBlcBlock);          // 1-op (gen)
 
     // ── FAIL CASE: no exact pattern matched at i. ──
