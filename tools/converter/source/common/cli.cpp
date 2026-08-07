@@ -626,6 +626,9 @@ bool Cli::convertModel(modelConfig& modelPath) {
                 return false;
             }
         } else {
+            // Register modelConfig so IspChainFusion::onExecute can detect
+            // MNN→MNN conversion and enable the ISP fusion pass.
+            Global<modelConfig>::Reset(&modelPath);
             parseRes = addBizCode(modelPath.modelFile, modelPath.bizCode, netT);
         }
     } else if (modelPath.model == modelConfig::ONNX) {

@@ -986,7 +986,12 @@ static const ExactPattern kExactDisplay[] = {
 };
 
 static const ExactPattern kExactUnpack[] = {
-    // 2-op: Reshape→ReLU6→BinaryOp (RawBlcBlock variant)
+    // 2-op: BinaryOp(SUB)+ReLU6 -> isp.unpack_blc (UnpackBlc16Block: Cast->Sub->Clip
+    // after RemoveInvalidCast strips Cast, MNN maps Clip to ReLU6)
+    ExactPattern({MNN::OpType_BinaryOp, MNN::OpType_ReLU6},
+                 -1, -1, "isp.unpack_blc", "isp.unpack_blc",
+                 MNN::BinaryOpOperation_SUB),
+    // 2-op: Reshape->ReLU6->BinaryOp (RawBlcBlock variant)
     ExactPattern({MNN::OpType_Reshape, MNN::OpType_ReLU6, MNN::OpType_BinaryOp},
                  -1, -1, "isp.unpack_blc", "isp.unpack_blc", nullptr),
     // 1-op: Sub with 1-elem const (RawBlcBlock) — checked via constElems
