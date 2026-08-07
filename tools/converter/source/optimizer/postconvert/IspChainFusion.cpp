@@ -19,8 +19,8 @@
 //    │  R1.  Cast[+Div]+Conv(2×2,stride=2) → isp.unpack_blc       │
 //    │  R1b. Concat+Conv(1×2)              → isp.unpack_blc       │
 //    │ LDCI block patterns:                                        │
-//    │  R5.  Pool+Sub+Mul+Add+Clip          → isp.ldci            │
-//    │  R5b. ReduceMean+Sub+Mul+Add+Clip    → isp.ldci (Rust)     │
+//    │  R5.  Pool+Sub+Mul+Add               → isp.ldci           │
+//    │  R5b. ReduceMean+Sub+Mul+Add+Clip    → isp.ldci_a (Rust)  │
 //    │ Demosaic block patterns:                                    │
 //    │  R2.  Conv(1×1,4→3ch)               → isp.demosaic_ccm     │
 //    │  R2b. Conv(4×4,1ch→3ch)             → isp.demosaic_interp  │
@@ -109,6 +109,7 @@ static void addSpirv(MNN::ExtraT* extra, const char* type) {
         {"isp.fcs",             g_fcs_spv,             g_fcs_spv_len},
         {"isp.ee",              g_ee_spv,              g_ee_spv_len},
         {"isp.ldci",            g_ldci_spv,            g_ldci_spv_len},
+        {"isp.ldci_a",          g_ldci_a_spv,         g_ldci_a_spv_len},   // Rust ReduceMean LDCI variant
         {"isp.display",         g_display_spv,         g_display_spv_len},
         {"isp.fcs_display",     g_fcs_display_spv,     g_fcs_display_spv_len},
         {"isp.ee_ldci",         g_ee_ldci_spv,         g_ee_ldci_spv_len},
@@ -1186,9 +1187,20 @@ static const ExactPattern kExactFastEeBlock[] = {
 ExactPattern({MNN::OpType_ConvolutionDepthwise, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_ReLU6, MNN::OpType_BinaryOp, MNN::OpType_ReLU6}, -1, -1, "isp.ee", "isp.ee"),
 };
 
-// LdciBlock: isp.ldci (6-op chain)
+// LdciBlock: isp.ldci (6-op with clip) — matched by TRY_EXACT_TABLE
 static const ExactPattern kExactLdciBlock[] = {
 ExactPattern({MNN::OpType_Pooling, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_ReLU6}, -1, -1, "isp.ldci", "isp.ldci"),
+};
+
+// LdciBlockA: isp.ldci_a (4-op Pool→Sub→Mul→Add, no clip)
+// Pins BinaryOp sub-types via chainBinOps so we don't match random 3-BinOp chains.
+static const ExactPattern kExactLdciABlock[] = {
+ExactPattern({MNN::OpType_Pooling, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp, MNN::OpType_BinaryOp},
+             -1, -1, "isp.ldci_a", "isp.ldci_a",
+             MNN::BinaryOpOperation_ADD, true, {}, {}, -1,
+             {{1, MNN::BinaryOpOperation_SUB},
+              {2, MNN::BinaryOpOperation_MUL},
+              {3, MNN::BinaryOpOperation_ADD}}),
 };
 
 // RefYuvSatBlock: isp.fcs (6-op chain)
@@ -1517,7 +1529,7 @@ static bool tryExactFirst(std::vector<std::unique_ptr<MNN::OpT>>& ops,
     // Only tables for PROFILE-ENABLED blocks are dispatched (PipelineProfile.kt
     // buildBlocks). Disabled tables (definitions retained for reference):
     //   AlgoCct*, Calibration, UnifiedStats, FcsBlock, ToneBlock, AlgoAwb,
-    //   AlgoAe, AlgoGamma, Focus, Ee*, FastEe, Ldci, RefYuvSat,
+    //   AlgoAe, AlgoGamma, Focus, Ee*, FastEe, RefYuvSat,
     //   RefTone, Unpack, DemosaicCcm, RefCcm, Demosaic, ColorSpace, HqLinear,
     //   RefBayerWb, RefCsc, RefDebayer, WbGains, Fcs(1op), Pyramid, Colorspace,
     //   Ae, AfFocus.
@@ -1527,6 +1539,8 @@ static bool tryExactFirst(std::vector<std::unique_ptr<MNN::OpT>>& ops,
     TRY_EXACT_TABLE(kExactYuvSatBlock);          // 7-op (gen)
     TRY_EXACT_TABLE(kExactAutoContrastBlock);          // 6-op (gen)
     TRY_EXACT_TABLE(kExactDisplay);          // 6-op (existing)
+    TRY_EXACT_TABLE(kExactLdciBlock);          // 6-op (Rust LdciBlock with clip)
+    TRY_EXACT_TABLE(kExactLdciABlock);         // 4-op (Rust LdciBlockA, no clip)
     TRY_EXACT_TABLE(kExactBilateralBlock);          // 5-op (gen)
     TRY_EXACT_TABLE(kExactLocalContrastBlock);          // 5-op (gen)
     TRY_EXACT_TABLE(kExactSaturationBlock);          // 5-op (gen)
@@ -2667,82 +2681,6 @@ private:
         return true;
     }
 
-    // R5: Pool(AVG,3×3) [+ Const*] + Sub [+ Const*] + Mul [+ Const*] + Add → isp.ldci
-    // Const ops between the BinaryOps are skipped (ldci strength params)
-    bool tryLdci(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
-        if (ops[i]->type != MNN::OpType_Pooling) return false;
-        auto* p = ops[i]->main.AsPool();
-        if (!isAvgPool3x3(p)) { VLOG(2) << "[P1] R5: pool not avg3x3 at " << i; return false; }
-
-        // Skip Const + ConvertTensor ops after Pool to find Sub
-        int subIdx = skipThrough(i + 1, ops);
-        if (subIdx >= (int)ops.size() || !ops[subIdx]) { VLOG(2) << "[P1] R5: no op after pool at " << i; return false; }
-        if (!isBinaryType(ops[subIdx].get(), MNN::BinaryOpOperation_SUB)) { VLOG(2) << "[P1] R5: op" << subIdx << " not Sub, type=" << ops[subIdx]->type; return false; }
-        // Sub takes (blur - original) — check via traceTensor to skip ConvertTensors
-        bool poolToSub = isChainSkipCT(ops[i].get(), ops[subIdx].get(), ops);
-        if (!poolToSub) {
-            VLOG(2) << "[P1] R5: chain(pool->sub) fail at " << i << ", out="
-                    << ops[i]->outputIndexes[0] << " inputs=(" << ops[subIdx]->inputIndexes[0]
-                    << "," << (ops[subIdx]->inputIndexes.size()>1?ops[subIdx]->inputIndexes[1]:-1) << ")";
-            return false;
-        }
-
-        // Skip Const + ConvertTensor ops after Sub to find Mul
-        int mulIdx = skipThrough(subIdx + 1, ops);
-        if (mulIdx >= (int)ops.size() || !ops[mulIdx]) { VLOG(2) << "[P1] R5: no op after sub at " << subIdx; return false; }
-        if (!isBinaryType(ops[mulIdx].get(), MNN::BinaryOpOperation_MUL)) { VLOG(2) << "[P1] R5: op" << mulIdx << " not Mul"; return false; }
-        // Mul takes (diff × strength) — check via traceTensor
-        bool subToMul = isChainSkipCT(ops[subIdx].get(), ops[mulIdx].get(), ops);
-        if (!subToMul) {
-            VLOG(2) << "[P1] R5: chain(sub->mul) fail at " << subIdx << ", out="
-                    << ops[subIdx]->outputIndexes[0] << " inputs=(" << ops[mulIdx]->inputIndexes[0]
-                    << "," << (ops[mulIdx]->inputIndexes.size()>1?ops[mulIdx]->inputIndexes[1]:-1) << ")";
-            return false;
-        }
-
-        // Skip Const + ConvertTensor ops after Mul to find Add
-        int addIdx = skipThrough(mulIdx + 1, ops);
-        if (addIdx >= (int)ops.size() || !ops[addIdx]) { VLOG(2) << "[P1] R5: no op after mul at " << mulIdx; return false; }
-        if (!isBinaryType(ops[addIdx].get(), MNN::BinaryOpOperation_ADD)) { VLOG(2) << "[P1] R5: op" << addIdx << " not Add"; return false; }
-        // Add takes (ee_output + mul_output) — check via traceTensor
-        bool mulToAdd = isChainSkipCT(ops[mulIdx].get(), ops[addIdx].get(), ops);
-        if (!mulToAdd) {
-            VLOG(2) << "[P1] R5: chain(mul->add) fail at " << mulIdx << ", mulOut="
-                    << (ops[mulIdx]->outputIndexes.empty()?-1:ops[mulIdx]->outputIndexes[0]);
-            return false;
-        }
-
-        // GUARD: reject if Clip/ReLU6 follows Add (that's saturation/unsharp, not LDCI)
-        // LDCI ends with Add(input + scaled). Saturation/Unsharp have Clip(0,1) after.
-        {
-            int addOut = ops[addIdx]->outputIndexes.empty() ? -1 : ops[addIdx]->outputIndexes[0];
-            if (addOut >= 0) {
-                int nextIdx = consumerOfType(ops, addOut, MNN::OpType_ReLU6);
-                if (nextIdx >= 0 && ops[nextIdx]) {
-                    VLOG(2) << "[P1] R5: rejecting at " << i << " — Clip/ReLU6 after Add (not LDCI)";
-                    return false;
-                }
-            }
-        }
-
-        std::vector<float> u = {float(mW),float(mH),0.5f,1.0f, 0,0,0,0};
-
-        ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
-        auto* ex = new MNN::ExtraT(); ex->type = "isp.ldci";
-        buildCommonAttrs(ex, mW, mH, u);
-        addNamedFloats(ex, "ldci", {0.5f, 1.0f});
-        setEngine(ex);
-        addSpirv(ex, "isp.ldci");
-        ops[i]->main.value = ex;
-        ops[i]->outputIndexes[0] = ops[addIdx]->outputIndexes[0];
-
-        // Reset Sub, Mul, Add
-        ops[subIdx].reset(); ops[mulIdx].reset(); ops[addIdx].reset();
-        VLOG(2) << "[P1] R5: ldci at " << i << " (pool=" << i << " sub=" << subIdx
-                << " mul=" << mulIdx << " add=" << addIdx << ")";
-        return true;
-    }
-
     // R6: BinaryOp(POW)[+Clip] → isp.display
     bool tryDisplay(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
         if (!isBinaryType(ops[i].get(), MNN::BinaryOpOperation_POW)) return false;
@@ -3207,65 +3145,6 @@ private:
             for (int r = i+1; r <= last; r++) ops[r].reset();
         }
         VLOG(2) << "[P1] Rust FCS at " << i << " (chain to " << last << ")";
-        i = last;
-        return true;
-    }
-
-    // Rust LdciBlock variant: ReduceMean(H,W) + Sub + Mul + Mul + Add + Clip → isp.ldci
-    // Same concept (mean-subtract contrast), different spatial scale (global vs local 3×3).
-    // Using radius=1 (local 3×3) as approximation for the global mean.
-    bool tryRustReduceLdci(std::vector<std::unique_ptr<OpT>>& ops, int& i) const {
-        if (ops[i]->type != MNN::OpType_Reduction) return false;
-        // GUARD: only match spatial means (dim=[2,3]), not channel means (dim=[1])
-        // SaturationBlock uses ReduceMean(axes=[1]) → should NOT be ldci
-        {
-            auto* r = ops[i]->main.AsReductionParam();
-            if (r && r->operation == MNN::ReductionType_MEAN) {
-                if (!r->dim.empty()) {
-                    std::set<int> d(r->dim.begin(), r->dim.end());
-                    if (d.count(2) && d.count(3) && d.size() == 2) {
-                        // spatial mean — OK for ldci
-                    } else {
-                        VLOG(2) << "[P1] R5: RustReduceLdci reject non-spatial at " << i;
-                        return false;
-                    }
-                }
-            }
-        }
-        // Follow chain: ReduceMean → Sub → Mul(y_mask) → Mul(strength) → Add → Clip
-        int last = i;
-        for (int cur = i; cur + 1 < (int)ops.size() && ops[cur + 1]; ) {
-            int n = cur + 1;
-            if (ops[n]->type == MNN::OpType_Const || ops[n]->type == MNN::OpType_ConvertTensor ||
-                ops[n]->type == MNN::OpType_Identity || ops[n]->type == MNN::OpType_Reshape ||
-                ops[n]->type == MNN::OpType_Squeeze || ops[n]->type == MNN::OpType_Unsqueeze) {
-                cur = n; continue;
-            }
-            bool consumes = false;
-            for (int inIdx : ops[n]->inputIndexes)
-                if (inIdx == ops[cur]->outputIndexes[0]) { consumes = true; break; }
-            if (!consumes) break;
-            auto nt = ops[n]->type;
-            if (nt == MNN::OpType_BinaryOp || nt == MNN::OpType_ReLU ||
-                nt == MNN::OpType_ReLU6 || nt == MNN::OpType_Identity) {
-                last = n; cur = n;
-            } else { break; }
-        }
-        if (last == i) return false;
-        
-        std::vector<float> u = {float(mW),float(mH),0.5f,1.0f, 0,0,0,0};
-        ops[i]->type = MNN::OpType_Extra; ops[i]->main.type = MNN::OpParameter_Extra;
-        auto* ex = new MNN::ExtraT(); ex->type = "isp.ldci";
-        buildCommonAttrs(ex, mW, mH, u);
-        addNamedFloats(ex, "ldci", {0.5f, 1.0f});
-        setEngine(ex);
-        addSpirv(ex, "isp.ldci");
-        ops[i]->main.value = ex;
-        if (last != i) {
-            ops[i]->outputIndexes[0] = ops[last]->outputIndexes[0];
-            for (int r = i+1; r <= last; r++) ops[r].reset();
-        }
-        VLOG(2) << "[P1] Rust LDCI at " << i << " (chain to " << last << ")";
         i = last;
         return true;
     }
