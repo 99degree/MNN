@@ -617,82 +617,8 @@ static bool hasExternalConsumer(const std::vector<std::unique_ptr<OpT>>& ops,
 
 // ═══════════════════════════════════════════════════════════════════
 //  Exact-pattern matching framework
-// ═══════════════════════════════════════════════════════════════════
-// Each try* helper first checks a table of ExactPattern structs
-// (sorted by opTypes.size() DESCENDING — longest match first).
-// Only if no exact pattern matches does it fall through to the old
-// heuristic code.
-struct ChainConstCheck {
-    int chainPos = 0;              // 0-based position in the collected chain
-    int inputIdx = 0;              // which input of that op is the const
-    std::vector<float> values;     // expected const values (1e-4 tol)
-    ChainConstCheck(int p, int in, std::vector<float> v)
-        : chainPos(p), inputIdx(in), values(std::move(v)) {}
-};
-
-struct ExactPattern {
-    std::vector<MNN::OpType> opTypes;
-    int constElems;
-    int constIndex;
-    const char* ispType;
-    const char* spvName;
-    const char* namedKey;
-    int convWeightElems = -1;
-    MNN::BinaryOpOperation binOpType = MNN::BinaryOpOperation_ADD; // default: any BinaryOp
-    std::vector<float> convWeightValues;   // if non-empty, require weight match (1e-4 tol)
-    std::vector<float> constValues;        // if non-empty, require const blob match (1e-4 tol)
-    // noFuse: match and consume the chain (advance scan) but KEEP ops primitive.
-    // Used as longest-match guard so shorter generic patterns (e.g. auto_contrast)
-    // never steal scalar control chains (algo_gamma / algo_cct).
-    bool noFuse = false;
-    // Per-position const-value checks: (chainPos, inputIdx) -> expected values.
-    std::vector<ChainConstCheck> chainConstChecks;
-    // Profile-variant disambiguation (blocks whose constants are graph Inputs):
-    //   inputTrace[k]      — required producer type of ops[idx[0]]->inputIndexes[k]
-    //                        (traced through ConvertTensor; -1 = any). Stops at Extra.
-    //   inputMustBeInput   — input indices that must be fed directly by a graph Input op.
-    //   nextOpType         — required type of the next non-CT/Const/Input op after the chain.
-    //   chainBinOps        — (chainPos, BinaryOp sub-type) requirements at chain positions.
-    std::vector<int> inputTrace;
-    std::vector<int> inputMustBeInput;
-    int nextOpType = -1;
-    int nextBinOp = -1;   // required BinaryOp sub-type of the next op (-1 = any)
-    std::vector<std::pair<int, MNN::BinaryOpOperation>> chainBinOps;
-    ExactPattern(std::vector<MNN::OpType> ops, int ce, int ci,
-                 const char* isp, const char* spv, const char* nk = nullptr, int cwe = -1,
-                 std::vector<float> cwv = {}, std::vector<float> cv = {})
-        : opTypes(std::move(ops)), constElems(ce), constIndex(ci),
-          ispType(isp), spvName(spv), namedKey(nk), convWeightElems(cwe),
-          convWeightValues(std::move(cwv)), constValues(std::move(cv)) {}
-    ExactPattern(std::vector<MNN::OpType> ops, int ce, int ci,
-                 const char* isp, const char* spv, MNN::BinaryOpOperation bot,
-                 const char* nk = nullptr, int cwe = -1,
-                 std::vector<float> cwv = {}, std::vector<float> cv = {})
-        : opTypes(std::move(ops)), constElems(ce), constIndex(ci),
-          ispType(isp), spvName(spv), namedKey(nk), convWeightElems(cwe), binOpType(bot),
-          convWeightValues(std::move(cwv)), constValues(std::move(cv)) {}
-    // Guard constructor: longest-match no-fuse protection for scalar control chains.
-    ExactPattern(std::vector<MNN::OpType> ops, int ce, int ci,
-                 const char* isp, const char* spv, bool nf,
-                 std::vector<ChainConstCheck> ccc = {})
-        : opTypes(std::move(ops)), constElems(ce), constIndex(ci),
-          ispType(isp), spvName(spv), noFuse(nf), chainConstChecks(std::move(ccc)) {}
-    // Profile-variant constructor: tolerates Input-as-const and adds structural
-    // provenance disambiguation (inputTrace / inputMustBeInput / nextOpType).
-    // The 7th arg is the bool marker so this ctor never collides with the
-    // BinaryOp-sub-type ctor (whose 7th arg is the namedKey const char*).
-    ExactPattern(std::vector<MNN::OpType> ops, int ce, int ci,
-                 const char* isp, const char* spv, MNN::BinaryOpOperation bot,
-                 bool pv, std::vector<int> itr, std::vector<int> imbi = {},
-                 int nxt = -1, std::vector<std::pair<int, MNN::BinaryOpOperation>> cbo = {},
-                 int nbo = -1)
-        : opTypes(std::move(ops)), constElems(ce), constIndex(ci),
-          ispType(isp), spvName(spv), binOpType(bot),
-          inputTrace(std::move(itr)), inputMustBeInput(std::move(imbi)),
-          nextOpType(nxt), nextBinOp(nbo), chainBinOps(std::move(cbo)) {
-        (void)pv;
-    }
-};
+#include "ExactPattern.h"
+#include "IspExactPatterns.h"
 
 // Find the op that produces tensorId, tracing through ConvertTensor to the
 // ultimate producer. Returns MNN::OpType_Input for graph inputs, and stops
@@ -716,6 +642,22 @@ static bool isInputTensor(const std::vector<std::unique_ptr<OpT>>& ops, int tens
         if (!op || op->type != MNN::OpType_Input) continue;
         for (int o : op->outputIndexes) {
             if (o == tensorId) return true;
+        }
+    }
+    return false;
+}
+
+// Check that op[srcIdx]'s output tensor feeds into op[dstIdx]'s input tensor list.
+static bool isConnected(const std::vector<std::unique_ptr<OpT>>& ops,
+                         int srcIdx, int dstIdx) {
+    if (srcIdx < 0 || dstIdx < 0) return false;
+    if (srcIdx >= (int)ops.size() || dstIdx >= (int)ops.size()) return false;
+    const auto& src = ops[srcIdx];
+    const auto& dst = ops[dstIdx];
+    if (!src || !dst) return false;
+    for (int out : src->outputIndexes) {
+        for (int in : dst->inputIndexes) {
+            if (out == in) return true;
         }
     }
     return false;
@@ -760,6 +702,17 @@ static bool matchExact(const std::vector<std::unique_ptr<OpT>>& ops,
             KLOG("optype-mismatch[" << k << "] got=" << MNN::EnumNameOpType(types[k])
                  << " want=" << MNN::EnumNameOpType(pat.opTypes[k]));
             MDBG("optype-mismatch"); return false;
+        }
+    }
+    // Connectivity check: verify that consecutive collected ops are tensor-connected.
+    // Disabled for tree-shaped DAGs (calibration, histogram, tone_stats) where chain
+    // elements branch rather than form a linear sequence.
+    if (pat.requireConnectivity) {
+        for (int k = 1; k < (int)idx.size(); k++) {
+            if (!isConnected(ops, idx[k-1], idx[k])) {
+                KLOG("connectivity-fail at k=" << k);
+                MDBG("connectivity-fail"); return false;
+            }
         }
     }
     // Pass1 re-entrancy guard: never re-fuse an already-fused isp.* Extra.
@@ -964,19 +917,8 @@ static bool applyExact(std::vector<std::unique_ptr<OpT>>& ops, int& i,
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Global exact-pattern tables (checked first, before any try* heuristic)
-// Sorted by chain length DESCENDING within each table.
-static const ExactPattern kExactFcs[] = {
-    // 1-op: Conv(1x1) with 9 weights (CCM, CcmBlock)
-    ExactPattern({MNN::OpType_Convolution},
-                 -1, -1, "isp.fcs", "isp.fcs", "fcs", 9),
-    // 1-op: Mul with 3-elem const gains (WbGainsBlock)
-    ExactPattern({MNN::OpType_BinaryOp},
-                 3, 1, "isp.fcs", "isp.fcs", "fcs"),
-    // 1-op: Mul with 4-elem const gains (BayerWbBlock)
-    ExactPattern({MNN::OpType_BinaryOp},
-                 4, 1, "isp.fcs", "isp.fcs", "fcs"),
-};
+// Display variants not in the generated tables (4-op, 6-op with Conv).
+// Kept as a safety net for edge-case ONNX graphs.
 
 static const ExactPattern kExactDemosaic[] = {
     // Conv(5x5) with 300 weights, 4→3 (DebayerBlock learned debayer)
