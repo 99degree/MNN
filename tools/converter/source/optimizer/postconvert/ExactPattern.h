@@ -15,7 +15,6 @@
 #pragma once
 
 #include <MNN/MNNDefine.h>
-#include <MNN.expr/Op.hpp>
 #include <vector>
 #include <utility>
 #include <cstddef>
