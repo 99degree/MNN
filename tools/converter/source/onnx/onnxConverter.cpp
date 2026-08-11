@@ -37,7 +37,13 @@ int onnx2MNNNet(const std::string inputModel, const std::string bizCode,
         MNN_ERROR("[ERROR] Model file is not onnx model.\n");
         return 1;
     }
+    return onnx2MNNNet(onnxModel, modelDir, bizCode, netT, meta, inputNames);
+}
 
+/// Buffer-based entry: convert an already-parsed ONNX ModelProto to a MNN
+/// NetT entirely in memory (no model file, no external-data directory).
+int onnx2MNNNet(onnx::ModelProto& onnxModel, const std::string& modelDir, const std::string bizCode,
+                std::unique_ptr<MNN::NetT>& netT, MNN::OpT* meta, std::vector<std::string>& inputNames) {
     int opsetVersion = 13;
     auto opsetInfo = onnxModel.opset_import();
     if (!opsetInfo.empty()) {
@@ -49,7 +55,7 @@ int onnx2MNNNet(const std::string inputModel, const std::string bizCode,
     const auto& onnxGraph = onnxModel.graph();
     const int nodeCount   = onnxGraph.node_size();
     if (0 == nodeCount) {
-        MNN_ERROR("[ERROR] Invalid ONNX Model:%s\n", inputModel.c_str());
+        MNN_ERROR("[ERROR] Invalid ONNX Model (no nodes).\n");
         return 1;
     }
     for (int i=0; i<onnxGraph.input_size(); ++i) {
