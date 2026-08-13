@@ -72,6 +72,98 @@ static bool isConnected(const NetT* net, int srcIdx, int dstIdx) {
     return false;
 }
 
+// Layout-conversion ops inserted by AddTensorFormatConverter (named
+// "src___tr4dst") plus the Permute/Identity bridge ops. They split ISP blocks
+// apart in the converted graph and carry no ISP semantics — treated as
+// transparent scaffolding between chain positions. (Per design directive:
+// these layout splitters are NOT part of the fusion pattern definitions; the
+// matcher tolerates them so patterns align to the softisp graph shape.)
+static bool isLayoutSplitter(const OpT* op) {
+    if (!op) return false;
+    if (op->type != OpType_ConvertTensor && op->type != OpType_Permute &&
+        op->type != OpType_Identity) {
+        return false;
+    }
+    return op->name.find("___tr4") != std::string::npos;
+}
+
+// True if op is transparent scaffolding (a ___tr4 layout splitter, or a
+// Permute/Identity bridge) that the matcher may skip between two real ISP
+// ops without consuming a pattern position.
+static bool isChainScaffold(const OpT* op) {
+    if (!op) return false;
+    if (isLayoutSplitter(op)) return true;
+    if (isBridgeOp(op->type)) return true;
+    return false;
+}
+
+// Trace a chain input/weight back through single-input shim ops
+// (Reshape, Squeeze, Unsqueeze, ConvertTensor, Cast) to its root producer
+// (a Const or graph Input op). Lets the matcher read element counts through
+// the reshape shims blocks insert on input paths (e.g. ccm_matrix Input →
+// Reshape → Conv weight) so runtime-fed Input weights are recognized.
+static int rootProducerIndex(const NetT* net,
+                             const std::unordered_map<int, int>& producer,
+                             int tensorIdx) {
+    int cur = tensorIdx;
+    for (int guard = 0; guard < 32; guard++) {
+        auto it = producer.find(cur);
+        if (it == producer.end()) return -1;
+        int pidx = it->second;
+        if (pidx < 0 || pidx >= static_cast<int>(net->oplists.size())) return -1;
+        const auto& op = net->oplists[pidx];
+        if (!op) return -1;
+        if (op->type == OpType_Const || op->type == OpType_Input) return pidx;
+        if (op->type == OpType_Reshape || op->type == OpType_Squeeze ||
+            op->type == OpType_Unsqueeze || op->type == OpType_ConvertTensor ||
+            op->type == OpType_Cast) {
+            if (op->inputIndexes.empty()) return -1;
+            cur = op->inputIndexes[0];
+            continue;
+        }
+        return -1;  // non-shim producer — not a resolvable weight/const root
+    }
+    return -1;
+}
+
+// Like isConnected, but tolerates scaffolding ops (___tr4 ConvertTensor, Permute,
+// Identity) chained between two real ISP ops: threads the upstream output
+// frontier through the scaffolds so connectivity succeeds across layout splitters.
+static bool isConnectedThroughScaffold(const NetT* net, int srcIdx, int dstIdx) {
+    if (srcIdx < 0 || dstIdx < 0 ||
+        srcIdx >= static_cast<int>(net->oplists.size()) ||
+        dstIdx >= static_cast<int>(net->oplists.size())) {
+        return false;
+    }
+    const auto& src = net->oplists[srcIdx];
+    const auto& dst = net->oplists[dstIdx];
+    if (!src || !dst) return false;
+    std::vector<int> frontier;
+    for (int o : src->outputIndexes) frontier.push_back(o);
+    for (int k = srcIdx + 1; k < dstIdx; k++) {
+        const auto& op = net->oplists[k];
+        if (!op) continue;
+        // Only scaffolding may sit between two real ISP ops; any other op breaks
+        // the logical edge (prevents the matcher gluing across different blocks).
+        if (!isChainScaffold(op.get())) return false;
+        bool consumes = false;
+        for (int in : op->inputIndexes) {
+            for (int f : frontier) {
+                if (in == f) { consumes = true; break; }
+            }
+        }
+        if (consumes) {
+            for (int o : op->outputIndexes) frontier.push_back(o);
+        }
+    }
+    for (int f : frontier) {
+        for (int in : dst->inputIndexes) {
+            if (f == in) return true;
+        }
+    }
+    return false;
+}
+
 // =====================================================================
 // Pattern matching
 // =====================================================================
@@ -129,14 +221,12 @@ static bool matchConvWeightElems(const OpT* op, int expectedCW,
         return true;  // skip check for non-Conv ops
     if (static_cast<int>(op->inputIndexes.size()) < 2) return false;
     int weightTensorIdx = op->inputIndexes[1];
-    auto it = producer.find(weightTensorIdx);
-    if (it == producer.end()) return false;
-    int producerIdx = it->second;
-    if (producerIdx < 0) return false;
-    const auto& constOp = net->oplists[producerIdx];
+    int rootIdx = rootProducerIndex(net, producer, weightTensorIdx);
+    if (rootIdx < 0) return false;
+    const auto& constOp = net->oplists[rootIdx];
     if (!constOp) return false;
     if (constOp->type != OpType_Const && constOp->type != OpType_Input) return false;
-    return producerTensorElems(net, producerIdx) == expectedCW;
+    return producerTensorElems(net, rootIdx) == expectedCW;
 }
 
 // Check const/input element count at the specified input index.
@@ -147,15 +237,12 @@ static bool matchConstElems(const OpT* op, int expectedElems, int constIdx,
     if (constIdx < 0) return true;        // not specified
     if (static_cast<int>(op->inputIndexes.size()) <= constIdx) return false;
     int tensorIdx = op->inputIndexes[constIdx];
-    auto it = producer.find(tensorIdx);
-    if (it == producer.end()) return false;
-    int producerIdx = it->second;
-    if (producerIdx < 0 || producerIdx >= static_cast<int>(net->oplists.size()))
-        return false;
-    const auto& constOp = net->oplists[producerIdx];
+    int rootIdx = rootProducerIndex(net, producer, tensorIdx);
+    if (rootIdx < 0 || rootIdx >= static_cast<int>(net->oplists.size())) return false;
+    const auto& constOp = net->oplists[rootIdx];
     if (!constOp) return false;
     if (constOp->type != OpType_Const && constOp->type != OpType_Input) return false;
-    return producerTensorElems(net, producerIdx) == expectedElems;
+    return producerTensorElems(net, rootIdx) == expectedElems;
 }
 
 // Try to match a chain starting at opIndex against a single pattern.
@@ -169,39 +256,60 @@ static bool matchConstElems(const OpT* op, int expectedElems, int constIdx,
 // Permute/Identity are bridge artifacts (inserted by MNN's graph layout
 // converters) — skipped during matching via isBridgeOp() from the generated
 // header. These ops don't consume or produce ISP-relevant tensors.
+// tryMatch also skips ___tr4 layout-splitters (AddTensorFormatConverter
+// ConvertTensor ops named "src___tr4dst") that the converter inserts between
+// ISP block ops: they carry no ISP semantics and are not part of any pattern
+// definition, so they are treated as transparent scaffolding between chain
+// positions. A ConvertTensor IS consumed at a position when a pattern
+// explicitly expects it (type-match precedence), so patterns that legitimately
+// contain layout ops are unaffected.
 static int tryMatch(const NetT* net, int opIndex, const ExactPattern& pat,
-                    const std::unordered_map<int, int>& producer) {
+                    const std::unordered_map<int, int>& producer,
+                    std::vector<int>& matchedIdx) {
     int n = static_cast<int>(pat.opTypes.size());
     if (n <= 0) return 0;
+    matchedIdx.clear();
 
-    // Skip leading Permute/Identity bridge ops
-    while (opIndex < static_cast<int>(net->oplists.size())) {
-        const auto& skipOp = net->oplists[opIndex];
-        if (!skipOp) return 0;
-        if (!isBridgeOp(skipOp->type)) break;
-        opIndex++;
-    }
+    int sz = static_cast<int>(net->oplists.size());
+    if (opIndex >= sz) return 0;
 
-    if (opIndex + n > static_cast<int>(net->oplists.size())) return 0;
-
+    // Cursor walks the net, matching pat.opTypes in sequence while skipping
+    // intervening scaffolding (___tr4 ConvertTensor, Permute, Identity). A layout
+    // splitter is only skipped when it does NOT match the expected pattern op
+    // type at the current position; when it does match (e.g. a ConvertTensor
+    // that a pattern explicitly lists) it is consumed like any real op.
+    int cursor = opIndex;
+    int prevReal = -1;
     for (int j = 0; j < n; j++) {
-        const auto& op = net->oplists[opIndex + j];
+        bool matched = false;
+        while (cursor < sz) {
+            const auto& sop = net->oplists[cursor];
+            if (!sop) return 0;
+            if (sop->type == pat.opTypes[j]) { matched = true; break; }
+            if (isChainScaffold(sop.get())) { cursor++; continue; }
+            return 0;  // non-matching, non-scaffold op → sequence mismatch
+        }
+        if (!matched) return 0;
+        const auto& op = net->oplists[cursor];
         if (!op) return 0;
-        if (isBridgeOp(op->type)) return 0;
-        if (op->type != pat.opTypes[j]) return 0;
 
-        // Verify connectivity to previous op in chain (skipped for tree-shaped DAGs)
-        if (j > 0 && pat.requireConnectivity && !isConnected(net, opIndex + j - 1, opIndex + j)) {
+        // Connectivity through scaffolding (skipped for tree-shaped DAGs).
+        if (j > 0 && pat.requireConnectivity && prevReal >= 0 &&
+            !isConnectedThroughScaffold(net, prevReal, cursor)) {
             return 0;
         }
+        matchedIdx.push_back(cursor);
+        prevReal = cursor;
+        cursor++;
     }
 
-    // Check BinaryOp sub-type on the FIRST BinaryOp in the chain
+    // Check BinaryOp sub-type on the FIRST BinaryOp in the matched chain
     if (pat.binOpType != MNN::BinaryOpOperation_ADD) {
         bool found = false;
         for (int j = 0; j < n; j++) {
             if (pat.opTypes[j] == OpType_BinaryOp) {
-                if (!matchBinOp(net->oplists[opIndex + j].get(), static_cast<int>(pat.binOpType))) {
+                if (!matchBinOp(net->oplists[matchedIdx[j]].get(),
+                                static_cast<int>(pat.binOpType))) {
                     return 0;
                 }
                 found = true;
@@ -213,14 +321,14 @@ static int tryMatch(const NetT* net, int opIndex, const ExactPattern& pat,
     }
 
     // Check conv weight elements on last op (if Conv)
-    const auto& lastOp = net->oplists[opIndex + n - 1];
-    if (!matchConvWeightElems(lastOp.get(), pat.convWeightElems, producer, net)) {
+    const auto& lastOp = net->oplists[matchedIdx.back()];
+    if (lastOp && !matchConvWeightElems(lastOp.get(), pat.convWeightElems, producer, net)) {
         return 0;
     }
 
     // Check const elements on first op
-    const auto& firstOp = net->oplists[opIndex];
-    if (!matchConstElems(firstOp.get(), pat.constElems, pat.constIndex, producer, net)) {
+    const auto& firstOp = net->oplists[matchedIdx.front()];
+    if (firstOp && !matchConstElems(firstOp.get(), pat.constElems, pat.constIndex, producer, net)) {
         return 0;
     }
 
@@ -351,6 +459,7 @@ struct BestMatch {
     int len = 0;
     int order = 0;  // table index; lower = higher precedence
     bool found = false;
+    std::vector<int> matchedIdx;  // real op indices matched (scaffolding skipped)
 };
 
 static BestMatch bestMatchAt(const NetT* net, int opIndex,
@@ -361,12 +470,14 @@ static BestMatch bestMatchAt(const NetT* net, int opIndex,
     for (int t = 0; t < nTables; t++) {
         for (int p = 0; p < tableSizes[t]; p++) {
             const auto& pat = tables[t][p];
-            int matched = tryMatch(net, opIndex, pat, producer);
+            std::vector<int> mIdx;
+            int matched = tryMatch(net, opIndex, pat, producer, mIdx);
             if (matched <= 0) continue;
             if (!best.found || matched > best.len ||
                 (matched == best.len && t < best.order)) {
                 best.pat = &pat;
                 best.len = matched;
+                best.matchedIdx = mIdx;
                 best.order = t;
                 best.found = true;
             }
@@ -417,21 +528,25 @@ static int runFusion(NetT* net, const ExactPattern* const tables[],
         BestMatch best = bestMatchAt(net, i, tables, tableSizes, nTables, producer);
         if (!best.found) continue;
 
-        // Mark all matched ops as seen
-        for (int j = 0; j < best.len; j++) {
-            seen.insert(i + j);
+        int firstIdx = best.matchedIdx.front();
+        int lastIdx = best.matchedIdx.back();
+        // Mark all matched real ops as seen
+        for (int idx : best.matchedIdx) {
+            seen.insert(idx);
         }
 
         if (!best.pat->noFuse) {
             // Replace chain with Extra op
-            auto extraOp = makeExtraOp(net, i, i + best.len - 1, *best.pat);
+            auto extraOp = makeExtraOp(net, firstIdx, lastIdx, *best.pat);
 
-            // Null out consumed ops (except first, which we replace)
-            for (int j = 1; j < best.len; j++) {
-                net->oplists[i + j].reset();
+            // Null everything in the spanned [firstIdx..lastIdx] range except the
+            // first position (replaced below). This drops both the matched real
+            // ops and any ___tr4/Identity scaffolding interleaved between them.
+            for (int k = firstIdx + 1; k <= lastIdx; k++) {
+                net->oplists[k].reset();
             }
-            // Place the Extra op at the first position
-            net->oplists[i] = std::move(extraOp);
+            // Place the Extra op at the first matched real position
+            net->oplists[firstIdx] = std::move(extraOp);
             // Rebuild producers after the mutation so later matches see the
             // fused op as the producer of its outputs.
             producer = buildProducerMap(net);
