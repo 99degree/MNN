@@ -20,6 +20,12 @@
 
 namespace MNN {
 
+// Bridge op predicate: Permute/Identity ops are layout-conversion
+// artifacts — the matcher skips them (see tryMatch in IspChainFusion.cpp).
+inline bool isBridgeOp(MNN::OpType t) {
+    return t == MNN::OpType_Permute || t == MNN::OpType_Identity;
+}
+
 // ── PackedInt32 variant: Pass0 (33), Pass1 (5), Profile (22) ──────────
 static const ExactPattern kExactFusionTablesPass0_PackedInt32[] = {
     // fcs_block (chain=13)
