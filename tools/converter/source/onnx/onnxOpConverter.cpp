@@ -145,6 +145,62 @@ public:
     }
 };
 
+// ISP custom-domain ONNX ops (isp.*) → MNN Extra with engine="MNN" so
+// writeFb's CheckIfNotSupported treats them as first-class MNN ops.
+class IspOpConverter : public onnxOpConverter {
+public:
+    virtual void run(MNN::OpT* dstOp, const onnx::NodeProto* onnxNode,
+                     OnnxScope* scope) override {
+        auto extra        = new ExtraT;
+        dstOp->main.type  = OpParameter_Extra;
+        dstOp->main.value = extra;
+        extra->engine     = "MNN";
+        extra->type       = onnxNode->op_type();
+        for (auto srcAttr : onnxNode->attribute()) {
+            std::unique_ptr<AttributeT> attr(new AttributeT);
+            attr->key = srcAttr.name();
+            switch (srcAttr.type()) {
+                case onnx::AttributeProto_AttributeType_INTS:
+                    attr->list.reset(new ListValueT);
+                    attr->list->i.resize(srcAttr.ints_size());
+                    for (int i = 0; i < srcAttr.ints_size(); ++i) {
+                        attr->list->i[i] = _limit(srcAttr.ints(i));
+                    }
+                    break;
+                case onnx::AttributeProto_AttributeType_FLOATS:
+                    attr->list.reset(new ListValueT);
+                    attr->list->f.resize(srcAttr.floats_size());
+                    for (int i = 0; i < srcAttr.floats_size(); ++i) {
+                        attr->list->f[i] = srcAttr.floats(i);
+                    }
+                    break;
+                case onnx::AttributeProto_AttributeType_TENSOR:
+                    attr->tensor.reset(convertTensorToBlob(&srcAttr.t(), scope->mModelDir, dstOp));
+                    break;
+                case onnx::AttributeProto_AttributeType_STRINGS:
+                    attr->list.reset(new ListValueT);
+                    attr->list->s.resize(srcAttr.strings_size());
+                    for (int i = 0; i < srcAttr.strings_size(); ++i) {
+                        attr->list->s[i] = srcAttr.strings(i);
+                    }
+                    break;
+                default:
+                    break;
+            }
+            attr->i = _limit(srcAttr.i());
+            attr->s = srcAttr.s();
+            attr->f = srcAttr.f();
+            extra->attr.emplace_back(std::move(attr));
+        }
+        std::unique_ptr<AttributeT> attr(new AttributeT);
+        attr->key = "onnx_opset_version";
+        attr->i = scope->mOpsetVersion;
+        extra->attr.emplace_back(std::move(attr));
+    }
+    virtual MNN::OpParameter type() override { return OpParameter_Extra; }
+    virtual MNN::OpType opType() override { return OpType_Extra; }
+};
+
 onnxOpConverterSuit::onnxOpConverterSuit() {
 }
 
@@ -172,6 +228,10 @@ void onnxOpConverterSuit::insert(onnxOpConverter* t, const char* name) {
 onnxOpConverter* onnxOpConverterSuit::search(const std::string& name) {
     auto iter = mConverterContainer.find(name);
     if (iter == mConverterContainer.end()) {
+        if (name.find("isp.") == 0) {
+            static IspOpConverter ispConverter;
+            return &ispConverter;
+        }
         static DefaultonnxOpConverter defaultConverter;
         return &defaultConverter;
     }
