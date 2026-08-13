@@ -219,7 +219,17 @@ static bool matchConvWeightElems(const OpT* op, int expectedCW,
     if (expectedCW < 0) return true;  // any
     if (op->type != OpType_Convolution && op->type != OpType_ConvolutionDepthwise)
         return true;  // skip check for non-Conv ops
-    if (static_cast<int>(op->inputIndexes.size()) < 2) return false;
+    if (static_cast<int>(op->inputIndexes.size()) < 2) {
+        // Folded-weight Conv: MNN's ONNX importer bakes a Const Conv weight
+        // directly into the Convolution2D params (a 1-input Conv) instead of
+        // emitting a separate weight Input/Const tensor. Read the embedded
+        // weight vector — this is the softisp-aligned path: a Conv weight is
+        // countable whether held as a graph Input/Const OR folded into the op.
+        if (op->main.type != OpParameter_Convolution2D) return false;
+        const auto* conv = op->main.AsConvolution2D();
+        if (!conv || conv->weight.empty()) return false;
+        return static_cast<int>(conv->weight.size()) == expectedCW;
+    }
     int weightTensorIdx = op->inputIndexes[1];
     int rootIdx = rootProducerIndex(net, producer, weightTensorIdx);
     if (rootIdx < 0) return false;
