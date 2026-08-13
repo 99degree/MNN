@@ -166,15 +166,28 @@ static bool matchConstElems(const OpT* op, int expectedElems, int constIdx,
 //   3. BinaryOp sub-type matches
 //   4. Conv weight element count matches (last op in chain)
 //   5. Const element count matches (first op in chain)
+// Permute/Identity are bridge artifacts (inserted by MNN's graph layout
+// converters) — skipped during matching via isBridgeOp() from the generated
+// header. These ops don't consume or produce ISP-relevant tensors.
 static int tryMatch(const NetT* net, int opIndex, const ExactPattern& pat,
                     const std::unordered_map<int, int>& producer) {
     int n = static_cast<int>(pat.opTypes.size());
     if (n <= 0) return 0;
+
+    // Skip leading Permute/Identity bridge ops
+    while (opIndex < static_cast<int>(net->oplists.size())) {
+        const auto& skipOp = net->oplists[opIndex];
+        if (!skipOp) return 0;
+        if (!isBridgeOp(skipOp->type)) break;
+        opIndex++;
+    }
+
     if (opIndex + n > static_cast<int>(net->oplists.size())) return 0;
 
     for (int j = 0; j < n; j++) {
         const auto& op = net->oplists[opIndex + j];
         if (!op) return 0;
+        if (isBridgeOp(op->type)) return 0;
         if (op->type != pat.opTypes[j]) return 0;
 
         // Verify connectivity to previous op in chain (skipped for tree-shaped DAGs)
