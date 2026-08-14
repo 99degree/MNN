@@ -29,6 +29,34 @@ extern const unsigned char g_isp_tone_spv[];
 extern const int g_isp_tone_spv_len;
 extern const unsigned char g_isp_eis_gyro_spv[];
 extern const int g_isp_eis_gyro_spv_len;
+extern const unsigned char g_isp_normalize_spv[];
+extern const int g_isp_normalize_spv_len;
+extern const unsigned char g_isp_blc_spv[];
+extern const int g_isp_blc_spv_len;
+extern const unsigned char g_isp_cfa_spv[];
+extern const int g_isp_cfa_spv_len;
+extern const unsigned char g_isp_bayer_wb_spv[];
+extern const int g_isp_bayer_wb_spv_len;
+extern const unsigned char g_isp_demosaic_edge_spv[];
+extern const int g_isp_demosaic_edge_spv_len;
+extern const unsigned char g_isp_ccm_spv[];
+extern const int g_isp_ccm_spv_len;
+extern const unsigned char g_isp_downscale_spv[];
+extern const int g_isp_downscale_spv_len;
+extern const unsigned char g_isp_vignetting_spv[];
+extern const int g_isp_vignetting_spv_len;
+extern const unsigned char g_isp_saturation_spv[];
+extern const int g_isp_saturation_spv_len;
+extern const unsigned char g_isp_local_contrast_spv[];
+extern const int g_isp_local_contrast_spv_len;
+extern const unsigned char g_isp_unsharp_spv[];
+extern const int g_isp_unsharp_spv_len;
+extern const unsigned char g_isp_display_spv[];
+extern const int g_isp_display_spv_len;
+extern const unsigned char g_isp_algo_gamma_spv[];
+extern const int g_isp_algo_gamma_spv_len;
+extern const unsigned char g_isp_histogram_spv[];
+extern const int g_isp_histogram_spv_len;
 
 namespace MNN {
 
@@ -48,6 +76,20 @@ static const std::unordered_map<std::string, SpvData> g_ispSpvMap = {
     {"isp.ispc_stats",  {g_isp_ispc_stats_spv,   g_isp_ispc_stats_spv_len}},
     {"isp.tone",        {g_isp_tone_spv,         g_isp_tone_spv_len}},
     {"isp.eis_gyro",    {g_isp_eis_gyro_spv,     g_isp_eis_gyro_spv_len}},
+    {"isp.normalize",   {g_isp_normalize_spv,    g_isp_normalize_spv_len}},
+    {"isp.blc",         {g_isp_blc_spv,          g_isp_blc_spv_len}},
+    {"isp.cfa",         {g_isp_cfa_spv,          g_isp_cfa_spv_len}},
+    {"isp.bayer_wb",    {g_isp_bayer_wb_spv,     g_isp_bayer_wb_spv_len}},
+    {"isp.demosaic_edge",{g_isp_demosaic_edge_spv, g_isp_demosaic_edge_spv_len}},
+    {"isp.ccm",         {g_isp_ccm_spv,          g_isp_ccm_spv_len}},
+    {"isp.downscale",   {g_isp_downscale_spv,    g_isp_downscale_spv_len}},
+    {"isp.vignetting",  {g_isp_vignetting_spv,   g_isp_vignetting_spv_len}},
+    {"isp.saturation",  {g_isp_saturation_spv,   g_isp_saturation_spv_len}},
+    {"isp.local_contrast",{g_isp_local_contrast_spv, g_isp_local_contrast_spv_len}},
+    {"isp.unsharp",     {g_isp_unsharp_spv,      g_isp_unsharp_spv_len}},
+    {"isp.display",     {g_isp_display_spv,      g_isp_display_spv_len}},
+    {"isp.algo_gamma",  {g_isp_algo_gamma_spv,   g_isp_algo_gamma_spv_len}},
+    {"isp.histogram",   {g_isp_histogram_spv,    g_isp_histogram_spv_len}},
 };
 
 static inline SpvData lookupIspSpv(const std::string& opType) {

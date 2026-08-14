@@ -82,7 +82,7 @@ public:
             if (extra->type() && extra->type()->str().rfind("isp.", 0) == 0) {
                 auto spvData = lookupIspSpv(extra->type()->str());
                 if (spvData.data != nullptr && spvData.size > 0) {
-                    fprintf(stderr, "[VulkanFuse] ACCEPT '%s' (embedded SPIR-V, %zu bytes) — %d inputs, %d outputs\n",
+                    fprintf(stderr, "[VulkanFuse] ACCEPT '%s' (embedded SPIR-V, %d bytes) — %d inputs, %d outputs\n",
                               extra->type()->str().c_str(), spvData.size, (int)inputs.size(), (int)outputs.size());
                     fflush(stderr);
                     return new VulkanFuse(extra, backend, (int)inputs.size(), (int)outputs.size()); // embedded SPIR-V lookup happens in constructor
