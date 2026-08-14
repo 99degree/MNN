@@ -30,3 +30,12 @@ if(MNN_ISP_EMBED_SPIRV)
 endif()
 list(APPEND MNN_CONVERTER_BACKENDS_OBJECTS $<TARGET_OBJECTS:MNNConverterOpt>)
 list(APPEND MNN_CONVERTER_BACKENDS_TARGETS MNNConverterOpt)
+
+# [ISP_FUSION_DISABLED] Per user directive 2026-08-14: disable IspChainFusion pass1/pass2.
+# Only pass0 (ONNX→MNN primitives + direct-emit isp.* Exos) should run.
+# IspChainFusion produces isp.* Extra ops WITHOUT SPIR-V → VulkanFuse rejects →
+# silent CPU fallback → undetectable. Disabling ensures direct-emit is the only
+# path for isp.* ops.
+if(ISP_FUSION_DISABLED)
+    target_compile_definitions(MNNConverterOpt PRIVATE ISP_FUSION_DISABLED)
+endif()

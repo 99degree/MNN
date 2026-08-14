@@ -8,11 +8,14 @@
 #endif
 #include <MNN/MNNDefine.h>
 
+#include "IspSpvLookup.hpp"
+
 namespace MNN {
 
 class VulkanFuse : public VulkanBasicExecution {
 public:
     VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outputSize);
+    // data (from embedded header lookup) when the Extra op has no spirv attr.
     virtual ~VulkanFuse();
     virtual ErrorCode onEncode(const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs,
                                const VulkanCommandPool::Buffer* cmdBuffer) override;
@@ -75,9 +78,19 @@ public:
             }
         }
         if (!hasSpirv) {
-        fprintf(stderr, "[VulkanFuse] REJECT '%s' (no SPIR-V) — %d inputs, %d outputs\n",
-                  extra->type()->str().c_str(), (int)inputs.size(), (int)outputs.size());
-        fflush(stderr);
+            // [ISP EMBEDDED SPIRV] Fallback: check embedded shader table
+            if (extra->type() && extra->type()->str().rfind("isp.", 0) == 0) {
+                auto spvData = lookupIspSpv(extra->type()->str());
+                if (spvData.data != nullptr && spvData.size > 0) {
+                    fprintf(stderr, "[VulkanFuse] ACCEPT '%s' (embedded SPIR-V, %zu bytes) — %d inputs, %d outputs\n",
+                              extra->type()->str().c_str(), spvData.size, (int)inputs.size(), (int)outputs.size());
+                    fflush(stderr);
+                    return new VulkanFuse(extra, backend, (int)inputs.size(), (int)outputs.size()); // embedded SPIR-V lookup happens in constructor
+                }
+            }
+            fprintf(stderr, "[VulkanFuse] REJECT '%s' (no SPIR-V) — %d inputs, %d outputs\n",
+                      extra->type()->str().c_str(), (int)inputs.size(), (int)outputs.size());
+            fflush(stderr);
             return nullptr;
         }
         fprintf(stderr, "[VulkanFuse] ACCEPT '%s' — %d inputs, %d outputs\n",

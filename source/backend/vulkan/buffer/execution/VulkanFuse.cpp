@@ -15,6 +15,7 @@
 #include "VulkanBasicExecution.hpp"
 #include "VulkanBuffer.hpp"
 #include "VulkanFuse.hpp"
+#include "IspSpvLookup.hpp"
 #include "core/OpCommonUtils.hpp"
 namespace MNN {
 
@@ -45,7 +46,17 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
     // Find shader
     const uint8_t* data = nullptr;
     size_t dataSize = 0;
-    for (int i=0; i<extra->attr()->size(); ++i) {
+    // [ISP EMBEDDED SPIRV] Check embedded lookup first
+    if (extra->type() && extra->type()->str().rfind("isp.", 0) == 0) {
+        auto spvData = lookupIspSpv(extra->type()->str());
+        if (spvData.data != nullptr && spvData.size > 0) {
+            data = spvData.data;
+            dataSize = spvData.size;
+        }
+    }
+    // If not found in embedded lookup, check Extra op attributes
+    if (data == nullptr) {
+        for (int i=0; i<extra->attr()->size(); ++i) {
         auto attr = extra->attr()->GetAs<Attribute>(i);
         if (attr->key()->str() == "spirv") {
             // Try tensor format first (int8s)
@@ -71,6 +82,7 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
                 break;
             }
         }
+    }
     }
     // Caller (VulkanFuseCreator::onCreate) is responsible for validating
     // that SPIR-V is present before constructing VulkanFuse. Reaching here

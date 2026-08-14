@@ -621,7 +621,12 @@ public:
         if (config == nullptr) {
             return false;
         }
+#ifndef ISP_FUSION_DISABLED
         optimizeIspChain(net.get(), *config);
+#else
+        (void)net;
+        (void)config;
+#endif
         return true;
     }
 };
