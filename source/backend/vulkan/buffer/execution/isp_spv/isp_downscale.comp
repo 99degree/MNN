@@ -1,0 +1,24 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(set = 0, binding = 0, std430) buffer Uniforms {
+    float width; float height; float outW; float outH; float pad1; float pad2;
+} u;
+layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
+layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    int ow = int(u.outW);
+    int oh = int(u.outH);
+    if (int(x) >= ow || int(y) >= oh) return;
+    int w = int(u.width);
+    int idx00 = (int(y) * 2 * w + int(x) * 2) * 3;
+    int idx01 = idx00 + 3;
+    int idx10 = ((int(y) * 2 + 1) * w + int(x) * 2) * 3;
+    int idx11 = idx10 + 3;
+    int oidx = (int(y) * ow + int(x)) * 3;
+    out_data[oidx + 0] = (in_data[idx00 + 0] + in_data[idx01 + 0] + in_data[idx10 + 0] + in_data[idx11 + 0]) * 0.25;
+    out_data[oidx + 1] = (in_data[idx00 + 1] + in_data[idx01 + 1] + in_data[idx10 + 1] + in_data[idx11 + 1]) * 0.25;
+    out_data[oidx + 2] = (in_data[idx00 + 2] + in_data[idx01 + 2] + in_data[idx10 + 2] + in_data[idx11 + 2]) * 0.25;
+}

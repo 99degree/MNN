@@ -1,0 +1,24 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(set = 0, binding = 0, std430) buffer Uniforms {
+    float width; float height; float gain_r; float gain_gr; float gain_gb; float gain_b;
+} u;
+layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
+layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    int w = int(u.width);
+    int h = int(u.height);
+    if (int(x) >= w || int(y) >= h) return;
+    int idx = int(y) * w + int(x);
+    int py = int(y) & 1;
+    int px = int(x) & 1;
+    float gain = 1.0;
+    if (py == 0 && px == 0) gain = u.gain_r;
+    else if (py == 0 && px == 1) gain = u.gain_gr;
+    else if (py == 1 && px == 0) gain = u.gain_gb;
+    else gain = u.gain_b;
+    out_data[idx] = in_data[idx] * gain;
+}

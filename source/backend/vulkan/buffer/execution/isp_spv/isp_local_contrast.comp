@@ -1,0 +1,43 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(set = 0, binding = 0, std430) buffer Uniforms {
+    float width; float height; float amount; float threshold; float pad;
+} u;
+layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
+layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    int w = int(u.width);
+    int h = int(u.height);
+    if (int(x) >= w || int(y) >= h) return;
+    int idx = (int(y) * w + int(x)) * 3;
+    float r = in_data[idx + 0];
+    float g = in_data[idx + 1];
+    float b = in_data[idx + 2];
+    float r_sum = 0.0, g_sum = 0.0, b_sum = 0.0;
+    int count = 0;
+    for (int dx = -1; dx <= 1; dx++) {
+        int nx = int(x) + dx;
+        if (nx >= 0 && nx < w) {
+            int nidx = int(y) * w + nx;
+            r_sum += in_data[nidx * 3 + 0];
+            g_sum += in_data[nidx * 3 + 1];
+            b_sum += in_data[nidx * 3 + 2];
+            count++;
+        }
+    }
+    if (count > 0) {
+        float r_mean = r_sum / float(count);
+        float g_mean = g_sum / float(count);
+        float b_mean = b_sum / float(count);
+        out_data[idx + 0] = r + (r - r_mean) * u.amount;
+        out_data[idx + 1] = g + (g - g_mean) * u.amount;
+        out_data[idx + 2] = b + (b - b_mean) * u.amount;
+    } else {
+        out_data[idx + 0] = r;
+        out_data[idx + 1] = g;
+        out_data[idx + 2] = b;
+    }
+}
