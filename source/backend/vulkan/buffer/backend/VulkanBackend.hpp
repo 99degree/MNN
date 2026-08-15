@@ -149,6 +149,13 @@ private:
     void _resetIndirectSegments();
     void _sealIndirectSegment();
     mutable std::shared_ptr<VulkanBuffer> mHostBuffer;
+    // Fallback buffer bound when a non-GPU-resident tensor (Host/const) reaches
+    // a VulkanFuse op via getBuffer(). VK_NULL_HANDLE in vkUpdateDescriptorSets
+    // is undefined behavior (Mesa/freedreno derefs null+0x18 -> SIGSEGV;
+    // Adreno tolerates it). Binding this small valid buffer lets the shader run
+    // so the op executes and records GPU timestamps instead of crashing the
+    // host. Never triggers on real hardware (tensors are GPU-backed there).
+    std::shared_ptr<VulkanBuffer> mVulkanDummyBuffer;
 
     std::shared_ptr<VulkanCommandPool::Buffer> mCmdBufferForCopy;
     BufferAllocator* mCurrentDynamicBufferPool = nullptr;

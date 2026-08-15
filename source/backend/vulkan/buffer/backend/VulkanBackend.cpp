@@ -17,6 +17,48 @@
 #include "execution/VulkanBasicExecution.hpp"
 //#define MNN_OPEN_TIME_TRACE
 #include <MNN/AutoTime.hpp>
+#include <mutex>
+#include <vector>
+#include <cstring>
+
+// ── Path-agnostic Vulkan-backend profiler registry ───────────
+// The VulkanTimeProfiler lives on each VulkanBackend instance. Depending on
+// the execution path the active backend may not be reachable via
+// Interpreter::getBackend(session, tensor):
+//   * Session path  (pass0 primitives) -> runSession(sess); backend reachable
+//       via getBackend(sess, inputTensor).
+//   * Module path  (direct-emit isp.* / VulkanFuse) -> Module::onForward;
+//       the Session is never run, so getBackend returns a stale CPU backend.
+// To support BOTH, every VulkanBackend registers itself here on construction;
+// the dumpProfile() bridge scans for the first backend with live samples.
+namespace {
+std::mutex g_vkProfMutex;
+std::vector<const MNN::VulkanBackend*> g_vkProfBackends;
+void _regVkProf(const MNN::VulkanBackend* vb) {
+    std::lock_guard<std::mutex> lk(g_vkProfMutex);
+    g_vkProfBackends.push_back(vb);
+}
+void _unregVkProf(const MNN::VulkanBackend* vb) {
+    std::lock_guard<std::mutex> lk(g_vkProfMutex);
+    g_vkProfBackends.erase(
+        std::remove(g_vkProfBackends.begin(), g_vkProfBackends.end(), vb),
+        g_vkProfBackends.end());
+}
+// Returns the first backend whose profiler has samples (mNext>0).
+const char* _dumpVkProf() {
+    std::lock_guard<std::mutex> lk(g_vkProfMutex);
+    for (const MNN::VulkanBackend* vb : g_vkProfBackends) {
+        if (!vb) continue;
+        std::string s = vb->getProfileString();  // cheap "" return if mNext==0
+        if (!s.empty()) {
+            char* c = (char*)malloc(s.size() + 1);
+            if (c) memcpy(c, s.c_str(), s.size() + 1);
+            return c;
+        }
+    }
+    return strdup("ERR:no_active_vulkan_profile");
+}
+}
 // #define MNN_OP_SUPPORT_LOG
 
 #ifdef ENABLE_VULKAN_TIME_PROFILE
@@ -110,14 +152,29 @@ VulkanBackend::VulkanBackend(const VulkanRuntime* runtime) : Backend(MNN_FORWARD
 #ifdef ENABLE_VULKAN_TIME_PROFILE
     mTimeProfiler = std::make_shared<VulkanTimeProfiler>(dev);
 #endif
+#ifdef ENABLE_VULKAN_TIME_PROFILE
+    _regVkProf(this);
+#endif
     std::string deviceName = dev.proty().deviceName;
     if(deviceName.find("Apple") != std::string::npos){
         mUseAutoTune = false;
     }
     mCmdBufferForCopy.reset(runtime->mCmdPool->allocBuffer());
+    // Small valid fallback buffer so VulkanFuse never binds VK_NULL_HANDLE
+    // (which Mesa/freedreno treats as a null deref). See mVulkanDummyBuffer.
+    if (!mVulkanDummyBuffer) {
+        mVulkanDummyBuffer = std::make_shared<VulkanBuffer>(
+            getMemoryPool(), false, 4096, nullptr,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+            VK_SHARING_MODE_EXCLUSIVE,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+    }
 }
 
 VulkanBackend::~VulkanBackend() {
+#ifdef ENABLE_VULKAN_TIME_PROFILE
+    _unregVkProf(this);
+#endif
     /*keep release order*/
     mCurrentIndirectSegment = nullptr;
     mIndirectSegments.clear();
@@ -198,6 +255,16 @@ private:
     int mSize;
 };
 VULKAN_TENSOR VulkanBackend::getBuffer(const Tensor* tensor) const {
+    // A tensor that is not resident on this Vulkan device (e.g. a Host/const
+    // tensor reaching a VulkanFuse op, or a tensor whose deviceId was never
+    // allocated on the GPU) must NOT yield a null VkBuffer: binding
+    // VK_NULL_HANDLE to a descriptor set is invalid and crashes Mesa/freedreno.
+    if (!tensor || tensor->deviceId() == 0) {
+        size_t sz = tensor ? getTensorSize(tensor) : 0;
+        VkBuffer buf = (mVulkanDummyBuffer && mVulkanDummyBuffer->buffer())
+            ? mVulkanDummyBuffer->buffer() : VK_NULL_HANDLE;
+        return std::make_tuple(buf, sz, 0);
+    }
     auto b = getTensorBuffer(tensor);
     return std::make_tuple(b.first->buffer(), getTensorSize(tensor), b.second);
 }
@@ -293,7 +360,14 @@ Execution* VulkanBackend::onCreate(const std::vector<Tensor*>& inputs, const std
     }
 
 #ifdef ENABLE_VULKAN_TIME_PROFILE
-    originExecution->setName(EnumNameOpType(op->type()));
+    if (op->type() == OpType_Extra) {
+        // Extra ops (incl. direct-emit isp.*) are already named in their
+        // VulkanFuse ctor by the real isp.* type string, so the per-op GPU
+        // timing profile shows each isp.* stage instead of one "Extra" bucket.
+        // Preserve that name here.
+    } else {
+        originExecution->setName(EnumNameOpType(op->type()));
+    }
 #endif
 
     if (mDirect) {
@@ -633,22 +707,15 @@ std::vector<uint32_t> VulkanBackend::autoTunePipeline(const VulkanPipeline* pipe
  * is unavailable (caller must free with free() if non-null).
  */
 ;// MNN Vulkan builds with -fvisibility=hidden, so mark the export.
+// Registry-based per-op GPU timing export. No backend pointer needed:
+// scans all live VulkanBackend instances (covers BOTH Session and Module
+// execution paths) and returns the first with active profiling samples.
+// Caller frees the returned string with free().
 #pragma GCC visibility push(default)
-extern "C" const char* mnn_vulkan_backend_getProfileString(const void* backend) {
-    if (!backend) return strdup("ERR:backend_is_null");
-    const MNN::Backend* b = static_cast<const MNN::Backend*>(backend);
+extern "C" const char* mnn_vulkan_backend_dumpProfile() {
 #ifdef ENABLE_VULKAN_TIME_PROFILE
-    // RTTI-free downcast: type() is an inline accessor (no RTTI needed),
-    // then static_cast is safe because we verified the concrete type.
-    if (b->type() != MNN_FORWARD_VULKAN) {
-        char buf2[64]; snprintf(buf2, sizeof(buf2), "ERR:not_vulkan got_type=%d expected=%d", (int)b->type(), (int)MNN_FORWARD_VULKAN); return strdup(buf2);
-    }
-    const MNN::VulkanBackend* vb = static_cast<const MNN::VulkanBackend*>(b);
-    std::string s = vb->getProfileString();
-    if (s.empty()) return strdup("ERR:no_profile_data");
-    char* c = (char*)malloc(s.size() + 1);
-    if (c) memcpy(c, s.c_str(), s.size() + 1);
-    return c;
+    const char* r = _dumpVkProf();
+    return r;
 #else
     return strdup("ERR:profile_not_built");
 #endif

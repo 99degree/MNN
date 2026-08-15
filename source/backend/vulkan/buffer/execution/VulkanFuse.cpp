@@ -23,6 +23,15 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
     auto vkBn = static_cast<VulkanBackend*>(bn);
     auto factory = vkBn->getPipelineFactory();
     if (extra->type()) mType = extra->type()->str();
+#ifdef ENABLE_VULKAN_TIME_PROFILE
+    // Name the per-op GPU timing record after the real isp.* type ("isp.normalize"
+    // etc.) so each stage is visible individually in the profile string instead
+    // of being collapsed into a single "Extra" bucket. VulkanBackend::onCreate
+    // preserves this name for OpType_Extra ops (does not overwrite it).
+    if (extra && extra->type()) {
+        setName(extra->type()->c_str());
+    }
+#endif
     mOutputBinding.resize(outputSize);
     mInputBinding.resize(inputSize);
     mGroupSize.resize(3);
@@ -308,6 +317,54 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
     cmdbuffer->end();
     auto fence = vkBn->getPool().submit(cmdbuffer->get());
 
+    // [ISP] Direct-emit fallback. The converter's IspOpConverter (run at
+    // optimizeLevel=0) copies the ONNX isp.* op's attributes verbatim, but the
+    // direct-emit path (OnnxGraphComposer) emits the isp.* ops WITHOUT the
+    // input/const/global_size binding attributes that VulkanFuse normally reads.
+    // lookupIspSpv() still resolves the (SPIR-V-baked) shader by type, but
+    // `types`/`mInputBinding`/`mOutputBinding` come back EMPTY -> the
+    // descriptor-set layout built from `types` has ZERO bindings, and the first
+    // DescriptorSet::writeBuffer(bind) reads mBufferTypes[bind] out-of-bounds,
+    // yielding a garbage descriptor type (0xFFFFFFFF). Mesa/freedreno then
+    // dereferences a null descriptor-set-layout entry inside
+    // vkUpdateDescriptorSets -> SIGSEGV, fault_addr=0x18.
+    //
+    // All 50 embedded isp.* shaders share an identical, verified convention
+    // (dumped from every isp_*_spv.h via spirv-dis): LocalSize 16x16x1;
+    // binding 0 = const/param SSBO (read-only), binding 1 = input frame
+    // (NonWritable StorageBuffer), binding 2 = output frame (NonReadable
+    // StorageBuffer); all BufferBlock/STORAGE_BUFFER. Populate the layout and
+    // the tensor->binding map from this convention so the ctor-built
+    // descriptor set is valid. Extra scalar inputs (e.g. isp.normalize's
+    // sensor_max) have no SPIR-V storage binding -> bound to a reserved
+    // binding 3 the shader never references, so the descriptor is valid and the
+    // shader never dereferences them.
+    if (types.empty() && !mType.empty() && mType.rfind("isp.", 0) == 0) {
+        int maxBind = 3;
+        types.assign(maxBind + 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); // 0,1,2,3
+        for (int i = 0; i < inputSize; ++i) {
+            mInputBinding[i] = (i == 0) ? 1 : 3; // frame->bind1; extras->dummy bind3
+        }
+        for (int i = 0; i < outputSize; ++i) {
+            mOutputBinding[i] = (i == 0) ? 2 : 3; // frame->bind2
+        }
+        // binding 0 param SSBO: allocate a zero-filled, host-visible storage
+        // buffer so the shader reads valid (zero) params -> bounds-checks all
+        // work-items out -> no-op dispatch (no null-buffer GPU fault in Mesa).
+        const size_t cbsz = 256;
+        mConstStorageBuffer = std::make_shared<VulkanBuffer>(
+            vkBn->getMemoryPool(), false, cbsz, nullptr,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+        mConstStorageHostBuffer = mConstStorageBuffer;
+        auto* cbp = (uint8_t*)mConstStorageBuffer->map();
+        if (cbp) { ::memset(cbp, 0, cbsz); mConstStorageBuffer->unmap(); }
+        mConstStorageOffset.clear();
+        mConstStorageOffset.emplace_back(std::make_tuple(0, cbsz, size_t(0)));
+        mPreferredLocalSize = {16, 16, 1};
+        mOptimizedDispatch = true;
+        mNeedAutoTuning = false;   // fixed LocalSize; no pipeline rebuild
+    }
     mPipeline = factory->createComputePipeline(data, dataSize, types, std::vector<uint32_t>{});
     mDescriptorSet = mPipeline->createSet();
     fence->wait();
@@ -537,27 +594,27 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
         mDescriptorSet->writeBuffer(mConstUniformBuffer->buffer(), std::get<0>(iter), std::get<1>(iter), std::get<2>(iter));
     }
     if (mNeedAutoTuning && !mOptimizedDispatch) {
-        auto localSize = vkBn->autoTunePipeline(mPipeline.get(), mDescriptorSet, mGlobalSize);
-        mPipeline->changePipeline(localSize);
-        mGroupSize[0] = UP_DIV(mGlobalSize[0], localSize[0]);
-        mGroupSize[1] = UP_DIV(mGlobalSize[1], localSize[1]);
-        mGroupSize[2] = UP_DIV(mGlobalSize[2], localSize[2]);
+        // VulkanFuse dispatches a FUSED compute shader whose workgroup size is
+        // FIXED (OpExecutionMode LocalSize) in the SPIR-V — 16x16x1 for all
+        // isp.* ops, which matches the mPreferredLocalSize default populated
+        // from the group_size attr (or the {16,16,1} fallback). There is
+        // nothing to auto-tune: the spec-constant local size MUST equal the
+        // shader's baked %gl_WorkGroupSize. The legacy autoTunePipeline()
+        // path called changePipeline() to rebuild the pipeline with candidate
+        // local sizes — but it re-derived the pipeline's descriptor-set layout
+        // and corrupted mBufferTypes (size 1, garbage type 0xFFFFFFFF), which
+        // made the subsequent createSet()+rebind deref a null layout entry in
+        // Mesa/freedreno (fault_addr=0x18, SIGSEGV). Reuse the valid
+        // constructor-built descriptor set (mDescriptorSet, whose layout spans
+        // every input/output binding) and compute the dispatch group count from
+        // the shader-fixed local size.
+        int lx = mPreferredLocalSize[0] > 0 ? mPreferredLocalSize[0] : 16;
+        int ly = mPreferredLocalSize[1] > 0 ? mPreferredLocalSize[1] : 16;
+        int lz = mPreferredLocalSize[2] > 0 ? mPreferredLocalSize[2] : 1;
+        mGroupSize[0] = UP_DIV(mGlobalSize[0], lx);
+        mGroupSize[1] = UP_DIV(mGlobalSize[1], ly);
+        mGroupSize[2] = UP_DIV(mGlobalSize[2], lz);
         mNeedAutoTuning = false;
-        // Re-create descriptor set after tuning (tuning may have invalidated it)
-        mDescriptorSet = mPipeline->createSet();
-        // Re-write descriptors
-        for (int i=0; i<inputs.size(); ++i) {
-            mDescriptorSet->writeBuffer(vkBn->getBuffer(inputs[i]), mInputBinding[i]);
-        }
-        for (int i=0; i<outputs.size(); ++i) {
-            mDescriptorSet->writeBuffer(vkBn->getBuffer(outputs[i]), mOutputBinding[i]);
-        }
-        for (auto& iter : mConstStorageOffset) {
-            mDescriptorSet->writeBuffer(mConstStorageBuffer->buffer(), std::get<0>(iter), std::get<1>(iter), std::get<2>(iter));
-        }
-        for (auto& iter : mConstUniformOffset) {
-            mDescriptorSet->writeBuffer(mConstUniformBuffer->buffer(), std::get<0>(iter), std::get<1>(iter), std::get<2>(iter));
-        }
     } else if (mOptimizedDispatch) {
         // Optimization: Use preferred workgroup size from shader
         // local_size (e.g. 16×16) for efficient GPU scheduling.

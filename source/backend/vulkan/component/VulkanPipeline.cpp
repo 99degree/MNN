@@ -226,6 +226,10 @@ void VulkanLayout::DescriptorSet::writeBuffer(VkBuffer buffer, int bindIndex, si
     writeSet.pBufferInfo     = &sourceInfo;
     writeSet.dstSet          = mSet;
 
+    if (buffer == VK_NULL_HANDLE || mSet == VK_NULL_HANDLE) {
+        return;
+    }
+
     mPipeline->mDevice.updateWriteDescriptorSet(writeSet);
 }
 
