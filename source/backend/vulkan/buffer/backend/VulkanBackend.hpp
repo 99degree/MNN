@@ -132,6 +132,11 @@ public:
     VulkanTimeProfiler* timeProfiler() const {
         return mTimeProfiler.get();
     }
+    /** Per-op GPU timing as a string (op name -> ms, sorted desc). Empty if profiling off. */
+    std::string getProfileString() const {
+        if (mTimeProfiler) return mTimeProfiler->getProfileString();
+        return "";
+    }
 #endif
 
     bool useFP16() const {

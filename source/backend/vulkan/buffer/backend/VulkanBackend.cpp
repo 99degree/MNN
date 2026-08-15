@@ -618,4 +618,39 @@ std::vector<uint32_t> VulkanBackend::autoTunePipeline(const VulkanPipeline* pipe
     return lws_prefer;
 }
 
+
 } // namespace MNN
+
+/**
+ * C-linkage bridge so non-MNN clients (the cam_app JNI in libmnnhelper.so)
+ * can extract per-op (per-shader) GPU timing from the VulkanTimeProfiler
+ * WITHOUT needing the internal VulkanBackend.hpp header.
+ *
+ * Pass a `const MNN::Backend*` obtained from
+ * `Interpreter::getBackend(session, outputTensor)`; this function
+ * dynamic_casts it to `VulkanBackend*` and returns the aggregated per-op
+ * profile string. Returns nullptr if the backend is not Vulkan or profiling
+ * is unavailable (caller must free with free() if non-null).
+ */
+;// MNN Vulkan builds with -fvisibility=hidden, so mark the export.
+#pragma GCC visibility push(default)
+extern "C" const char* mnn_vulkan_backend_getProfileString(const void* backend) {
+    if (!backend) return strdup("ERR:backend_is_null");
+    const MNN::Backend* b = static_cast<const MNN::Backend*>(backend);
+#ifdef ENABLE_VULKAN_TIME_PROFILE
+    // RTTI-free downcast: type() is an inline accessor (no RTTI needed),
+    // then static_cast is safe because we verified the concrete type.
+    if (b->type() != MNN_FORWARD_VULKAN) {
+        char buf2[64]; snprintf(buf2, sizeof(buf2), "ERR:not_vulkan got_type=%d expected=%d", (int)b->type(), (int)MNN_FORWARD_VULKAN); return strdup(buf2);
+    }
+    const MNN::VulkanBackend* vb = static_cast<const MNN::VulkanBackend*>(b);
+    std::string s = vb->getProfileString();
+    if (s.empty()) return strdup("ERR:no_profile_data");
+    char* c = (char*)malloc(s.size() + 1);
+    if (c) memcpy(c, s.c_str(), s.size() + 1);
+    return c;
+#else
+    return strdup("ERR:profile_not_built");
+#endif
+}
+#pragma GCC visibility pop

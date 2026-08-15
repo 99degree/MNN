@@ -53,6 +53,11 @@ public:
     // query results are available.  Returns -1.0f on error.
     float getTotalTime(Kind kind) const;
 
+    // Return per-op (per-shader-name) GPU timing as a string, sorted by
+    // descending time. Aggregates records by name (same op executed multiple
+    // times summed). Returns "" if no samples were recorded.
+    std::string getProfileString() const;
+
 private:
     struct Record {
         std::string name;
@@ -248,6 +253,47 @@ inline void VulkanTimeProfiler::printTimeProfile() const {
         MNN_PRINT("\n[Shader Profileing (end)]\n");
     }
 }
+    /** Return per-op (per-shader-name) GPU timing as a string, sorted by descending
+     *  time. Aggregates records by name (same op executed multiple times summed).
+     *  Returns "" if no samples were recorded. */
+    inline std::string VulkanTimeProfiler::getProfileString() const {
+        if (mNext == 0 || mQueryPool == VK_NULL_HANDLE) {
+            return "";
+        }
+        std::vector<uint64_t> timestamps(mNext);
+        auto res = vkGetQueryPoolResults(mDevice.get(), mQueryPool, 0, mNext,
+                                         sizeof(uint64_t) * timestamps.size(), timestamps.data(),
+                                         sizeof(uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT);
+        if (VK_SUCCESS != res) {
+            return "";
+        }
+        double tickToMs = mDevice.getTimestampPeriod() / double(1e6);
+        // Aggregate per-op-name time for Execution kind (covers full op execution)
+        std::unordered_map<std::string, float> timeTable;
+        float total = 0.0f;
+        for (const auto& record : mRecords) {
+            if (record.kind != Kind::Execution) continue;
+            if (record.end >= timestamps.size() || record.begin >= timestamps.size()) continue;
+            float dt = (float)((timestamps[record.end] - timestamps[record.begin]) * tickToMs);
+            timeTable[record.name] += dt;
+            total += dt;
+        }
+        std::vector<std::pair<std::string, float>> sorted(timeTable.begin(), timeTable.end());
+        std::sort(sorted.begin(), sorted.end(),
+                  [](const std::pair<std::string, float>& a, const std::pair<std::string, float>& b) {
+                      return a.second > b.second;
+                  });
+        std::string out;
+        char buf[256];
+        snprintf(buf, sizeof(buf), "TOTAL_EXEC_MS=%.3f\n", total);
+        out += buf;
+        for (const auto& it : sorted) {
+            snprintf(buf, sizeof(buf), "%-40s %.3f ms\n", it.first.c_str(), it.second);
+            out += buf;
+        }
+        return out;
+    }
+
 
 inline VulkanTimeProfileScope::VulkanTimeProfileScope(VulkanTimeProfiler* profiler, VkCommandBuffer cmd, const char* name,
                                                       VulkanTimeProfiler::Kind kind) {
