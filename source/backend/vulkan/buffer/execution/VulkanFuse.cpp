@@ -52,7 +52,7 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
     // Detect single-workgroup reduction extras (reduce_keepdims attr)
     for (int i=0; i<extra->attr()->size(); ++i) {
         auto attr = extra->attr()->GetAs<Attribute>(i);
-        if (attr->key()->str() == "reduce_keepdims" && attr->b()) {
+        if (attr->key()->str() == "reduce_keepdims" && (attr->b() || attr->i() != 0)) {
             mReduce = true;
             break;
         }
@@ -60,7 +60,7 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
     // Detect elementwise extras (output shape copies input shape)
     for (int i=0; i<extra->attr()->size(); ++i) {
         auto attr = extra->attr()->GetAs<Attribute>(i);
-        if (attr->key()->str() == "elementwise" && attr->b()) {
+        if (attr->key()->str() == "elementwise" && (attr->b() || attr->i() != 0)) {
             mElementwise = true;
             break;
         }
