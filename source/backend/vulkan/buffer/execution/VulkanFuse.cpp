@@ -17,7 +17,20 @@
 #include "VulkanFuse.hpp"
 #include "IspSpvLookup.hpp"
 #include "core/OpCommonUtils.hpp"
+#include <stdio.h>
+#include <stdlib.h>
 namespace MNN {
+
+// Perf-build gate for the per-dispatch VulkanFuse diagnostics. In a full-speed
+// perf run these fprintf(stderr) calls (~14 ops x ~10 lines per frame on a 30fps
+// camera stream) dominate host overhead; they are opt-in via ISP_DEBUG_VLOG so
+// the default build is silent + fast. Default OFF.
+static inline bool ispVlog() {
+    static const bool v = (getenv("ISP_DEBUG_VLOG") &&
+                           strcmp(getenv("ISP_DEBUG_VLOG"), "0") != 0);
+    return v;
+}
+#define ISP_VLOG(...) do { if (ispVlog()) { fprintf(stderr, __VA_ARGS__); fflush(stderr); } } while (0)
 
 VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outputSize) : VulkanBasicExecution(bn) {
     auto vkBn = static_cast<VulkanBackend*>(bn);
@@ -459,7 +472,7 @@ ErrorCode VulkanFuse::hotSwapConstBuffer(int bindingIndex, const void* data, siz
 ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs,
                                const VulkanCommandPool::Buffer* cmdBuffer) {
     auto vkBn = static_cast<VulkanBackend*>(backend());
-    fprintf(stderr, "[VulkanFuse] onEncode type=%s inputs=%zu outputs=%zu global=[%d,%d,%d] group=[%d,%d,%d] constOff=%zu\n",
+    ISP_VLOG("[VulkanFuse] onEncode type=%s inputs=%zu outputs=%zu global=[%d,%d,%d] group=[%d,%d,%d] constOff=%zu\n",
         mType.c_str(), inputs.size(), outputs.size(),
         mGlobalSize[0], mGlobalSize[1], mGlobalSize[2],
         mGroupSize[0], mGroupSize[1], mGroupSize[2],
@@ -468,23 +481,23 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
     for (size_t i = 0; i < inputs.size(); ++i) {
         auto* t = inputs[i];
         int b = (i < mInputBinding.size()) ? mInputBinding[i] : -1;
-        fprintf(stderr, "[VulkanFuse]   in[%zu] bind=%d dims=%d size=%zu\n", i, b,
+        ISP_VLOG("[VulkanFuse]   in[%zu] bind=%d dims=%d size=%zu\n", i, b,
             t ? (int)t->buffer().dimensions : -1, t ? (size_t)t->elementSize() : 0);
     }
     fflush(stderr);
     for (size_t i = 0; i < outputs.size(); ++i) {
         auto* t = outputs[i];
         int b = (i < mOutputBinding.size()) ? mOutputBinding[i] : -1;
-        fprintf(stderr, "[VulkanFuse]   out[%zu] bind=%d dims=%d size=%zu\n", i, b,
+        ISP_VLOG("[VulkanFuse]   out[%zu] bind=%d dims=%d size=%zu\n", i, b,
             t ? (int)t->buffer().dimensions : -1, t ? (size_t)t->elementSize() : 0);
     }
     fflush(stderr);
     for (auto& iter : mConstStorageOffset) {
-        fprintf(stderr, "[VulkanFuse]   constStorage bind=%d off=%zu len=%zu\n",
+        ISP_VLOG("[VulkanFuse]   constStorage bind=%d off=%zu len=%zu\n",
             std::get<0>(iter), std::get<1>(iter), std::get<2>(iter));
     }
     for (auto& iter : mConstUniformOffset) {
-        fprintf(stderr, "[VulkanFuse]   constUniform bind=%d off=%zu len=%zu\n",
+        ISP_VLOG("[VulkanFuse]   constUniform bind=%d off=%zu len=%zu\n",
             std::get<0>(iter), std::get<1>(iter), std::get<2>(iter));
     }
     fflush(stderr);
@@ -497,7 +510,7 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
         auto* p = hostBuf->map();
         if (p) {
             const float* f = (const float*)p;
-            fprintf(stderr, "[VulkanFuse]   %s[0..7]=%.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f\n",
+            ISP_VLOG("[VulkanFuse]   %s[0..7]=%.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f\n",
                 tag, f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7]);
             fflush(stderr);
             hostBuf->unmap();
@@ -546,7 +559,7 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
     // Patch BOTH: override global_size from input dims AND hot-swap the
     // const buffer's first two floats (W,H).
     if (mElementwise && !mElementwisePatched && tw > 0 && th > 0) {
-        fprintf(stderr, "[VulkanFuse] ELEMENTWISE patch: tw=%d th=%d glob=[%d,%d,%d]\n",
+        ISP_VLOG("[VulkanFuse] ELEMENTWISE patch: tw=%d th=%d glob=[%d,%d,%d]\n",
             tw, th, mGlobalSize[0], mGlobalSize[1], mGlobalSize[2]);
         fflush(stderr);
         if (mGlobalSize[0] != tw || mGlobalSize[1] != th) {
@@ -556,10 +569,10 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
             mNeedAutoTuning = true;
         }
         float v[2] = { (float)tw, (float)th };
-        fprintf(stderr, "[VulkanFuse] ELEMENTWISE hotSwap begin\n");
+        ISP_VLOG("[VulkanFuse] ELEMENTWISE hotSwap begin\n");
         fflush(stderr);
         ErrorCode hs = hotSwapConstBuffer(0, v, sizeof(v));
-        fprintf(stderr, "[VulkanFuse] ELEMENTWISE hotSwap done rc=%d\n", (int)hs);
+        ISP_VLOG("[VulkanFuse] ELEMENTWISE hotSwap done rc=%d\n", (int)hs);
         fflush(stderr);
         mElementwisePatched = true;
     }
@@ -641,7 +654,7 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
         dispatchY = ALIMAX(1, gy1 - gy0);
     }
     vkCmdDispatch(cmdBuffer->get(), dispatchX, dispatchY, dispatchZ);
-    fprintf(stderr, "[VulkanFuse] DISPATCH type=%s glob=[%d,%d,%d] group=[%d,%d,%d] earlyZ=%d bounds=[%d,%d,%d,%d]\n",
+    ISP_VLOG("[VulkanFuse] DISPATCH type=%s glob=[%d,%d,%d] group=[%d,%d,%d] earlyZ=%d bounds=[%d,%d,%d,%d]\n",
         mType.c_str(), mGlobalSize[0], mGlobalSize[1], mGlobalSize[2],
         mGroupSize[0], mGroupSize[1], mGroupSize[2],
         mEarlyZ ? 1 : 0,
