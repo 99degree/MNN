@@ -117,8 +117,11 @@ VulkanRuntime::VulkanRuntime(const Backend::Info& info, std::shared_ptr<VulkanDe
     mPipelineFactory = std::make_shared<VulkanPipelineFactory>(dev);
     mQueryPool = std::make_shared<VulkanQueryPool>(dev);
 
-    std::vector<int> legalModeValues = {0x00000001, 0x00000002, 0x00000004,
-                                        0x00000201, 0x00000202, 0x00000204};
+    std::vector<int> legalModeValues = {
+        0x00000001, 0x00000002, 0x00000004, 0x00000008, 0x00000010,  // tuning modes
+        0x00000020, 0x00000040,  // 32 and 64 threads — user-preferred GPU threading
+        0x00000201, 0x00000202, 0x00000204, 0x00000210,
+        0x00000220, 0x00000240};
     auto iter = std::find(legalModeValues.begin(), legalModeValues.end(), (uint32_t)info.gpuMode);
     if (iter == legalModeValues.end()) {
         MNN_PRINT("The customized gpu mode is illegal for Vulkan backend. Using the default mode.\n");
