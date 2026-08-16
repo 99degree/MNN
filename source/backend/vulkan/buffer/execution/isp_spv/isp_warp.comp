@@ -1,9 +1,19 @@
 #version 450
-// isp.warp — placeholder compute shader
-// Uniforms: {W, H, params...}
+// isp.gpu_warp — EIS/GDC warp via per-fragment coordinate computation
+// Replaces pre-computed [H,W,2] grid with 5 params: [dx,dy,roll(cx,cy,roll)]
+// Uniform buffer: [width, height, dx, dy, roll, cx, cy, padding]
+// The GPU computes sx,sy per-fragment — no 97MB CPU FloatArray needed.
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 layout(set = 0, binding = 0, std430) buffer Uniforms {
-    float width; float height; float param1; float param2; float param3; float param4;
+    uint  width;     // image width  (output cols)
+    uint  height;    // image height (output rows)
+    float dx;        // translation X (pixels, pre-downscale)
+    float dy;        // translation Y
+    float roll;      // rotation angle (degrees)
+    float cx;        // optical center X (normalized -1..1, 0=center)
+    float cy;        // optical center Y
+    uint  _pad;
+    uint  channels;  // C (usually 3 or 4)
 } u;
 layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
 layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
@@ -11,10 +21,61 @@ layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
 void main() {
     uint x = gl_GlobalInvocationID.x;
     uint y = gl_GlobalInvocationID.y;
-    int w = int(u.width);
-    int h = int(u.height);
-    if (int(x) >= w || int(y) >= h) return;
-    int idx = (int(y) * w + int(x));
-    // Per-op logic would go here
-    out_data[idx] = in_data[idx];
+    if (x >= u.width || y >= u.height) return;
+
+    uint w = u.width;
+    uint h = u.height;
+    uint c = u.channels;
+
+    // Normalized device coords: [-1, +1] with pixel centers
+    float nx = (float(x) + 0.5) / float(w) * 2.0 - 1.0;
+    float ny = (float(y) + 0.5) / float(h) * 2.0 - 1.0;
+
+    // Apply inverse warp: rotate then translate
+    // (shader maps OUTPUT→INPUT, so inverse of the forward transform)
+    float rad = u.roll * 3.14159265 / 180.0;
+    float cosR = cos(rad);
+    float sinR = sin(rad);
+
+    // Inverse of the forward warp (dx, dy, roll)
+    // Forward:  sx = cosR*xc - sinR*yc + cx + dx
+    //           sy = sinR*xc + cosR*yc + cy + dy
+    // Inverse:  xc = cosR*sx - sinR*sy + cx
+    //           yc = sinR*sx + cosR*sy + cy
+    //   =>   px = (nx - cx - dx) * cosR + (ny - cy - dy) * sinR + cx
+    //       py = -(nx - cx - dx) * sinR + (ny - cy - dy) * cosR + cy
+    float px = (nx - u.cx - u.dx) * cosR + (ny - u.cy - u.dy) * sinR + u.cx;
+    float py = -(nx - u.cx - u.dx) * sinR + (ny - u.cy - u.dy) * cosR + u.cy;
+
+    // Convert back to pixel coordinates
+    float sx = (px + 1.0) * 0.5 * float(w) - 0.5;
+    float sy = (py + 1.0) * 0.5 * float(h) - 0.5;
+
+    // Bilinear interpolation
+    int x0 = int(floor(sx));
+    int y0 = int(floor(sy));
+    int x1 = x0 + 1;
+    int y1 = y0 + 1;
+
+    float fx = sx - float(x0);
+    float fy = sy - float(y0);
+
+    int out_idx = int(y * w * c + x * c);
+
+    for (uint ch = 0; ch < c; ch++) {
+        float p00 = (x0 >= 0 && x0 < int(w) && y0 >= 0 && y0 < int(h))
+            ? in_data[uint(y0 * int(w) + x0) * c + ch] : 0.0;
+        float p10 = (x1 >= 0 && x1 < int(w) && y0 >= 0 && y0 < int(h))
+            ? in_data[uint(y0 * int(w) + x1) * c + ch] : 0.0;
+        float p01 = (x0 >= 0 && x0 < int(w) && y1 >= 0 && y1 < int(h))
+            ? in_data[uint(y1 * int(w) + x0) * c + ch] : 0.0;
+        float p11 = (x1 >= 0 && x1 < int(w) && y1 >= 0 && y1 < int(h))
+            ? in_data[uint(y1 * int(w) + x1) * c + ch] : 0.0;
+
+        float p0 = p00 * (1.0 - fx) + p10 * fx;
+        float p1 = p01 * (1.0 - fx) + p11 * fx;
+        float result = p0 * (1.0 - fy) + p1 * fy;
+
+        out_data[out_idx + ch] = result;
+    }
 }
