@@ -23,6 +23,8 @@
 #include "isp_spv/isp_local_contrast_spv.h"
 #include "isp_spv/isp_unsharp_spv.h"
 #include "isp_spv/isp_display_spv.h"
+#include "isp_spv/isp_display_rgb_spv.h"
+#include "isp_spv/isp_display_uint8_argb_spv.h"
 #include "isp_spv/isp_algo_gamma_spv.h"
 #include "isp_spv/isp_histogram_spv.h"
 #include "isp_spv/isp_aaf_spv.h"

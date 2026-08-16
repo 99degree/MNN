@@ -7,6 +7,8 @@
 //
 
 #include <stdio.h>
+#include <chrono>
+#include <cstdio>
 #include <cstring>
 #include <cstdint>
 // Explicitly include buffer backend's VulkanBackend.hpp (has getPipelineFactory/getBuffer)
@@ -18,6 +20,8 @@
 #include "IspSpvLookup.hpp"
 #include "core/OpCommonUtils.hpp"
 #include <stdio.h>
+#include <chrono>
+#include <cstdio>
 #include <stdlib.h>
 namespace MNN {
 
@@ -653,16 +657,31 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
         dispatchX = ALIMAX(1, gx1 - gx0);
         dispatchY = ALIMAX(1, gy1 - gy0);
     }
+    auto t_disp0 = std::chrono::high_resolution_clock::now();
     vkCmdDispatch(cmdBuffer->get(), dispatchX, dispatchY, dispatchZ);
-    ISP_VLOG("[VulkanFuse] DISPATCH type=%s glob=[%d,%d,%d] group=[%d,%d,%d] earlyZ=%d bounds=[%d,%d,%d,%d]\n",
+    auto t_disp1 = std::chrono::high_resolution_clock::now();
+    auto disp_us = std::chrono::duration_cast<std::chrono::microseconds>(t_disp1 - t_disp0).count();
+    ISP_VLOG("[VulkanFuse] DISPATCH type=%s glob=[%d,%d,%d] group=[%d,%d,%d] earlyZ=%d bounds=[%d,%d,%d,%d] submit_us=%lld\n",
         mType.c_str(), mGlobalSize[0], mGlobalSize[1], mGlobalSize[2],
         mGroupSize[0], mGroupSize[1], mGroupSize[2],
         mEarlyZ ? 1 : 0,
         mValidBounds.size() == 4 ? mValidBounds[0] : -1,
         mValidBounds.size() == 4 ? mValidBounds[1] : -1,
         mValidBounds.size() == 4 ? mValidBounds[2] : -1,
-        mValidBounds.size() == 4 ? mValidBounds[3] : -1);
-    fflush(stderr);
+        mValidBounds.size() == 4 ? mValidBounds[3] : -1,
+        (long long)disp_us);
+    // Per-op GPU workload reporting (writes to stderr → logcat)
+    static thread_local int _log_counter = 0;
+    if (::getenv("ISP_DEBUG_VLOG") || (_log_counter < 40)) {
+        fprintf(stderr, "[VulkanFuse-PERF] type=%s W=%d H=%d groups=[%dx%dx%d] wg=%dx%dx%d submit_us=%lld pixels=%d\n",
+            mType.c_str(), mGlobalSize[0], mGlobalSize[1],
+            mGroupSize[0], mGroupSize[1], mGroupSize[2],
+            dispatchX, dispatchY, dispatchZ,
+            (int)disp_us, mGlobalSize[0] * mGlobalSize[1]);
+        fflush(stderr);
+        // Also emit via stderr (goes to logcat on Android)
+        _log_counter++;
+    }
     return NO_ERROR;
 }
 

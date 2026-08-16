@@ -53,6 +53,10 @@ extern const unsigned char g_isp_unsharp_spv[];
 extern const int g_isp_unsharp_spv_len;
 extern const unsigned char g_isp_display_spv[];
 extern const int g_isp_display_spv_len;
+extern const unsigned char g_isp_display_rgb_spv[];
+extern const int g_isp_display_rgb_spv_len;
+extern const unsigned char g_isp_display_uint8_argb_spv[];
+extern const int g_isp_display_uint8_argb_spv_len;
 extern const unsigned char g_isp_algo_gamma_spv[];
 extern const int g_isp_algo_gamma_spv_len;
 extern const unsigned char g_isp_histogram_spv[];
@@ -138,6 +142,8 @@ static const std::unordered_map<std::string, SpvData> g_ispSpvMap = {
     {"isp.local_contrast",{g_isp_local_contrast_spv, g_isp_local_contrast_spv_len}},
     {"isp.unsharp",     {g_isp_unsharp_spv,      g_isp_unsharp_spv_len}},
     {"isp.display",     {g_isp_display_spv,      g_isp_display_spv_len}},
+    {"isp.display_rgb",   {g_isp_display_rgb_spv, g_isp_display_rgb_spv_len}},
+    {"isp.display_uint8_argb", {g_isp_display_uint8_argb_spv, g_isp_display_uint8_argb_spv_len}},
     {"isp.algo_gamma",  {g_isp_algo_gamma_spv,   g_isp_algo_gamma_spv_len}},
     {"isp.histogram",   {g_isp_histogram_spv,    g_isp_histogram_spv_len}},
     {"isp.aaf",         {g_isp_aaf_spv,          g_isp_aaf_spv_len}},
