@@ -19,6 +19,7 @@
 #include "VulkanFuse.hpp"
 #include "IspSpvLookup.hpp"
 #include "core/OpCommonUtils.hpp"
+#include "core/TensorUtils.hpp"
 #include <stdio.h>
 #include <chrono>
 #include <cstdio>
@@ -66,6 +67,16 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
         auto attr = extra->attr()->GetAs<Attribute>(i);
         if (attr->key()->str() == "elementwise" && (attr->b() || attr->i() != 0)) {
             mElementwise = true;
+            break;
+        }
+    }
+    // Detect planar-NCHW spatial ops (debayer/display): their INPUT data is
+    // channel-plane NCHW even though session tensors are tagged NHWC, so the
+    // W/H derivation must ignore the format tag and use dims[-1]/dims[-2].
+    for (int i=0; i<extra->attr()->size(); ++i) {
+        auto attr = extra->attr()->GetAs<Attribute>(i);
+        if (attr->key()->str() == "spatial_nchw" && (attr->b() || attr->i() != 0)) {
+            mSpatialNchw = true;
             break;
         }
     }
@@ -302,7 +313,7 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
             mConstOffset.emplace_back(std::make_tuple(std::get<0>(constAttr), size, offset));
             offset += size;
         }
-        std::shared_ptr<VulkanBuffer> hostBuffer(new VulkanBuffer(vkBn->getMemoryPool(), false, offset, nullptr, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT));
+        std::shared_ptr<VulkanBuffer> hostBuffer(new VulkanBuffer(vkBn->getMemoryPool(), false, offset, nullptr, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
         auto ptr = (uint8_t*)hostBuffer->map();
         for (int i=0; i<constPtrs.size(); ++i) {
             ::memcpy(ptr + std::get<2>(mConstOffset[i]), std::get<1>(constPtrs[i]), std::get<2>(constPtrs[i]));
@@ -372,7 +383,7 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
         mConstStorageBuffer = std::make_shared<VulkanBuffer>(
             vkBn->getMemoryPool(), false, cbsz, nullptr,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-            VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+            VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
         mConstStorageHostBuffer = mConstStorageBuffer;
         auto* cbp = (uint8_t*)mConstStorageBuffer->map();
         if (cbp) { ::memset(cbp, 0, cbsz); mConstStorageBuffer->unmap(); }
@@ -381,6 +392,16 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
         mPreferredLocalSize = {16, 16, 1};
         mOptimizedDispatch = true;
         mNeedAutoTuning = false;   // fixed LocalSize; no pipeline rebuild
+    }
+    // isp.demosaic_g2_ccm binds a 3x3 CCM matrix (identity when the net has
+    // no runtime CCM tensor) at SPIR-V binding 3. Its `input`/`const` attrs
+    // only declare bindings 0..2, so `types` has size 3 and the empty-types
+    // direct-emit fallback above never runs. Grow the layout to cover
+    // binding 3 BEFORE createComputePipeline — otherwise the onEncode
+    // identity bind does mBufferTypes[3] out-of-bounds and Mesa faults on
+    // the garbage descriptor type (SIGSEGV fault_addr=0x0).
+    if (mType == "isp.demosaic_g2_ccm" && types.size() < 4) {
+        types.resize(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
     }
     mPipeline = factory->createComputePipeline(data, dataSize, types, std::vector<uint32_t>{});
     mDescriptorSet = mPipeline->createSet();
@@ -430,7 +451,7 @@ ErrorCode VulkanFuse::hotSwapConstBuffer(int bindingIndex, const void* data, siz
             auto hostBuf = std::make_shared<VulkanBuffer>(
                 vkBn->getMemoryPool(), false, bufSize, nullptr,
                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_SHARING_MODE_EXCLUSIVE,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             auto ptr = hostBuf->map();
             ::memcpy(ptr, srcData, bufSize);
             hostBuf->unmap();
@@ -453,7 +474,7 @@ ErrorCode VulkanFuse::hotSwapConstBuffer(int bindingIndex, const void* data, siz
             auto hostBuf = std::make_shared<VulkanBuffer>(
                 vkBn->getMemoryPool(), false, bufSize, nullptr,
                 VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_SHARING_MODE_EXCLUSIVE,
-                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
             auto ptr = hostBuf->map();
             ::memcpy(ptr, srcData, bufSize);
             hostBuf->unmap();
@@ -494,6 +515,15 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
         int b = (i < mOutputBinding.size()) ? mOutputBinding[i] : -1;
         ISP_VLOG("[VulkanFuse]   out[%zu] bind=%d dims=%d size=%zu\n", i, b,
             t ? (int)t->buffer().dimensions : -1, t ? (size_t)t->elementSize() : 0);
+        if (t != nullptr) {
+            auto outBuf = std::get<0>(vkBn->getBuffer(t));
+            VkBuffer dummy = vkBn->dummyBuffer();
+            ISP_VLOG("[VulkanFuse]   outVk[%zu] bufHandle=%p dummy=%p MATCH_DUMMY=%d deviceId=%llu\n",
+                i, (void*)(uintptr_t)(outBuf == VK_NULL_HANDLE ? 0 : outBuf),
+                (void*)(uintptr_t)dummy,
+                (dummy != VK_NULL_HANDLE && outBuf == dummy) ? 1 : 0,
+                (unsigned long long)t->deviceId());
+        }
     }
     fflush(stderr);
     for (auto& iter : mConstStorageOffset) {
@@ -536,9 +566,32 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
             th = inputs[0]->buffer().dim[0].extent;
             tw = inputs[0]->buffer().dim[1].extent;
         } else {
-            tw = inputs[0]->buffer().dim[dims-1].extent;   // W
-            th = inputs[0]->buffer().dim[dims-2].extent;   // H
-            if (dims >= 4) tc = inputs[0]->buffer().dim[1].extent;  // C
+            // Layout-aware W/H derivation: ISP chain tensors are plain NHWC
+            // or NCHW (never NC4HW4 on the wire for Extra ops). For NHWC the
+            // spatial dims live at [1]=H,[2]=W and the channel count at [3].
+            bool isNhwc = false;
+            if (mSpatialNchw) {
+                // Op declared its input as planar NCHW data: trust dims only.
+                isNhwc = false;
+            } else if (dims >= 4) {
+                auto df = TensorUtils::getDescribe(inputs[0])->dimensionFormat;
+                isNhwc = (df == MNN_DATA_FORMAT_NHWC);
+                if (!isNhwc && inputs[0]->buffer().dim[3].extent <= 8 &&
+                    inputs[0]->buffer().dim[1].extent > 8) {
+                    // Heuristic fallback when the describe tag is missing:
+                    // a trailing dim <= 8 with large dim[1] means channels-last.
+                    isNhwc = true;
+                }
+            }
+            if (isNhwc) {
+                th = inputs[0]->buffer().dim[1].extent;        // H
+                tw = inputs[0]->buffer().dim[2].extent;        // W
+                tc = inputs[0]->buffer().dim[3].extent;        // C
+            } else {
+                tw = inputs[0]->buffer().dim[dims-1].extent;   // W
+                th = inputs[0]->buffer().dim[dims-2].extent;   // H
+                if (dims >= 4) tc = inputs[0]->buffer().dim[1].extent;  // C
+            }
         }
     }
     if (mGlobalSize[0] <= 0 || mGlobalSize[1] <= 0) {
@@ -597,11 +650,36 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
     for (int i=0; i<inputs.size(); ++i) {
         int binding = mInputBinding[i];
         auto tensorBuffer = vkBn->getBuffer(inputs[i]);
+        ISP_VLOG("[VulkanFuse]   bindIn[%d] buf=%p range=%zu off=%zu\n", binding,
+            (void*)(uintptr_t)std::get<0>(tensorBuffer),
+            (size_t)std::get<1>(tensorBuffer), (size_t)std::get<2>(tensorBuffer));
         mDescriptorSet->writeBuffer(tensorBuffer, binding);
+    }
+    if (mType == "isp.demosaic_g2_ccm" && inputs.size() < 2) {
+        // Single-input form: no runtime CCM tensor. Bind a persistent
+        // identity 3x3 matrix at binding 3 so the shader reads a valid
+        // passthrough CCM instead of an unbound descriptor (GPU fault /
+        // garbage colors). Created once, reused every frame.
+        if (!mIdentityCcmBuffer) {
+            const size_t ccmBytes = 9 * sizeof(float);
+            mIdentityCcmBuffer = std::make_shared<VulkanBuffer>(
+                vkBn->getMemoryPool(), false, ccmBytes, nullptr,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                VK_SHARING_MODE_EXCLUSIVE,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            float ident[9] = {1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f};
+            auto* p = (float*)mIdentityCcmBuffer->map();
+            if (p) { ::memcpy(p, ident, ccmBytes); mIdentityCcmBuffer->unmap(); }
+        }
+        mDescriptorSet->writeBuffer(std::make_tuple(mIdentityCcmBuffer->buffer(),
+            (VkDeviceSize)36, (VkDeviceSize)0), 3);
     }
     for (int i=0; i<outputs.size(); ++i) {
         int binding = mOutputBinding[i];
         auto tensorBuffer = vkBn->getBuffer(outputs[i]);
+        ISP_VLOG("[VulkanFuse]   bindOut[%d] buf=%p range=%zu off=%zu\n", binding,
+            (void*)(uintptr_t)std::get<0>(tensorBuffer),
+            (size_t)std::get<1>(tensorBuffer), (size_t)std::get<2>(tensorBuffer));
         mDescriptorSet->writeBuffer(tensorBuffer, binding);
     }
     for (auto& iter : mConstStorageOffset) {
@@ -659,6 +737,39 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
     }
     auto t_disp0 = std::chrono::high_resolution_clock::now();
     vkCmdDispatch(cmdBuffer->get(), dispatchX, dispatchY, dispatchZ);
+    // [INLINE PROBE] Same cmd buffer: barrier → copy first output floats to a
+    // coherent staging buffer. Dump happens in afterExecute() after submit+wait.
+    mProbeStage.reset();
+    mProbeOff = 0;
+    if (ispVlog() && outputs.size() > 0) {
+        auto outTupleP = vkBn->getBuffer(outputs[0]);
+        mProbeSrc = std::get<0>(outTupleP);
+        mProbeOff = (size_t)std::get<2>(outTupleP);
+        const size_t kProbe = 196608;
+        mProbeStage.reset(new VulkanBuffer(vkBn->getMemoryPool(), false, kProbe,
+            nullptr, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE,
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
+        cmdBuffer->barrierSource(mProbeSrc, mProbeOff, kProbe,
+            VulkanCommandPool::Buffer::BarrierType::READ_WRITE);
+        VkBufferCopy pbc;
+        pbc.size = kProbe; pbc.dstOffset = 0; pbc.srcOffset = mProbeOff;
+        vkCmdCopyBuffer(cmdBuffer->get(), mProbeSrc, mProbeStage->buffer(), 1, &pbc);
+        // [INPUT GROUND TRUTH] Same treatment for the first input buffer so we
+        // can tell shader-addressing bugs from transport/visibility bugs.
+        if (inputs.size() > 0) {
+            auto inTupleP = vkBn->getBuffer(inputs[0]);
+            mInProbeSrc = std::get<0>(inTupleP);
+            mInProbeOff = (size_t)std::get<2>(inTupleP);
+            mInProbeStage.reset(new VulkanBuffer(vkBn->getMemoryPool(), false, kProbe,
+                nullptr, VK_BUFFER_USAGE_TRANSFER_DST_BIT, VK_SHARING_MODE_EXCLUSIVE,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
+            cmdBuffer->barrierSource(mInProbeSrc, mInProbeOff, kProbe,
+                VulkanCommandPool::Buffer::BarrierType::READ_WRITE);
+            VkBufferCopy ibc;
+            ibc.size = kProbe; ibc.dstOffset = 0; ibc.srcOffset = mInProbeOff;
+            vkCmdCopyBuffer(cmdBuffer->get(), mInProbeSrc, mInProbeStage->buffer(), 1, &ibc);
+        }
+    }
     auto t_disp1 = std::chrono::high_resolution_clock::now();
     auto disp_us = std::chrono::duration_cast<std::chrono::microseconds>(t_disp1 - t_disp0).count();
     ISP_VLOG("[VulkanFuse] DISPATCH type=%s glob=[%d,%d,%d] group=[%d,%d,%d] earlyZ=%d bounds=[%d,%d,%d,%d] submit_us=%lld\n",
@@ -683,6 +794,48 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
         _log_counter++;
     }
     return NO_ERROR;
+}
+
+// [PROBE] Runs from VulkanBasicExecutionDirect::onExecute after the queue has
+// been flushed: the dispatch and the probe copy are guaranteed complete.
+void VulkanFuse::afterExecute() {
+    if (mInProbeStage) {
+        const float* ip = (const float*)mInProbeStage->map(0, 196608);
+        if (ip) {
+            fprintf(stderr, "[VulkanFuse-IN] off=%zu f[0..11]=", mInProbeOff);
+            for (int i = 0; i < 12; ++i) fprintf(stderr, "%.6f,", ip[i]);
+            // Boundary samples on the INPUT buffer: dense or zero past
+            // f=12288? Decides whether the feed itself is truncated.
+            fprintf(stderr, "\n[VulkanFuse-IN-BND] i12284..91=%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f i38416..21=%.1f,%.1f,%.1f,%.1f,%.1f,%.1f i45052..59=%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f\n",
+                ip[12284],ip[12285],ip[12286],ip[12287],ip[12288],ip[12289],ip[12290],ip[12291],
+                ip[38416],ip[38417],ip[38418],ip[38419],ip[38420],ip[38421],
+                ip[45052],ip[45053],ip[45054],ip[45055],ip[45056],ip[45057],ip[45058],ip[45059]);
+            fflush(stderr);
+            mInProbeStage->unmap();
+        }
+    }
+    if (!mProbeStage) {
+        return;
+    }
+    const float* sp = (const float*)mProbeStage->map(0, 196608);
+    if (sp) {
+        fprintf(stderr, "[VulkanFuse-PROBE] type=%s off=%zu\n", mType.c_str(), mProbeOff);
+        fprintf(stderr, "[VulkanFuse-PROBE-W0] ");
+        for (int i = 0; i < 96; ++i) fprintf(stderr, "%.6f,", sp[i]);
+        // Boundary probes: is the device buffer dense past f=12288 (the
+        // suspected 49152B cut) and in the high region?
+        fprintf(stderr, "\n[VulkanFuse-PROBE-BND] f12284..91=%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f f38416..21=%.1f,%.1f,%.1f,%.1f,%.1f,%.1f f45052..59=%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f\n",
+            sp[12284],sp[12285],sp[12286],sp[12287],sp[12288],sp[12289],sp[12290],sp[12291],
+            sp[38416],sp[38417],sp[38418],sp[38419],sp[38420],sp[38421],
+            sp[45052],sp[45053],sp[45054],sp[45055],sp[45056],sp[45057],sp[45058],sp[45059]);
+        fprintf(stderr, "\n[VulkanFuse-PROBE-W1] ");
+        for (int i = 88; i < 104; ++i) fprintf(stderr, "%.6f,", sp[i]);
+        fprintf(stderr, "\n[VulkanFuse-PROBE-W2] ");
+        for (int i = 352; i < 384; ++i) fprintf(stderr, "%.6f,", sp[i]);
+        fprintf(stderr, "\n");
+        fflush(stderr);
+        mProbeStage->unmap();
+    }
 }
 
 } // namespace MNN
