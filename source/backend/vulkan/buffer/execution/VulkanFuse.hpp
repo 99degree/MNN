@@ -24,6 +24,19 @@ public:
     // data: pointer to new float32 data.
     // byteSize: size of data in bytes.
     ErrorCode hotSwapConstBuffer(int bindingIndex, const void* data, size_t byteSize);
+
+    // [PROBE] Deferred output dump: called by VulkanBasicExecutionDirect::
+    // onExecute after pushCommand + finish() when ISP_DEBUG_VLOG is set.
+    virtual void afterExecute() override;
+
+private:
+    // [PROBE] staging buffer + source offset captured during onEncode.
+    std::shared_ptr<VulkanBuffer> mProbeStage;
+    VkBuffer mProbeSrc = VK_NULL_HANDLE;
+    size_t mProbeOff = 0;
+    std::shared_ptr<VulkanBuffer> mInProbeStage;
+    VkBuffer mInProbeSrc = VK_NULL_HANDLE;
+    size_t mInProbeOff = 0;
 private:
     std::vector<int> mGroupSize;
     std::vector<int> mGlobalSize;
@@ -49,10 +62,14 @@ private:
     bool mReducePatched = false; // const W/H/C patched once from actual input dims
     bool mElementwise = false;   // true for elementwise isp.* ops (output shape = input shape)
     bool mElementwisePatched = false; // const W/H patched once for elementwise ops
+    bool mSpatialNchw = false;   // input is planar NCHW data (ignore NHWC tag in W/H derivation)
     // Runtime hot-swap: host-visible const buffer + GPU-side buffer for live 3A updates.
     std::shared_ptr<VulkanBuffer> mRuntimeHostBuffer;   // host-visible staging
     std::shared_ptr<VulkanBuffer> mRuntimeGpuBuffer;    // GPU-side const uniform/storage
     size_t mRuntimeBufferSize = 0;
+    // isp.demosaic_g2_ccm: identity 3x3 CCM bound at binding 3 when the
+    // fused op carries no runtime CCM tensor input (single-input form).
+    std::shared_ptr<VulkanBuffer> mIdentityCcmBuffer;
 };
 
 class VulkanFuseCreator : public VulkanBackend::Creator {

@@ -57,6 +57,11 @@ struct ExactPattern {
     int nextOpType = -1;
     int nextBinOp = -1;   // required BinaryOp sub-type of the next op (-1 = any)
     std::vector<std::pair<int, MNN::BinaryOpOperation>> chainBinOps;
+    // firstExtraType: when set, opTypes[0] must be OpType_Extra whose
+    // ExtraT->type() equals this string (e.g. "isp.debayer_g2"). Lets
+    // patterns fuse an ALREADY-FUSED isp.* op with trailing primitive
+    // ops (debayer_g2 + Mul + ReLU6 + Cast ⇒ demosaic_g2_ccm).
+    const char* firstExtraType = nullptr;
     bool requireConnectivity = true; // false for tree-shaped DAGs (calibration, histogram, tone_stats)
 
     // ── Ctor1: base (namedKey, constElems) ────────────────────────
@@ -97,6 +102,14 @@ struct ExactPattern {
           nextOpType(nxt), nextBinOp(nbo), chainBinOps(std::move(cbo)) {
         (void)pv;
     }
+
+    // ── Ctor6: extra-head (fuse already-fused isp.* with trailing
+    //     primitives). firstExtraType filters opTypes[0]'s Extra type.
+    ExactPattern(std::vector<MNN::OpType> ops, const char* fet,
+                 const char* isp, const char* spv,
+                 MNN::BinaryOpOperation bot)
+        : opTypes(std::move(ops)), constElems(-1), constIndex(-1),
+          ispType(isp), spvName(spv), binOpType(bot), firstExtraType(fet) {}
 
     // ── Ctor5: 9-arg (nk, nullptr_t, cwe, requireConnectivity) ───
     ExactPattern(std::vector<MNN::OpType> ops, int ce, int ci,

@@ -1,0 +1,74 @@
+#version 450
+// isp.demosaic_g2_ccm — fused demosaic + color-correction + display tail.
+//
+// Replaces the primitive chain [Extra(isp.debayer_g2) → BinaryOp(MUL ×255)
+// → ReLU6 (saturate) → Cast(u8)] with ONE compute dispatch:
+//   1. G2-average demosaic from CFA quad planes (R, G=(G1+G2)/2, B)
+//   2. 3x3 color-correction matrix applied per pixel
+//      (binding 3 = runtime ccm[9], row-major; identity = passthrough)
+//   3. scale ×255 and saturate to [0,255] — MNN's Cast float→u8 WRAPS
+//      (fptosi) instead of saturating, so the clamp MUST happen in the
+//      shader before quantization.
+//   4. uint8 plane output [R-plane][G-plane][B-plane], stored as u32
+//      words (4 bytes/word, little-endian lanes). Planes are word-
+//      aligned because qsz = qw*qh is a multiple of 4 (qw,qh %8==0).
+//
+// Dispatch: global_size = [qw/4, qh, 1] — each invocation computes a
+// horizontal run of 4 pixels and writes one word per plane. VulkanFuse
+// derives global from the INPUT tensor dims [1,4,qh,qw]... it uses W,H
+// of the input, so u.width/u.height arrive as the QUAD dims and we
+// divide x by 4 here rather than requiring attr-level size tweaks.
+//
+// Input:  binding 1: [1,4,h,w] float CFA quad planes (from isp.cfa)
+//         binding 3: float ccm[9] row-major 3x3
+// Output: binding 2: [1,3,h,w] uint8 planes R,G,B as u32 words
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(set = 0, binding = 0, std430) buffer Uniforms {
+    float width; float height; float pad0; float pad1;
+} u;
+layout(set = 0, binding = 1) readonly  buffer InBuf   { float in_data[]; };
+layout(set = 0, binding = 2) writeonly buffer OutBuf  { uint out_data[]; };
+layout(set = 0, binding = 3) readonly  buffer CcmBuf  { float ccm[]; }; // 9 floats
+
+uint quant(float v) { return uint(clamp(v * 255.0, 0.0, 255.0)); }
+
+void main() {
+    // One invocation per 4-pixel run: wordX in [0, qw/4), y in [0, qh).
+    uint wx = gl_GlobalInvocationID.x;
+    uint y  = gl_GlobalInvocationID.y;
+    int qw = int(u.width);
+    int qh = int(u.height);
+    if (int(wx) >= (qw >> 2) || int(y) >= qh) return;
+
+    int wordsPerRow = qw >> 2;
+    int qsz = qw * qh;
+    int rowBase = int(y) * qw;
+
+    uint rWord = 0u, gWord = 0u, bWord = 0u;
+    for (int k = 0; k < 4; ++k) {
+        int x = int(wx) * 4 + k;
+        int qidx = rowBase + x;
+        if (x >= qw) break;
+
+        // ── 1. demosaic (G2 average)
+        float r0 = in_data[qsz * 0 + qidx];
+        float g  = (in_data[qsz * 1 + qidx] + in_data[qsz * 2 + qidx]) * 0.5;
+        float b0 = in_data[qsz * 3 + qidx];
+
+        // ── 2. 3x3 CCM, row-major: out_c = sum_k ccm[c*3+k] * in_k
+        float r1 = ccm[0] * r0 + ccm[1] * g + ccm[2] * b0;
+        float g1 = ccm[3] * r0 + ccm[4] * g + ccm[5] * b0;
+        float b1 = ccm[6] * r0 + ccm[7] * g + ccm[8] * b0;
+
+        // ── 3+4. quantize and pack into lane k
+        int shift = k * 8;
+        rWord |= quant(r1) << shift;
+        gWord |= quant(g1) << shift;
+        bWord |= quant(b1) << shift;
+    }
+
+    int wq = int(y) * wordsPerRow + int(wx);   // word index within plane
+    out_data[qsz / 4 * 0 + wq] = rWord;
+    out_data[qsz / 4 * 1 + wq] = gWord;
+    out_data[qsz / 4 * 2 + wq] = bWord;
+}

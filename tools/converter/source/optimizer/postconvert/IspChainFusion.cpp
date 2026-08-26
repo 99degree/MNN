@@ -303,6 +303,21 @@ static int tryMatch(const NetT* net, int opIndex, const ExactPattern& pat,
         const auto& op = net->oplists[cursor];
         if (!op) return 0;
 
+        // Extra-head filter: when firstExtraType is set the matched
+        // position-0 op must be an Extra with exactly that isp type key.
+        if (j == 0 && pat.firstExtraType && op->type == OpType_Extra) {
+            // main.value is a flatbuffer-union void* in NetT — static_cast
+            // after checking the parameter type tag (dynamic_cast fails:
+            // 'void' is not a class type).
+            if (op->main.type != MNN::OpParameter_Extra || op->main.value == nullptr) {
+                return 0;
+            }
+            auto* ep = static_cast<ExtraT*>(op->main.value);
+            if (ep->type != pat.firstExtraType) {
+                return 0;
+            }
+        }
+
         // Connectivity through scaffolding (skipped for tree-shaped DAGs).
         if (j > 0 && pat.requireConnectivity && prevReal >= 0 &&
             !isConnectedThroughScaffold(net, prevReal, cursor)) {
@@ -436,12 +451,6 @@ static std::unique_ptr<OpT> makeExtraOp(const NetT* net, int firstIdx,
     extra->type = OpType_Extra;
     extra->name = std::string(pat.ispType);
 
-    // Wire ALL chain inputs through (frame + runtime-fed weight inputs), so
-    // the fused op keeps every tensor the engine feeds per-frame. Outputs come
-    // from the last op.
-    extra->inputIndexes = collectChainInputs(net, firstIdx, lastIdx);
-    extra->outputIndexes = net->oplists[lastIdx]->outputIndexes;
-
     // Create Extra parameter
     auto* extraParam = new ExtraT();
     extraParam->type = std::string(pat.ispType);
@@ -449,6 +458,24 @@ static std::unique_ptr<OpT> makeExtraOp(const NetT* net, int firstIdx,
     // VulkanFuse runtime dispatches the custom kernel by `type` (isp.*).
     extraParam->engine = "MNN";
     extraParam->vector = false;
+
+    if (pat.firstExtraType) {
+        // ── Extra-head fusion (e.g. demosaic_g2_ccm): the head op is
+        // already a fused isp.* Extra whose inputs ARE the frame inputs.
+        // Do NOT run collectChainInputs: it would hoist the tail's
+        // baked consts (the x255 Mul scale) into the fused op as
+        // runtime tensor inputs, landing garbage on VulkanFuse's dummy
+        // binding 3. The fused kernel bakes scale/saturate internally;
+        // CCM 3x3 support rides binding 3 via a future runtime input.
+        extra->inputIndexes = net->oplists[firstIdx]->inputIndexes;
+        extra->outputIndexes = net->oplists[lastIdx]->outputIndexes;
+    } else {
+        // Wire ALL chain inputs through (frame + runtime-fed weight inputs), so
+        // the fused op keeps every tensor the engine feeds per-frame. Outputs come
+        // from the last op.
+        extra->inputIndexes = collectChainInputs(net, firstIdx, lastIdx);
+        extra->outputIndexes = net->oplists[lastIdx]->outputIndexes;
+    }
     extra->main.type = OpParameter_Extra;
     extra->main.value = extraParam;
 
@@ -691,5 +718,45 @@ public:
     }
 };
 static PostConverterRegister<RemoveExtraConvertTensor> __rm_extra_convert("RemoveExtraConvertTensor");
+
+// ── Dimension-format normalization ──
+// The Op schema defaults defaultDimentionFormat to NHWC, and the ONNX
+// importer never sets it for primitive ops. With onnxInputNHWC=true the
+// packed-Bayer raw input is (correctly) NHWC-tagged, but every downstream
+// op INHERITS the schema's NHWC default — so a debayer output declared
+// [1,3,H,W] is shape-interpreted as NHWC (C=128!) and any primitive
+// consumer (Conv/Cast/Gather) gets a nonsense NC4HW4 conversion
+// ("inputChannel: 128 ... Compute Shape Error").
+//
+// isp.* Extra ops bypass format tags inside VulkanFuse (bindings copy raw
+// planes), and their outputs are physically NCHW planes per the Kotlin
+// valueInfo declarations — EXCEPT isp.normalize whose output is the quad-
+// packed [1,H,W,4] wire. So: tag everything NCHW except Input ops (keep
+// importer-assigned dformat) and the isp.normalize Extra.
+class NchwTagNormalize : public PostConverter {
+public:
+    bool onExecute(std::unique_ptr<MNN::NetT>& net) const override {
+        auto& ops = net->oplists;
+        bool changed = false;
+        for (auto& op : ops) {
+            if (!op) continue;
+            if (op->type == MNN::OpType_Input) continue;
+            if (op->type == MNN::OpType_Extra) {
+                if (op->main.type == MNN::OpParameter_Extra && op->main.value != nullptr) {
+                    auto* ex = static_cast<MNN::ExtraT*>(op->main.value);
+                    if (ex != nullptr && ex->type == "isp.normalize") {
+                    continue;  // quad-packed NHWC wire output
+                    }
+                }
+            }
+            if (op->defaultDimentionFormat != MNN_DATA_FORMAT_NCHW) {
+                op->defaultDimentionFormat = MNN_DATA_FORMAT_NCHW;
+                changed = true;
+            }
+        }
+        return changed;
+    }
+};
+static PostConverterRegister<NchwTagNormalize> __nchw_tag_norm("NchwTagNormalize");
 
 } // namespace MNN

@@ -112,6 +112,10 @@ extern void ___PackComputer__OpType_Pack__();
 extern void ___DeconvolutionSizeComputer__OpType_Deconvolution__();
 extern void ___DeconvolutionSizeComputer__OpType_DeconvolutionDepthwise__();
 
+// Direct-emit isp.* Extra ops (VulkanFuse path): output dtype/shape override
+// (e.g. isp.display_uint8_argb emits half-res uint8 ARGB8888, not float RGBA).
+extern void ___IspExtraSizeComputer__OpType_Extra__();
+
 #ifdef MNN_SUPPORT_RENDER
 extern void ___RasterAndInterpolateComputer__OpType_RasterAndInterpolate__();
 extern void ___TextureComputer__OpType_Texture__();
@@ -250,5 +254,6 @@ ___RoPESizeComputer__OpType_RoPE__();
 ___AttentionSizeComputer__OpType_Attention__();
 ___LinearAttentionSizeComputer__OpType_LinearAttention__();
 #endif
+___IspExtraSizeComputer__OpType_Extra__();
 }
 }

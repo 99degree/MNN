@@ -35,6 +35,8 @@ extern const unsigned char g_isp_blc_spv[];
 extern const int g_isp_blc_spv_len;
 extern const unsigned char g_isp_cfa_spv[];
 extern const int g_isp_cfa_spv_len;
+extern const unsigned char g_isp_debayer_g2_spv[];
+extern const int g_isp_debayer_g2_spv_len;
 extern const unsigned char g_isp_bayer_wb_spv[];
 extern const int g_isp_bayer_wb_spv_len;
 extern const unsigned char g_isp_demosaic_edge_spv[];
@@ -81,6 +83,8 @@ extern const unsigned char g_isp_colorspace_spv[];
 extern const int g_isp_colorspace_spv_len;
 extern const unsigned char g_isp_demosaic_ccm_spv[];
 extern const int g_isp_demosaic_ccm_spv_len;
+extern const unsigned char g_isp_demosaic_g2_ccm_spv[];
+extern const int g_isp_demosaic_g2_ccm_spv_len;
 extern const unsigned char g_isp_ee_spv[];
 extern const int g_isp_ee_spv_len;
 extern const unsigned char g_isp_fcs_spv[];
@@ -133,6 +137,7 @@ static const std::unordered_map<std::string, SpvData> g_ispSpvMap = {
     {"isp.normalize",   {g_isp_normalize_spv,    g_isp_normalize_spv_len}},
     {"isp.blc",         {g_isp_blc_spv,          g_isp_blc_spv_len}},
     {"isp.cfa",         {g_isp_cfa_spv,          g_isp_cfa_spv_len}},
+    {"isp.debayer_g2",  {g_isp_debayer_g2_spv,   g_isp_debayer_g2_spv_len}},
     {"isp.bayer_wb",    {g_isp_bayer_wb_spv,     g_isp_bayer_wb_spv_len}},
     {"isp.demosaic_edge",{g_isp_demosaic_edge_spv, g_isp_demosaic_edge_spv_len}},
     {"isp.ccm",         {g_isp_ccm_spv,          g_isp_ccm_spv_len}},
@@ -156,6 +161,7 @@ static const std::unordered_map<std::string, SpvData> g_ispSpvMap = {
     {"isp.cnf",         {g_isp_cnf_spv,          g_isp_cnf_spv_len}},
     {"isp.colorspace",  {g_isp_colorspace_spv,   g_isp_colorspace_spv_len}},
     {"isp.demosaic_ccm",{g_isp_demosaic_ccm_spv, g_isp_demosaic_ccm_spv_len}},
+    {"isp.demosaic_g2_ccm",{g_isp_demosaic_g2_ccm_spv, g_isp_demosaic_g2_ccm_spv_len}},
     {"isp.ee",          {g_isp_ee_spv,           g_isp_ee_spv_len}},
     {"isp.fcs",         {g_isp_fcs_spv,          g_isp_fcs_spv_len}},
     {"isp.gpu_warp",    {g_isp_gpu_warp_spv,     g_isp_gpu_warp_spv_len}},

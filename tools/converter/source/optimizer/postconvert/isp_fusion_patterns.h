@@ -43,7 +43,11 @@ static const ExactPattern kExactFusionTablesPass0_PackedInt32[] = {
     // display_conv (chain=6)
     ExactPattern({MNN::OpType_Convolution, MNN::OpType_Permute, MNN::OpType_Padding, MNN::OpType_GatherV2, MNN::OpType_BinaryOp, MNN::OpType_Cast}, -1, -1, "isp.display", "isp.display", "display", 9),
     // demosaic_ccm_2op (chain=2)
-    ExactPattern({MNN::OpType_Convolution, MNN::OpType_ReLU6}, -1, -1, "isp.demosaic_ccm", "isp.demosaic_ccm", nullptr, 12),
+    ExactPattern({MNN::OpType_Convolution, MNN::OpType_ReLU6}, -1, -1, "isp.demosaic_ccm", "isp.demosaic_ccm", nullptr, 12),    // demosaic_g2_ccm: fuse already-fused debayer_g2 with the display
+    // tail (Mul x255 + ReLU6 saturate + Cast u8) into one Extra. The
+    // firstExtraType filter ensures only isp.debayer_g2 heads match.
+    ExactPattern({MNN::OpType_Extra, MNN::OpType_BinaryOp, MNN::OpType_ReLU6, MNN::OpType_Cast}, "isp.debayer_g2", "isp.demosaic_g2_ccm", "isp.demosaic_ccm", MNN::BinaryOpOperation_MUL),
+
     // ref_ccm_block (chain=2)
     ExactPattern({MNN::OpType_Convolution, MNN::OpType_BinaryOp}, -1, -1, "isp.fcs", "isp.fcs", nullptr, 9),
     // vignetting_block (chain=2)
@@ -171,7 +175,11 @@ static const ExactPattern kExactFusionTablesPass0_PureInt16[] = {
     // unpack_cfa16_head (chain=3)
     ExactPattern({MNN::OpType_Permute, MNN::OpType_ConvertTensor, MNN::OpType_Convolution}, -1, -1, "isp.unpack_blc", "isp.unpack_blc", nullptr, 8),
     // demosaic_ccm_2op (chain=2)
-    ExactPattern({MNN::OpType_Convolution, MNN::OpType_ReLU6}, -1, -1, "isp.demosaic_ccm", "isp.demosaic_ccm", nullptr, 12),
+    ExactPattern({MNN::OpType_Convolution, MNN::OpType_ReLU6}, -1, -1, "isp.demosaic_ccm", "isp.demosaic_ccm", nullptr, 12),    // demosaic_g2_ccm: fuse already-fused debayer_g2 with the display
+    // tail (Mul x255 + ReLU6 saturate + Cast u8) into one Extra. The
+    // firstExtraType filter ensures only isp.debayer_g2 heads match.
+    ExactPattern({MNN::OpType_Extra, MNN::OpType_BinaryOp, MNN::OpType_ReLU6, MNN::OpType_Cast}, "isp.debayer_g2", "isp.demosaic_g2_ccm", "isp.demosaic_ccm", MNN::BinaryOpOperation_MUL),
+
     // ref_ccm_block (chain=2)
     ExactPattern({MNN::OpType_Convolution, MNN::OpType_BinaryOp}, -1, -1, "isp.fcs", "isp.fcs", nullptr, 9),
     // vignetting_block (chain=2)
