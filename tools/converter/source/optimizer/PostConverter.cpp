@@ -391,6 +391,14 @@ std::unique_ptr<MNN::NetT> optimizeNetImpl(std::unique_ptr<MNN::NetT>& originNet
         // custom SPIR-V doesn't handle. Must run AFTER AddTensorFormatConverter.
         "RemoveExtraConvertTensor",
 
+        // Normalize defaultDimentionFormat to NCHW for all non-Input ops.
+        // The Op schema defaults to NHWC; with onnxInputNHWC=true the whole
+        // graph inherits it and primitive consumers (Conv/Cast/Gather) of
+        // isp.* outputs shape-infer nonsense (e.g. C=128 for a [1,3,H,W]
+        // tensor). Must run AFTER AddTensorFormatConverter/RemoveExtra...
+        // so the final op set is tagged once, consistently.
+        "NchwTagNormalize",
+
         // Turn group convolution to Slice - Convolution - Concat
         "TransformGroupConvolution",
         "TransformGroupConvolution3D",

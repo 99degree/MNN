@@ -120,6 +120,10 @@ public:
     std::pair<const VulkanBuffer*, size_t> getTensorBuffer(const Tensor* tensor) const;
     size_t getTensorSize(const Tensor* tensor) const;
     VULKAN_TENSOR getBuffer(const Tensor* tensor) const;
+    VkBuffer dummyBuffer() const {
+        return (mVulkanDummyBuffer && mVulkanDummyBuffer->buffer())
+            ? mVulkanDummyBuffer->buffer() : VK_NULL_HANDLE;
+    }
     std::shared_ptr<VulkanBuffer> allocUniform(const void* src = nullptr, int size = 0);
     void recycleUniform(std::shared_ptr<VulkanBuffer> buffer);
     void copyGPUToGPUBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size, VkDeviceSize srcOffset, VkDeviceSize dstOffset) const;

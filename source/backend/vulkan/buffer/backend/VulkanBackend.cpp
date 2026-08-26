@@ -167,7 +167,7 @@ VulkanBackend::VulkanBackend(const VulkanRuntime* runtime) : Backend(MNN_FORWARD
             getMemoryPool(), false, 4096, nullptr,
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
             VK_SHARING_MODE_EXCLUSIVE,
-            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
     }
 }
 
@@ -476,7 +476,7 @@ static Tensor::DimensionType _convert(MNN_DATA_FORMAT format) {
 }
 std::shared_ptr<VulkanBuffer> VulkanBackend::createHostBuffer(size_t size) const {
     std::shared_ptr<VulkanBuffer> res;
-    res.reset(new VulkanBuffer(*mRuntime->mMemoryPool, false, size, nullptr, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT));
+    res.reset(new VulkanBuffer(*mRuntime->mMemoryPool, false, size, nullptr, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
     return res;
 }
 
@@ -556,7 +556,28 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
         }
         size_t cpSize = calculateCpSize(srcTensor);
         _requireHostBuffer(cpSize);
+        if (getenv("ISP_DEBUG_VLOG") && srcTensor->host<float>() != nullptr && cpSize >= 48) {
+            const float* sv = srcTensor->host<float>();
+            std::string dstr;
+            for (int i = 0; i < srcTensor->dimensions(); ++i) {
+                dstr += std::to_string(srcTensor->length(i)) + "x";
+            }
+            fprintf(stderr, "[HOST2GPU] dims=%s fmt=%d usize=%zu devOff=%zu host[0..11]=%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f\n",
+                dstr.c_str(), (int)TensorUtils::getDescribe(srcTensor)->dimensionFormat,
+                srcTensor->usize(), (size_t)offset,
+                sv[0],sv[1],sv[2],sv[3],sv[4],sv[5],sv[6],sv[7],sv[8],sv[9],sv[10],sv[11]);
+            fflush(stderr);
+        }
         _copyTensorToBuffer(srcTensor, mHostBuffer.get(), 0, srcTensor->getType().code == halide_type_float && mUseFP16);
+        if (getenv("ISP_DEBUG_VLOG") && cpSize >= 96) {
+            const float* hv = (const float*)mHostBuffer->map(0, 96);
+            if (hv) {
+                fprintf(stderr, "[FEEDCOPY] cpSize=%zu devOffset=%zu h[0..11]=%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n",
+                    cpSize, (size_t)offset, hv[0],hv[1],hv[2],hv[3],hv[4],hv[5],hv[6],hv[7],hv[8],hv[9],hv[10],hv[11]);
+                fflush(stderr);
+                mHostBuffer->unmap();
+            }
+        }
         auto cmdbuffer = mCmdBufferForCopy;
         cmdbuffer->begin(0);
         VkBufferCopy bufferCopy;
@@ -571,6 +592,14 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
     } else if (dstTensor->host<float>() != nullptr) {
         // gpu->host
         _finish();
+        if (getenv("ISP_DEBUG_VLOG") && srcTensor->elementSize() >= 4096) {
+            fprintf(stderr, "[GPU2HOST] srcFmt=%d dstFmt=%d dims=%zu uszSrc=%zu off=%zu\n",
+                (int)TensorUtils::getDescribe(srcTensor)->dimensionFormat,
+                (int)TensorUtils::getDescribe(dstTensor)->dimensionFormat,
+                (size_t)srcTensor->dimensions(), srcTensor->usize(),
+                (size_t)TensorUtils::getDescribeOrigin(srcTensor)->offset);
+            fflush(stderr);
+        }
         auto format = TensorUtils::getDescribe(dstTensor)->dimensionFormat;
         if (format != TensorUtils::getDescribe(srcTensor)->dimensionFormat) {
             tempTensor.reset(Tensor::create(srcTensor->shape(), dstTensor->getType(), nullptr, _convert(TensorUtils::getDescribe(srcTensor)->dimensionFormat)), [dstTensor](void* t) {
@@ -596,6 +625,20 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
         pushCommand(cmdbuffer->get());
         _finish();
         _copyBufferToTensor(dstTensor, mHostBuffer.get(), 0, dstTensor->getType().code == halide_type_float && mUseFP16);
+        if (getenv("ISP_DEBUG_VLOG") && dstTensor->elementSize() >= 4096 && !mUseFP16) {
+            const float* hv = (const float*)mHostBuffer->map(0, 196608);
+            if (hv) {
+                fprintf(stderr, "[GPU2HOST-STAGE] h[88..103]=%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f,%.5f\n",
+                    hv[88],hv[89],hv[90],hv[91],hv[92],hv[93],hv[94],hv[95],
+                    hv[96],hv[97],hv[98],hv[99],hv[100],hv[101],hv[102],hv[103]);
+                fprintf(stderr, "[GPU2HOST-STAGE2] h[45056..45063]=%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f h[38418..38421]=%.1f,%.1f,%.1f,%.1f h[49144..49151]=%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f\n",
+                    hv[45056],hv[45057],hv[45058],hv[45059],hv[45060],hv[45061],hv[45062],hv[45063],
+                    hv[38418],hv[38419],hv[38420],hv[38421],
+                    hv[49144],hv[49145],hv[49146],hv[49147],hv[49148],hv[49149],hv[49150],hv[49151]);
+                fflush(stderr);
+                mHostBuffer->unmap();
+            }
+        }
     } else if (srcTensor->deviceId() != 0 && dstTensor->deviceId() != 0) {
         // gpu->gpu
         auto format = TensorUtils::getDescribe(dstTensor)->dimensionFormat;

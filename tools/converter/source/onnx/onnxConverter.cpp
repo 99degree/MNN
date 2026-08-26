@@ -14,6 +14,8 @@
 #include "logkit.h"
 
 #include "OnnxTmpGraph.hpp"
+#include "../optimizer/Global.hpp"
+#include "config.hpp"
 #include "flatbuffers/idl.h"
 #include "flatbuffers/minireflect.h"
 #include "flatbuffers/util.h"
@@ -91,7 +93,19 @@ int onnx2MNNNet(onnx::ModelProto& onnxModel, const std::string& modelDir, const 
                 }
             }
             inputParam->dtype   = onnxOpConverter::convertDataType(tensorInfo.elem_type());
-            inputParam->dformat = MNN::MNN_DATA_FORMAT_NCHW;
+            // Honor NHWC wire format for 4-D inputs when the embedder opts in
+            // (modelConfig::onnxInputNHWC). ISP packed-Bayer pipelines feed
+            // quad-NHWC [1,H/2,W/2,4]; a hardcoded NCHW label makes the
+            // runtime insert a spurious NCHW<->NHWC reorder on every
+            // host<->device copy, scrambling the data.
+            {
+                auto* mcfg = Global<modelConfig>::Get();
+                if (mcfg != nullptr && mcfg->onnxInputNHWC && inputDimSize == 4) {
+                    inputParam->dformat = MNN::MNN_DATA_FORMAT_NHWC;
+                } else {
+                    inputParam->dformat = MNN::MNN_DATA_FORMAT_NCHW;
+                }
+            }
             MNNOp->outputIndexes.push_back(scope->declareTensor(iter.first));
             MNNOp->main.value = inputParam;
             netT->oplists.emplace_back(MNNOp);

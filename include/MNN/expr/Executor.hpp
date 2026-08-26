@@ -28,16 +28,6 @@ class MNN_PUBLIC Executor {
 public:
     class ComputeCache;
     class RuntimeExecuteWrap;
-    class MNN_PUBLIC Activation {
-    public:
-        ~Activation();
-
-    private:
-        friend class Executor;
-        explicit Activation(const RuntimeInfo& info);
-        RuntimeInfo mRuntimeInfo;
-        std::unique_ptr<RuntimeExecuteWrap> mRuntimeWrap;
-    };
     struct DebugTools;
     /**Internal Usage Begin*/
     struct Requirement {
@@ -75,6 +65,15 @@ public:
     void gc(GCFlag flag = FULL);
     static std::shared_ptr<Executor> getGlobalExecutor();
 
+    class Activation {
+    public:
+        Activation(const RuntimeInfo& info);
+        ~Activation();
+        RuntimeInfo mRuntimeInfo;
+        std::shared_ptr<RuntimeExecuteWrap> mRuntimeWrap;
+    };
+    std::shared_ptr<Activation> activte() const;
+
     static std::shared_ptr<Executor> newExecutor(MNNForwardType type,
                                                  const BackendConfig& config,
                                                  int numberThread);
@@ -85,8 +84,6 @@ public:
     bool registerSubGraph(const std::string& submoduleName, VARPS outputs, VARPS inputs);
     std::shared_ptr<SubGraph> findSubGraph(const std::string& submoduleName);
     static RuntimeInfo getRuntime();
-    /** Keep this executor's runtimes active until the returned guard is destroyed. */
-    std::shared_ptr<Activation> activte() const;
     void setCallBack(TensorCallBackWithInfo&& before, TensorCallBackWithInfo&& after);
     const DebugTools* getDebugTools() const {
         return mDebug.get();
@@ -144,8 +141,8 @@ public:
         void setHint(Interpreter::HintMode mode, int value);
         void setHint(Interpreter::HintMode mode, int* value, size_t size);
         void setHintPtr(Interpreter::HintMode mode, void* value);
-        // Keep Runtime::pMeta in sync for backend runtimes that still read it during onCreate.
-        // Session also sets the meta on created Backends through the common backend creation path.
+        // Push this RTM's KVCACHE_INFO meta onto its Runtime; call before any
+        // path that creates or clones Backends (Backends capture pMeta at ctor).
         void applyMetaToRuntime() const;
         bool getInfo(Interpreter::SessionInfoCode code, void* ptr);
         static bool getDeviceInfo(const std::string& deviceKey, const MNNForwardType type, std::string& deviceValue);

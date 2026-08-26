@@ -31,6 +31,10 @@ public:
         return NO_ERROR;
     }
 
+    // [PROBE] Optional post-submit hook (called only under ISP_DEBUG_VLOG
+    // by VulkanBasicExecutionDirect::onExecute after the queue is flushed).
+    virtual void afterExecute() {}
+
     Backend* backend() {
         return mBackend;
     }

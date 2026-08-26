@@ -23,6 +23,12 @@ ErrorCode VulkanBasicExecutionDirect::onExecute(const std::vector<Tensor *> &inp
         return code;
     }
     extra->pushCommand(mCmdBuffer->get());
+    // [PROBE] Under ISP_DEBUG_VLOG: flush the queue so the recorded
+    // dispatch + probe copy complete, then dump via afterExecute().
+    if (::getenv("ISP_DEBUG_VLOG") && ::strcmp(::getenv("ISP_DEBUG_VLOG"), "0") != 0) {
+        extra->finish();
+        mEncoder->afterExecute();
+    }
     return NO_ERROR;
 }
 

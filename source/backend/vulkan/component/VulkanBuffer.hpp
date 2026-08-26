@@ -12,10 +12,15 @@
 namespace MNN {
 class VulkanBuffer : public NonCopyable {
 public:
+    // HOST_COHERENT is REQUIRED: MNN maps host-visible buffers and reads them
+    // without calling vkInvalidateMappedMemoryRanges (VulkanBuffer::flush is
+    // a no-op). A HOST_CACHED non-coherent type satisfies HOST_VISIBLE alone,
+    // and on some Adreno drivers the CPU then sees stale data in a periodic
+    // pattern (only the first 96B of every 384B window updated).
     VulkanBuffer(const VulkanMemoryPool& pool, bool separate, size_t size, const void* hostData = nullptr,
                  VkBufferUsageFlags usage  = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                  VkSharingMode shared      = VK_SHARING_MODE_EXCLUSIVE,
-                 VkFlags requirements_mask = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT);
+                 VkFlags requirements_mask = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 
     virtual ~VulkanBuffer();
 

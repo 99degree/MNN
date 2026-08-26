@@ -55,6 +55,12 @@ public:
     int defaultBatchSize = 0;
     int optimizeLevel = 1;
     bool keepInputFormat = true;
+    // ONNX importer: declare 4-D graph inputs with MNN_DATA_FORMAT_NHWC
+    // instead of the hardcoded NCHW. Needed for pipelines whose wire format
+    // is NHWC (e.g. packed-Bayer ISP quads [1,H/2,W/2,4]) — otherwise the
+    // session input tensor is NCHW-labeled and every host→device upload
+    // runs a spurious NCHW→NHWC reorder that scrambles the feed.
+    bool onnxInputNHWC = false;
     bool alignDenormalizedValue = true;
     bool detectSparseSpeedUp = false;
     bool convertMatmulToConv = true;

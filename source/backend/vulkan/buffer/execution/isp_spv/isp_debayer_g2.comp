@@ -1,0 +1,27 @@
+#version 450
+// isp.debayer_g2 — G2-average demosaic from CFA quad planes.
+// Input:  [1,4,H/2,W/2] float planes R,G1,G2,B (from isp.cfa).
+// Output: [1,3,H/2,W/2] float planes: R, G=(G1+G2)/2, B.
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(set = 0, binding = 0, std430) buffer Uniforms {
+    float width; float height; float pad0; float pad1;
+} u;
+layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
+layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    int qw = int(u.width);   // QUAD dims (input to this op is already quad-res)
+    int qh = int(u.height);
+    if (int(x) >= qw || int(y) >= qh) return;
+    int qidx = int(y) * qw + int(x);
+    int qsz = qw * qh;
+    float r  = in_data[qsz * 0 + qidx];
+    float g1 = in_data[qsz * 1 + qidx];
+    float g2 = in_data[qsz * 2 + qidx];
+    float b  = in_data[qsz * 3 + qidx];
+    out_data[qsz * 0 + qidx] = r;
+    out_data[qsz * 1 + qidx] = (g1 + g2) * 0.5;
+    out_data[qsz * 2 + qidx] = b;
+}
