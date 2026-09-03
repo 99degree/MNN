@@ -1,7 +1,10 @@
 #version 450
 // isp.display_uint8_rgba — RGB planes → packed uint8 RGBA8888.
 // Input:  [1,3,h,w] float NCHW planes (R,G,B), values in [0,1].
-// Output: [1,h,w,4] packed uint32 RGBA (little-endian wire: A,B,G,R).
+// Output: [1,1,h,4,w4] uint8 NHWC (each pixel = [R,G,B,A] 4 bytes, NHWC layout).
+//   - plane 0 = R, plane 1 = G, plane 2 = B (interleaved with A plane 3 = 255).
+//   - output buffer stores pixels row-major, each row has w pixels of 4 bytes:
+//     [R0,G0,B0,A0, R1,G1,B1,A1, ...]. One byte per component.
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 layout(set = 0, binding = 0, std430) buffer Uniforms {
     float width; float height; float gamma; float pad;
@@ -21,7 +24,9 @@ void main() {
     float r = clamp(pow(max(in_data[sz * 0 + idx], 0.0), invGamma) * 255.0, 0.0, 255.0);
     float g = clamp(pow(max(in_data[sz * 1 + idx], 0.0), invGamma) * 255.0, 0.0, 255.0);
     float b = clamp(pow(max(in_data[sz * 2 + idx], 0.0), invGamma) * 255.0, 0.0, 255.0);
-    // Pack RGBA8888: LE memory order A,B,G,R with A=255.
+    // Pack RGBA8888 as four uint8 lanes inside one uint32 (LE: A,B,G,R).
+    // Caller reads bytes 0..3 of each uint32 lane: R=byte0, G=byte1, B=byte2, A=byte3=255.
+    // Output shape [1,1,h,w*4] uint8 (NHWC bytes).
     uint packed = (255u << 24) | (uint(r) << 16) | (uint(g) << 8) | uint(b);
     out_data[idx] = packed;
 }
