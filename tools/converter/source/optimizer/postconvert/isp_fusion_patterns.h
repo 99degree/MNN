@@ -88,6 +88,8 @@ static const ExactPattern kExactFusionTablesPass0_PackedInt32[] = {
     ExactPattern({MNN::OpType_BinaryOp}, 1024, 1, "isp.lsc", "isp.lsc", MNN::BinaryOpOperation_MUL, nullptr),
     // normalize_block (chain=1)
     ExactPattern({MNN::OpType_BinaryOp}, 1, 1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_MUL, nullptr),
+    // crop_blc_3op (chain=3) -- StridedSlice+Cast+Sub fused to isp.crop_blc.
+    ExactPattern({MNN::OpType_StridedSlice, MNN::OpType_Cast, MNN::OpType_BinaryOp}, -1, -1, "isp.crop_blc", "isp.crop_blc", MNN::BinaryOpOperation_SUB, nullptr),
     // raw_blc_block (chain=1)
     ExactPattern({MNN::OpType_BinaryOp}, 1, 1, "isp.unpack_blc", "isp.unpack_blc", MNN::BinaryOpOperation_SUB, nullptr),
     // bayer_wb_block (chain=1)
@@ -220,6 +222,8 @@ static const ExactPattern kExactFusionTablesPass0_PureInt16[] = {
     ExactPattern({MNN::OpType_BinaryOp}, 1024, 1, "isp.lsc", "isp.lsc", MNN::BinaryOpOperation_MUL, nullptr),
     // normalize_block (chain=1)
     ExactPattern({MNN::OpType_BinaryOp}, 1, 1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_MUL, nullptr),
+    // crop_blc_3op (chain=3) -- StridedSlice+Cast+Sub fused to isp.crop_blc.
+    ExactPattern({MNN::OpType_StridedSlice, MNN::OpType_Cast, MNN::OpType_BinaryOp}, -1, -1, "isp.crop_blc", "isp.crop_blc", MNN::BinaryOpOperation_SUB, nullptr),
     // raw_blc_block (chain=1)
     ExactPattern({MNN::OpType_BinaryOp}, 1, 1, "isp.unpack_blc", "isp.unpack_blc", MNN::BinaryOpOperation_SUB, nullptr),
     // bayer_wb_block (chain=1)
@@ -348,6 +352,8 @@ static const ExactPattern kExactFusionTablesPass0_RawInt32[] = {
     ExactPattern({MNN::OpType_BinaryOp}, 1024, 1, "isp.lsc", "isp.lsc", MNN::BinaryOpOperation_MUL, nullptr),
     // normalize_block (chain=1)
     ExactPattern({MNN::OpType_BinaryOp}, 1, 1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_MUL, nullptr),
+    // crop_blc_3op (chain=3) -- StridedSlice+Cast+Sub fused to isp.crop_blc.
+    ExactPattern({MNN::OpType_StridedSlice, MNN::OpType_Cast, MNN::OpType_BinaryOp}, -1, -1, "isp.crop_blc", "isp.crop_blc", MNN::BinaryOpOperation_SUB, nullptr),
     // raw_blc_block (chain=1)
     ExactPattern({MNN::OpType_BinaryOp}, 1, 1, "isp.unpack_blc", "isp.unpack_blc", MNN::BinaryOpOperation_SUB, nullptr),
     // bayer_wb_block (chain=1)
@@ -480,6 +486,8 @@ static const ExactPattern kExactFusionTablesPass0[] = {
     ExactPattern({MNN::OpType_BinaryOp}, 1024, 1, "isp.lsc", "isp.lsc", MNN::BinaryOpOperation_MUL, nullptr),
     // normalize_block (chain=1)
     ExactPattern({MNN::OpType_BinaryOp}, 1, 1, "isp.fcs", "isp.fcs", MNN::BinaryOpOperation_MUL, nullptr),
+    // crop_blc_3op (chain=3) -- StridedSlice+Cast+Sub fused to isp.crop_blc.
+    ExactPattern({MNN::OpType_StridedSlice, MNN::OpType_Cast, MNN::OpType_BinaryOp}, -1, -1, "isp.crop_blc", "isp.crop_blc", MNN::BinaryOpOperation_SUB, nullptr),
     // raw_blc_block (chain=1)
     ExactPattern({MNN::OpType_BinaryOp}, 1, 1, "isp.unpack_blc", "isp.unpack_blc", MNN::BinaryOpOperation_SUB, nullptr),
     // bayer_wb_block (chain=1)

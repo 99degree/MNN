@@ -598,7 +598,15 @@ const VkResult VulkanDevice::createComputePipelines(VkPipeline* pipelines,
                                                     const uint32_t createInfoCount,
                                                     const VkPipelineCache& pipelineCache,
                                                     const VkAllocationCallbacks* allocator) const {
-    return vkCreateComputePipelines(mDevice, pipelineCache, createInfoCount, createInfos, allocator, pipelines);
+    // Pass VK_NULL_HANDLE for pipelineCache to bypass the cache entirely.
+    // The freedreno Vulkan driver on Adreno/Mesa crashes (SIGSEGV in
+    // libvulkan_freedreno.so) during vkCreateComputePipelines when the
+    // supplied VkPipelineCache is stale or contains invalid entries from
+    // a previous session. Pipeline caches are an optimization only; the
+    // driver compiles the SPIR-V from scratch when the handle is null.
+    // The caller's cache argument is intentionally ignored.
+    (void)pipelineCache;
+    return vkCreateComputePipelines(mDevice, VK_NULL_HANDLE, createInfoCount, createInfos, allocator, pipelines);
 }
 
 const VkResult VulkanDevice::createComputePipeline(VkPipeline& pipeline, const VkShaderModule& shaderMoule,

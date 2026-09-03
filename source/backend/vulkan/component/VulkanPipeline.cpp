@@ -18,6 +18,15 @@ VulkanPipelineFactory::~VulkanPipelineFactory() {
 }
 
 void VulkanPipelineFactory::reset() {
+    // Destroy pipelines and shader modules FIRST, before the pipeline cache.
+    // Pipelines are created via vkCreateComputePipelines(pipelineCache=mCache->get()).
+    // If we drop mCache (→ vkDestroyPipelineCache) while pipelines still reference it,
+    // the Vulkan driver dereferences a destroyed cache → SIGSEGV (freedreno).
+    // Clearing mPipelines releases all SharedPtr<VulkanPipeline> refs; the last
+    // ref destroys the VulkanPipeline whose destructor calls vkDestroyPipeline,
+    // which may touch the cache. Only then safely destroy the old cache.
+    mPipelines.clear();
+    mComputeShaderModules.clear();
     mCache = nullptr;
     mCache = new VulkanPipelineCache(mDevice);
 }
@@ -36,7 +45,7 @@ VulkanPipeline* VulkanPipelineFactory::createGraphicPipeline(SharedPtr<VulkanLay
     VkPipeline pipeline;
     auto& mInfo = cache->info();
     mInfo.layout = layout->get();
-    auto res = vkCreateGraphicsPipelines(mDevice.get(), mCache->get(), 1, &mInfo, nullptr, &pipeline);
+    auto res = vkCreateGraphicsPipelines(mDevice.get(), VK_NULL_HANDLE, 1, &mInfo, nullptr, &pipeline);
     if (VK_SUCCESS != res) {
         MNN_ERROR("Create Graphic pipeline error: %d\n", res);
         return nullptr;

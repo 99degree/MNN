@@ -175,6 +175,13 @@ void VulkanRuntime::recycleUniform(std::shared_ptr<VulkanBuffer> buffer) {
 }
 
 void VulkanRuntime::onGabageCollect(int level) {
+    // IMPORTANT: Wait for GPU to finish ALL pending work before destroying
+    // pipelines, shader modules, and pipeline caches. Destroying Vulkan
+    // resources while the GPU is still executing commands that reference
+    // them causes use-after-free in the driver (SIGSEGV in
+    // libvulkan_freedreno.so). This is especially critical when running
+    // multiple sessions back-to-back (e.g., incremental ISP pipeline tests).
+    ::vkDeviceWaitIdle(mDevice->get());
     mBufferPool->release(false);
     mMemoryPool->clear();
     mPipelineFactory->reset();

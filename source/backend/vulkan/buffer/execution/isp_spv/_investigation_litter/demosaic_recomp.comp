@@ -1,0 +1,43 @@
+#version 450
+// isp.demosaic_g2_ccm — fused demosaic + color-correction + display tail.
+//   1. G2-average demosaic from CFA quad planes [1,4,H,W] (NCHW): R, G=(G1+G2)/2, B
+//   2. 3x3 color-correction matrix (binding 3; identity = passthrough)
+//   3. scale ×255 and saturate to [0,255]
+//   4. uint8 packed plane output [1,3,H,W] as u32 words (R,G,B lanes in LE).
+// NCHW planar: plane p, pixel (x,y) at p*H*W + y*W + x. qsz = W*H (one plane).
+// Dispatch: global_size = [W, H, 1] (one invocation per output pixel).
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(set = 0, binding = 0, std430) buffer Uniforms {
+    float width; float height; float pad0; float pad1;
+} u;
+layout(set = 0, binding = 1) readonly  buffer InBuf   { float in_data[]; };
+layout(set = 0, binding = 2) writeonly buffer OutBuf  { uint out_data[]; }; // W*H u32 words, 4 bytes/pixel BGRA
+layout(set = 0, binding = 3) readonly  buffer CcmBuf  { float ccm[]; }; // 9 floats
+
+uint quant(float v) { return uint(clamp(v * 255.0, 0.0, 255.0)); }
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    int w = int(u.width);
+    int h = int(u.height);
+    if (int(x) >= w || int(y) >= h) return;
+    int idx = int(y) * w + int(x);
+    int sz = w * h;                       // one plane size
+    float r0 = in_data[sz * 0 + idx];
+    float g  = (in_data[sz * 1 + idx] + in_data[sz * 2 + idx]) * 0.5;
+    float b0 = in_data[sz * 3 + idx];
+
+    float r1 = ccm[0] * r0 + ccm[1] * g + ccm[2] * b0;
+    float g1 = ccm[3] * r0 + ccm[4] * g + ccm[5] * b0;
+    float b1 = ccm[6] * r0 + ccm[7] * g + ccm[8] * b0;
+
+    // Pack one BGRA pixel per u32 word (LE bytes: B,G,R,A). The gate reads the
+    // output as a 4-bytes-per-pixel BGRA array, so planar u32 words (one per
+    // plane) misalign every quad past the first — quad 0 read 0xFFFFFFFF and
+    // everything else read 0. One packed word per pixel = W*H u32 elements.
+    uint rWord = quant(r1);
+    uint gWord = quant(g1);
+    uint bWord = quant(b1);
+    out_data[idx] = bWord | (gWord << 8) | (rWord << 16) | (0xFFu << 24);
+}
