@@ -27,6 +27,8 @@
 #include "isp_spv/isp_display_spv.h"
 #include "isp_spv/isp_display_rgb_spv.h"
 #include "isp_spv/isp_display_uint8_argb_spv.h"
+#include "isp_spv/isp_display_uint8_rgba_spv.h"
+#include "isp_spv/isp_display_uint8_bgra_spv.h"
 #include "isp_spv/isp_algo_gamma_spv.h"
 #include "isp_spv/isp_crop_spv.h"
 #include "isp_spv/isp_raw_blc_spv.h"

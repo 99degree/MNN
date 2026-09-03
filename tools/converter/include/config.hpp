@@ -67,6 +67,8 @@ public:
     bool useGeluApproximation = true;
     bool transformerFuse = false;
     bool transformerFuseC4 = true;
+    bool ispFusionMeta = false;
+    float ispFusionThreshold = 0.0f;
     bool allowCustomOp = false;
     bool groupConvNative = false;
     std::string customOpLibs = "";
