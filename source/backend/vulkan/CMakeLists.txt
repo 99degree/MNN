@@ -1,9 +1,25 @@
 option(MNN_VULKAN_IMAGE "Use Image as basic type" ON)
 if (MNN_VULKAN_IMAGE)
-    FILE(GLOB_RECURSE MNN_Vulkan_SRC ${CMAKE_CURRENT_LIST_DIR}/image/* ${CMAKE_CURRENT_LIST_DIR}/component/* ${CMAKE_CURRENT_LIST_DIR}/runtime/* ${CMAKE_CURRENT_LIST_DIR}/vulkan/*)
+    FILE(GLOB_RECURSE MNN_Vulkan_SRC
+        ${CMAKE_CURRENT_LIST_DIR}/image/*
+        ${CMAKE_CURRENT_LIST_DIR}/component/*
+        ${CMAKE_CURRENT_LIST_DIR}/runtime/*
+        ${CMAKE_CURRENT_LIST_DIR}/vulkan/*
+    )
 else()
-    FILE(GLOB_RECURSE MNN_Vulkan_SRC ${CMAKE_CURRENT_LIST_DIR}/buffer/* ${CMAKE_CURRENT_LIST_DIR}/component/* ${CMAKE_CURRENT_LIST_DIR}/runtime/* ${CMAKE_CURRENT_LIST_DIR}/vulkan/*)
+    FILE(GLOB_RECURSE MNN_Vulkan_SRC
+        ${CMAKE_CURRENT_LIST_DIR}/buffer/*
+        ${CMAKE_CURRENT_LIST_DIR}/component/*
+        ${CMAKE_CURRENT_LIST_DIR}/runtime/*
+        ${CMAKE_CURRENT_LIST_DIR}/vulkan/*
+    )
 endif()
+
+# Exclude SPIR-V files and assembly (.asm/.spv) from the source list —
+# they are data files included by C++ source, not compilable sources.
+list(FILTER MNN_Vulkan_SRC EXCLUDE REGEX "\\.asm$")
+list(FILTER MNN_Vulkan_SRC EXCLUDE REGEX "\\.spv$")
+list(FILTER MNN_Vulkan_SRC EXCLUDE REGEX "\\.spv\\.h$")
 
 if(MNN_GPU_TIME_PROFILE)
     add_definitions(-DENABLE_VULKAN_TIME_PROFILE)

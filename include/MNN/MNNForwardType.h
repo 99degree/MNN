@@ -27,7 +27,7 @@ typedef enum {
     MNN_FORWARD_CUDA = 2,
 
     /*Moore Threads GPU API*/
-    MNN_FORWARD_MUSA = 15,
+    MNN_FORWARD_MUSA = 16,
 
     /*Android / Common Device GPU API*/
     MNN_FORWARD_OPENCL = 3,
@@ -53,6 +53,7 @@ typedef enum {
     // use for shared memory on android device
     
     MNN_MEMORY_AHARDWAREBUFFER = 14,
+    MNN_FORWARD_HEXAGON = 15,
 
     /* For Offline Convert*/
     MNN_CONVERT_QNN = 32,

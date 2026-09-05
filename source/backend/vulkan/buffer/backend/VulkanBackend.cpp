@@ -49,12 +49,16 @@ const char* _dumpVkProf() {
     std::lock_guard<std::mutex> lk(g_vkProfMutex);
     for (const MNN::VulkanBackend* vb : g_vkProfBackends) {
         if (!vb) continue;
+#ifdef ENABLE_VULKAN_TIME_PROFILE
         std::string s = vb->getProfileString();  // cheap "" return if mNext==0
         if (!s.empty()) {
             char* c = (char*)malloc(s.size() + 1);
             if (c) memcpy(c, s.c_str(), s.size() + 1);
             return c;
         }
+#else
+        (void)vb; // suppress unused warning when profile disabled
+#endif
     }
     return strdup("ERR:no_active_vulkan_profile");
 }
