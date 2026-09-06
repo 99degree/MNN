@@ -1,0 +1,45 @@
+#version 450
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) uniform Uniforms {
+    float width;
+    float height;
+    float cropW;
+    float cropH;
+    float startW;
+    float startH;
+};
+
+layout(set = 0, binding = 1, std430) readonly buffer InBuf {
+    float in_data[];
+};
+
+layout(set = 0, binding = 2, std430) writeonly buffer OutBuf {
+    float out_data[];
+};
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+
+    int ow = int(cropW);
+    int oh = int(cropH);
+    int w = int(width);
+    int h = int(height);
+
+    if (int(x) >= ow || int(y) >= oh) return;
+
+    int sx = int(startW) + int(x);
+    int sy = int(startH) + int(y);
+
+    if (sx >= 0 && sx < w && sy >= 0 && sy < h) {
+        int srcIdx = (sy * w + sx) * 3;
+        int oidx = (int(y) * ow + int(x)) * 3;
+
+        out_data[oidx + 0] = in_data[srcIdx + 0];
+        out_data[oidx + 1] = in_data[srcIdx + 1];
+        out_data[oidx + 2] = in_data[srcIdx + 2];
+    }
+}

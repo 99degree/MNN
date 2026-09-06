@@ -1,0 +1,44 @@
+#version 450
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) uniform Uniforms {
+    float width;
+    float height;
+    float pad0;
+    float pad1;
+};
+
+layout(set = 0, binding = 3, std430) readonly buffer ParamBuf {
+    float params[3];
+};
+
+layout(set = 0, binding = 1, std430) readonly buffer InBuf {
+    float in_data[];
+};
+
+layout(set = 0, binding = 2, std430) writeonly buffer OutBuf {
+    float out_data[];
+};
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+
+    int w = int(width);
+    int h = int(height);
+
+    if (x >= uint(w) || y >= uint(h)) return;
+
+    int realIdx = int(y) * int(w) + int(x);
+
+    float val = in_data[realIdx];
+    float smax = params[2];
+
+    float normalized = val / smax;
+    if (normalized < 0.0) normalized = 0.0;
+    if (normalized > 1.0) normalized = 1.0;
+
+    out_data[realIdx] = normalized;
+}
