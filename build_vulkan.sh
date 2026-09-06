@@ -2,10 +2,11 @@
 set -e
 
 BUILD_DIR="${1:-build_isp}"
+BUILD_CONVERTER="${2:-ON}"
 
 cd "$(dirname "$0")"
 
-echo "Building MNN with Vulkan in $BUILD_DIR"
+echo "Building MNN with Vulkan in $BUILD_DIR (CONVERTER=$BUILD_CONVERTER)"
 
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
@@ -25,12 +26,21 @@ cmake .. \
     -DMNN_OPENCL=OFF \
     -DMNN_USE_SSE=OFF \
     -DMNN_GPU_TIME_PROFILE=OFF \
-    -DMNN_ISP_EMBED_SPIRV=ON
+    -DMNN_ISP_EMBED_SPIRV=ON \
+    -DMNN_BUILD_CONVERTER=$BUILD_CONVERTER
 
 make -j$(nproc) MNN MNN_Vulkan MNN_Express
+
+if [ "$BUILD_CONVERTER" = "ON" ]; then
+    echo "Building MNNConvertDeps..."
+    make -j$(nproc) MNNConvertDeps
+fi
 
 echo "Build complete!"
 ls -lh OFF/libMNN.so
 # Check for the symbol
 nm -D OFF/libMNN.so | grep -i MNNVulkanFuseRegister && echo "Symbol MNNVulkanFuseRegister found in libMNN.so" || echo "Symbol NOT found!"
-find -name "*.so"
+if [ "$BUILD_CONVERTER" = "ON" ]; then
+    find . -name "libMNNConvertDeps.so" -exec ls -lh {} \;
+fi
+find . -name "*.so"
