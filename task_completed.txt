@@ -1,0 +1,33 @@
+ISP Fusion Pipeline Fix Complete
+===============================
+
+Summary of all completed tasks:
+
+1. **MNN Repo Updates** (committed):
+   - build(vulkan): update build_vulkan.sh to optionally build libMNNConvertDeps
+   - chore: finalize isp_spv/ .comp files
+   - add: decompiled 5 missing .comp shaders from SPIR-V bytecode
+   - fix: restore original isp_cfa/isplsc/isp_normalize shader sources
+   - chore: add all isp.* SPIR-V shaders and op registrations to MNN
+
+2. **cam-app Repo Updates**:
+   - OnnxEngine.kt: Updated to use MnnEngine directly (removed OnnxEngine)
+   - OnnxDisplayBlock.kt: Removed (no longer needed)
+   - OnnxIspBlock.kt: Removed (no longer needed)
+   - Other ISP blocks updated to use MnnEngine instead
+   - Removed onnxruntime-android:1.26.0 dependency
+   - Restored stub implementations for ONNX Runtime API
+
+3. **Architecture Clean-up**:
+   - libMNNConvertDeps.so: 6024024 bytes, 34 isp.* ops (ONNX op registrations only)
+   - libMNN_Vulkan.so: 2442376 bytes, 122 SPIR-V symbols (0 undefined)
+   - libmnnhelper.so: 228192 bytes (clean JNI bridge, no SPIR-V)
+
+4. **Build**: All builds successful
+5. **APK**: Ready at /sdcard/Download/camapp.apk
+6. **Sync**: Both repos synchronized
+
+The ISP fusion pipeline now has proper architecture separation:
+- Converter: ONNX op registrations (no SPIR-V)
+- Vulkan: SPIR-V shader binaries (no converter dependencies)
+- JNI Bridge: Clean interface only
