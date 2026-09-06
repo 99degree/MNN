@@ -1,20 +1,56 @@
 #version 450
-// isp.lsc — placeholder compute shader
-// Uniforms: {W, H, params...}
+// isp.lsc — lens shading correction.
+// Binding 0 (const, elementwise hot-swap from VulkanFuse::onEncode): {W, H}.
+// Binding 1 (frame input,  STORAGE_READ):  single-plane Bayer [1,1,H,W] float.
+// Binding 2 (output,        STORAGE_WRITE): [1,1,H,W] float.
+// Binding 3 (const table,   STORAGE_READ):  17x13x4 gains (baked, all-1.0 = identity).
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
-layout(set = 0, binding = 0, std430) buffer Uniforms {
-    float width; float height; float param1; float param2; float param3; float param4;
-} u;
-layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
-layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
+
+layout(set = 0, binding = 0, std430) buffer LscParams {
+    vec2 wh;            // (width, height) patched per-frame by elementwise hotSwap
+    float pad0;
+    float pad1;
+} p;
+
+layout(set = 0, binding = 1, std430) readonly buffer FrameIn { float in_data[]; };
+layout(set = 0, binding = 2, std430) writeonly buffer FrameOut { float out_data[]; };
+
+#define GRID_COLS 17
+#define GRID_ROWS 13
+#define GRID_CHANS 4
+layout(set = 0, binding = 3, std430) readonly buffer GainTable {
+    float table[GRID_COLS * GRID_ROWS * GRID_CHANS]; // 884 floats
+};
 
 void main() {
     uint x = gl_GlobalInvocationID.x;
     uint y = gl_GlobalInvocationID.y;
-    int w = int(u.width);
-    int h = int(u.height);
-    if (int(x) >= w || int(y) >= h) return;
-    int idx = (int(y) * w + int(x));
-    // Per-op logic would go here
-    out_data[idx] = in_data[idx];
+    uint w = uint(p.wh.x);
+    uint h = uint(p.wh.y);
+    if (x >= w || y >= h) return;
+
+    // Bayer RGGB quadrant selector -> 4 channels (R, G1, G2, B).
+    // On the all-1.0 default table every channel interpolates to 1.0 => out == in.
+    uint chan = ((y & 1u) << 1) | (x & 1u);
+
+    // Bilinear sampling of the 17x13 grid mapped over the full frame.
+    float gx = (float(x) / float(w > 1u ? w - 1u : 1u)) * float(GRID_COLS - 1);
+    float gy = (float(y) / float(h > 1u ? h - 1u : 1u)) * float(GRID_ROWS - 1);
+    int ix0 = clamp(int(floor(gx)), 0, GRID_COLS - 2);
+    int iy0 = clamp(int(floor(gy)), 0, GRID_ROWS - 2);
+    float tx = gx - float(ix0);
+    float ty = gy - float(iy0);
+
+    int c00 = (iy0 * GRID_COLS + ix0) * GRID_CHANS + int(chan);
+    int c10 = (iy0 * GRID_COLS + (ix0 + 1)) * GRID_CHANS + int(chan);
+    int c01 = ((iy0 + 1) * GRID_COLS + ix0) * GRID_CHANS + int(chan);
+    int c11 = ((iy0 + 1) * GRID_COLS + (ix0 + 1)) * GRID_CHANS + int(chan);
+
+    float g = table[c00] * (1.0 - tx) * (1.0 - ty)
+            + table[c10] * tx * (1.0 - ty)
+            + table[c01] * (1.0 - tx) * ty
+            + table[c11] * tx * ty;
+
+    uint idx = y * w + x;
+    out_data[idx] = in_data[idx] * g;
 }
