@@ -3,11 +3,11 @@ layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 layout(set = 0, binding = 0, std430) buffer Uniforms {
     float width;          // input stride width (W_src)
     float height;         // input height (H_src)
-    float pad1;           // unused
-    float pad2;           // unused
+    float sensorMax;      // sensor max value (e.g., 1023) for normalization
+    float pad;            // unused
 } u;
-layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };   // raw sensor plane [H_src * W_src], pre-normalized to [0,1]
-layout(set = 0, binding = 2) readonly  buffer BlcBuf { float blc_data[]; };  // per-channel BLC [1,4,1,1] = {blc_R, blc_Gr, blc_Gb, blc_B}, pre-normalized to [0,1]
+layout(set = 0, binding = 1) readonly  buffer InBuf  { uint in_data[]; };   // raw sensor plane [H_src * W_src], INT16 packed as uint32
+layout(set = 0, binding = 2) readonly  buffer BlcBuf { float blc_data[]; };  // per-channel BLC [1,4,1,1] = {blc_R, blc_Gr, blc_Gb, blc_B}, in sensor units
 layout(set = 0, binding = 3) writeonly buffer OutBuf { float out_data[]; };   // output [4 * H_dst * W_dst] where H_dst = H_src/2, W_dst = W_src/2
 
 void main() {
@@ -25,24 +25,27 @@ void main() {
     int inY = int(y) * 2;
     int idx = inY * w + inX;  // index into input plane
 
-    // Read float values for the 2x2 block (already normalized to [0,1])
-    float raw00 = in_data[idx];
-    float raw01 = in_data[idx + 1];
-    float raw10 = in_data[idx + w];
-    float raw11 = in_data[idx + w + 1];
+    // Read uint32 packed INT16 values for the 2x2 block
+    // Each uint32 holds 2 INT16 pixels packed in little-endian order
+    uint packed00_01 = in_data[idx];
+    uint packed10_11 = in_data[idx + w];
+    uint raw00 = packed00_01 & 0xFFFFu;
+    uint raw01 = packed00_01 >> 16;
+    uint raw10 = packed10_11 & 0xFFFFu;
+    uint raw11 = packed10_11 >> 16;
 
-    // Read per-channel BLC scalars {R, Gr, Gb, B} (4 scalars total, pre-normalized to [0,1])
+    // Read per-channel BLC scalars {R, Gr, Gb, B} (4 scalars total, in sensor units)
     float blcR  = blc_data[0];  // R channel BLC
     float blcGr = blc_data[1];  // Gr channel BLC
     float blcGb = blc_data[2];  // Gb channel BLC
     float blcB  = blc_data[3];  // B channel BLC
 
-    // Apply BLC subtraction (after normalization, per-channel)
-    // RGGB pattern: TL=R, TR=Gr, BL=Gb, BR=B
-    float norm00 = raw00 - blcR;   // TL -> R
-    float norm01 = raw01 - blcGr;  // TR -> Gr
-    float norm10 = raw10 - blcGb;  // BL -> Gb
-    float norm11 = raw11 - blcB;   // BR -> B
+    // Convert raw to float, subtract BLC, normalize to [0,1]
+    float sensorMax = u.sensorMax > 0.0 ? u.sensorMax : 1023.0;
+    float norm00 = (float(raw00) - blcR) / sensorMax;
+    float norm01 = (float(raw01) - blcGr) / sensorMax;
+    float norm10 = (float(raw10) - blcGb) / sensorMax;
+    float norm11 = (float(raw11) - blcB) / sensorMax;
 
     // Clamp to [0,1] after BLC subtraction
     norm00 = clamp(norm00, 0.0, 1.0);
