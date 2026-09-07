@@ -1,14 +1,14 @@
 #version 450
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 layout(set = 0, binding = 0, std430) buffer Uniforms {
-    float width;          // input stride width (W_src, float for convenience)
+    float width;          // input stride width (W_src)
     float height;         // input height (H_src)
-    float sensorMax;      // sensor max value (e.g., 1023) for normalization
-    float pad;            // unused
+    float pad1;           // unused
+    float pad2;           // unused
 } u;
-layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };   // raw sensor plane [H_src * W_src]
-layout(set = 0, binding = 2) readonly  buffer BlcBuf { float blc_data[]; };     // per-pixel BLC [H_src * W_src] in sensor units
-layout(set = 0, binding = 3) writeonly buffer OutBuf { float out_data[]; };    // output [4 * H_dst * W_dst] where H_dst = H_src/2, W_dst = W_src/2
+layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };   // raw sensor plane [H_src * W_src], pre-normalized to [0,1]
+layout(set = 0, binding = 2) readonly  buffer BlcBuf { float blc_data[]; };  // per-channel BLC [1,4,1,1] = {blc_R, blc_Gr, blc_Gb, blc_B}, pre-normalized to [0,1]
+layout(set = 0, binding = 3) writeonly buffer OutBuf { float out_data[]; };   // output [4 * H_dst * W_dst] where H_dst = H_src/2, W_dst = W_src/2
 
 void main() {
     uint x = gl_GlobalInvocationID.x;
@@ -25,35 +25,35 @@ void main() {
     int inY = int(y) * 2;
     int idx = inY * w + inX;  // index into input plane
 
-    // Read raw uint16 values for the 2x2 block
+    // Read float values for the 2x2 block (already normalized to [0,1])
     float raw00 = in_data[idx];
     float raw01 = in_data[idx + 1];
     float raw10 = in_data[idx + w];
     float raw11 = in_data[idx + w + 1];
 
-    // Read BLC values (float) for the same 2x2 block
-    float blc00 = blc_data[idx];
-    float blc01 = blc_data[idx + 1];
-    float blc10 = blc_data[idx + w];
-    float blc11 = blc_data[idx + w + 1];
+    // Read per-channel BLC scalars {R, Gr, Gb, B} (4 scalars total, pre-normalized to [0,1])
+    float blcR  = blc_data[0];  // R channel BLC
+    float blcGr = blc_data[1];  // Gr channel BLC
+    float blcGb = blc_data[2];  // Gb channel BLC
+    float blcB  = blc_data[3];  // B channel BLC
 
-    // Convert raw to float, subtract BLC, normalize to [0,1]
-    float norm00 = (float(raw00) - blc00) / u.sensorMax;
-    float norm01 = (float(raw01) - blc01) / u.sensorMax;
-    float norm10 = (float(raw10) - blc10) / u.sensorMax;
-    float norm11 = (float(raw11) - blc11) / u.sensorMax;
+    // Apply BLC subtraction (after normalization, per-channel)
+    // RGGB pattern: TL=R, TR=Gr, BL=Gb, BR=B
+    float norm00 = raw00 - blcR;   // TL -> R
+    float norm01 = raw01 - blcGr;  // TR -> Gr
+    float norm10 = raw10 - blcGb;  // BL -> Gb
+    float norm11 = raw11 - blcB;   // BR -> B
 
-    // Bayer quad unpack: assume RGGB pattern (but pattern should be passed via uniform? we hardcode RGGB for now)
-    // Output order: R, Gr, Gb, B  (or TL, TR, BL, BR for RGGB)
-    // Actually, the CFA unpack block outputs [1,4,H/2,W/2] where channels are:
-    //   0: TL (R for RGGB)
-    //   1: TR (G for RGGB)
-    //   2: BL (G for RGGB)
-    //   3: BR (B for RGGB)
-    // We'll hardcode RGGB; in the future we can pass pattern via uniform.
+    // Clamp to [0,1] after BLC subtraction
+    norm00 = clamp(norm00, 0.0, 1.0);
+    norm01 = clamp(norm01, 0.0, 1.0);
+    norm10 = clamp(norm10, 0.0, 1.0);
+    norm11 = clamp(norm11, 0.0, 1.0);
+
+    // Output: [1,4,H/2,W/2] where channels are R, Gr, Gb, B
     int outIdx = (int(y) * outW + int(x)) * 4;
-    out_data[outIdx + 0] = norm00;  // TL -> R
-    out_data[outIdx + 1] = norm01;  // TR -> Gr
-    out_data[outIdx + 2] = norm10;  // BL -> Gb
-    out_data[outIdx + 3] = norm11;  // BR -> B
+    out_data[outIdx + 0] = norm00;  // R
+    out_data[outIdx + 1] = norm01;  // Gr
+    out_data[outIdx + 2] = norm10;  // Gb
+    out_data[outIdx + 3] = norm11;  // B
 }
