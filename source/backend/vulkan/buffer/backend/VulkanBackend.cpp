@@ -21,6 +21,32 @@
 #include <vector>
 #include <cstring>
 
+// ── ISP timing helpers (gate behind ISP_DEBUG_VLOG=1) ─────────
+static inline bool ispVlog() {
+    static const bool v = (getenv("ISP_DEBUG_VLOG") &&
+                           strcmp(getenv("ISP_DEBUG_VLOG"), "0") != 0);
+    return v;
+}
+#define ISP_VLOG(...) do { if (ispVlog()) { fprintf(stderr, __VA_ARGS__); fflush(stderr); } } while (0)
+
+// Helper to log stage elapsed time with stage label
+static void _logStage(const char* stage, const std::chrono::steady_clock::time_point& start) {
+    if (!ispVlog()) return;
+    auto end = std::chrono::steady_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    fprintf(stderr, "[VulkanBackend-STAGE] %s: %lld ms\n", stage, ms);
+    fflush(stderr);
+}
+
+// Helper to log elapsed time since a given time point
+static void _logElapsed(const char* label, const std::chrono::steady_clock::time_point& start) {
+    if (!ispVlog()) return;
+    auto end = std::chrono::steady_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    fprintf(stderr, "[VulkanBackend] %s: %lld ms\n", label, ms);
+    fflush(stderr);
+}
+
 // ── Path-agnostic Vulkan-backend profiler registry ───────────
 // The VulkanTimeProfiler lives on each VulkanBackend instance. Depending on
 // the execution path the active backend may not be reachable via
@@ -384,17 +410,24 @@ void VulkanBackend::onExecuteBegin() const {
 }
 
 void VulkanBackend::onExecuteEnd() const {
+    ISP_VLOG("[VulkanBackend] onExecuteEnd START cmdBufferCount=%zu indirectSegments=%zu\n",
+        mCmdBuffers.size(), mIndirectSegments.size());
+    auto t_total_start = std::chrono::steady_clock::now();
     if (!mDirect) {
+        ISP_VLOG("[VulkanBackend-STAGE] onExecuteEnd: CMD_BUFFER_COLLECT start");
+        auto t = std::chrono::steady_clock::now();
         mCmdBuffers.reserve(mCmdBuffers.size() + mIndirectSegments.size());
         for (auto& segment : mIndirectSegments) {
             mCmdBuffers.push_back(segment->get());
         }
+        _logStage("onExecuteEnd: CMD_BUFFER_COLLECT", t);
     }
 #ifdef ENABLE_VULKAN_TIME_PROFILE
     auto startTime = std::chrono::high_resolution_clock::now();
     _finish();
     auto endTime = std::chrono::high_resolution_clock::now();
     float totalTime = std::chrono::duration_cast<std::chrono::nanoseconds>(endTime - startTime).count() / (1e6f);
+    _logElapsed("[VulkanBackend] onExecuteEnd FENCE_WAIT(profile)", startTime);
     if (mTimeProfiler) {
         // Store Execution-level GPU time so callers can query it via
         // Runtime::onGetLastGpuTimeMs() without parsing printed output.
@@ -408,14 +441,14 @@ void VulkanBackend::onExecuteEnd() const {
 #endif
     }
 #else
-    auto start = std::chrono::high_resolution_clock::now();
+    ISP_VLOG("[VulkanBackend-STAGE] onExecuteEnd: FENCE_WAIT start");
+    auto t_submit_start = std::chrono::steady_clock::now();
     _finish();
-    auto end = std::chrono::high_resolution_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
-    if (::getenv("ISP_DEBUG_VLOG") && ::strcmp(::getenv("ISP_DEBUG_VLOG"), "0") != 0) {
-        fprintf(stderr, "[VulkanBackend] onExecuteEnd took %lld ms\n", duration);
-        fflush(stderr);
-    }
+    auto t_fence_end = std::chrono::steady_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(t_fence_end - t_submit_start).count();
+    _logStage("onExecuteEnd: FENCE_WAIT", t_submit_start);
+    _logElapsed("[VulkanBackend] onExecuteEnd TOTAL", t_total_start);
+    ISP_VLOG("[VulkanBackend] onExecuteEnd END fence_wait=%lld ms\n", duration);
 #endif
 }
 
