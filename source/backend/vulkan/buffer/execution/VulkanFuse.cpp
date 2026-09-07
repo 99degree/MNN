@@ -37,6 +37,19 @@ static inline bool ispVlog() {
 }
 #define ISP_VLOG(...) do { if (ispVlog()) { fprintf(stderr, __VA_ARGS__); fflush(stderr); } } while (0)
 
+// Per-dispatch timing probe: logs elapsed time for onEncode/onExecute when
+// ISP_DEBUG_VLOG is set. This lets us isolate whether the bottleneck is in
+// GPU execution (shader compile/recode), fence wait, or CPU overhead.
+static void _probeFrame(const char* label) {
+    if (!ispVlog()) return;
+    static thread_local auto t0 = std::chrono::steady_clock::now();
+    auto t1 = std::chrono::steady_clock::now();
+    auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    fprintf(stderr, "[VulkanFuse] %s: +%lld ms\n", label, ms);
+    fflush(stderr);
+    t0 = t1;
+}
+
 VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outputSize) : VulkanBasicExecution(bn) {
     auto vkBn = static_cast<VulkanBackend*>(bn);
     auto factory = vkBn->getPipelineFactory();

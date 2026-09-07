@@ -408,7 +408,14 @@ void VulkanBackend::onExecuteEnd() const {
 #endif
     }
 #else
+    auto start = std::chrono::high_resolution_clock::now();
     _finish();
+    auto end = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+    if (::getenv("ISP_DEBUG_VLOG") && ::strcmp(::getenv("ISP_DEBUG_VLOG"), "0") != 0) {
+        fprintf(stderr, "[VulkanBackend] onExecuteEnd took %lld ms\n", duration);
+        fflush(stderr);
+    }
 #endif
 }
 
