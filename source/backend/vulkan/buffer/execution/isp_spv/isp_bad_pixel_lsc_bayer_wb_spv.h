@@ -1,0 +1,105 @@
+// Auto-generated from isp_bad_pixel_lsc_bayer_wb.comp
+// Shader: Fused 3-in-1 BadPixel + LSC + BayerWB compute shader
+static const char isp_bad_pixel_lsc_bayer_wb_glsl[] = R"GLSL(
+#version 450
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(set = 0, binding = 0, std430) buffer Uniforms {
+    float width;
+    float height;
+    float bayer_pattern;
+    float flags;
+} u;
+layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
+layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
+layout(set = 0, binding = 3) readonly  buffer HotMask { uint hot_mask[]; };
+layout(set = 0, binding = 4) readonly  buffer LscTable { float lsc_gain[]; };
+layout(set = 0, binding = 5) readonly  buffer BayerGains { float bayer_gains[]; };
+
+// Read pixel with edge clamping
+float read_px(int x, int y) {
+    int w = int(u.width);
+    int h = int(u.height);
+    x = clamp(x, 0, w - 1);
+    y = clamp(y, 0, h - 1);
+    return in_data[y * w + x];
+}
+
+// Bad pixel correction: 3x3 neighborhood min/max clamp
+// Matches BadPixelBlock default thresholds
+float bad_pixel_correct(int x, int y) {
+    int w = int(u.width);
+    int idx = y * w + x;
+    float center = in_data[idx];
+    float vmin = center, vmax = center;
+    for (int dy = -1; dy <= 1; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            if (dx == 0 && dy == 0) continue;
+            int nx = x + dx;
+            int ny = y + dy;
+            if (nx < 0 || ny < 0 || nx >= w || ny >= int(u.height)) continue;
+            float v = in_data[ny * w + nx];
+            if (v < vmin) vmin = v;
+            if (v > vmax) vmax = v;
+        }
+    }
+    // If center deviates from median, clamp it
+    float lo = center - vmin;
+    float hi = vmax - center;
+    float limit = max(lo, hi);
+    if (limit > 0.5f) limit = 0.5f;
+    return clamp(center, center - limit, center + limit);
+}
+
+// LSC: bilinear interpolation of 17x13x4 gain table
+// Matches LscBlock grid dimensions
+float lsc_correct(float value, int x, int y) {
+    int w = int(u.width);
+    int h = int(u.height);
+    float fx = clamp(float(x) * 16.0f / max(float(w), 1.0f), 0.0f, 16.0f);
+    float fy = clamp(float(y) * 12.0f / max(float(h), 1.0f), 0.0f, 12.0f);
+    int x0 = clamp(int(fx), 0, 15);
+    int x1 = min(x0 + 1, 16);
+    int y0 = clamp(int(fy), 0, 12);
+    int y1 = min(y0 + 1, 12);
+    float wx = fx - float(x0);
+    float wy = fy - float(y0);
+    int ch = (x + y + int(u.bayer_pattern)) & 3;
+    float g00 = lsc_gain[(y0 * 17 + x0) * 4 + ch];
+    float g10 = lsc_gain[(y0 * 17 + x1) * 4 + ch];
+    float g01 = lsc_gain[(y1 * 17 + x0) * 4 + ch];
+    float g11 = lsc_gain[(y1 * 17 + x1) * 4 + ch];
+    float gain = mix(mix(g00, g10, wx), mix(g01, g11, wx), wy);
+    // Clamp gain to reasonable range (matches LscBlock)
+    gain = clamp(gain, 0.5f, 4.0f);
+    return value * gain;
+}
+
+// Bayer white balance - matches BayerWbBlock
+float bayer_wb(float value, int x, int y) {
+    int ch = (x + y + int(u.bayer_pattern)) & 3;
+    float gain = bayer_gains[ch];
+    // Clamp gain to avoid extreme WB (matches BayerWbBlock)
+    gain = clamp(gain, 0.5f, 4.0f);
+    return value * gain;
+}
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    int w = int(u.width);
+    int h = int(u.height);
+    if (int(x) >= w || int(y) >= h) return;
+
+    // Step 1: Bad pixel correction
+    float v = bad_pixel_correct(int(x), int(y));
+
+    // Step 2: Lens shading correction
+    v = lsc_correct(v, int(x), int(y));
+
+    // Step 3: Bayer white balance
+    v = bayer_wb(v, int(x), int(y));
+
+    int idx = int(y) * w + int(x);
+    out_data[idx] = v;
+}
+)GLSL";
