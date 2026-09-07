@@ -14,6 +14,7 @@
 #include "isp_spv/isp_normalize_spv.h"
 #include "isp_spv/isp_blc_spv.h"
 #include "isp_spv/isp_crop_blc_spv.h"
+#include "isp_spv/isp_crop_blc_norm_cfa_spv.h"
 #include "isp_spv/isp_cfa_spv.h"
 #include "isp_spv/isp_debayer_g2_spv.h"
 #include "isp_spv/isp_bayer_wb_spv.h"

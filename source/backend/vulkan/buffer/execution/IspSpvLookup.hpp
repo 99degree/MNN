@@ -41,6 +41,8 @@ extern const int g_isp_raw_blc_spv_len;
 extern const int g_isp_crop_blc_spv_len;
 extern const unsigned char g_isp_cfa_spv[];
 extern const int g_isp_cfa_spv_len;
+extern const unsigned char g_isp_crop_blc_norm_cfa_spv[];
+extern const int g_isp_crop_blc_norm_cfa_spv_len;
 extern const unsigned char g_isp_debayer_g2_spv[];
 extern const int g_isp_debayer_g2_spv_len;
 extern const unsigned char g_isp_bayer_wb_spv[];
@@ -153,6 +155,7 @@ static const std::unordered_map<std::string, SpvData> g_ispSpvMap = {
     {"isp.normalize",   {g_isp_normalize_spv,    g_isp_normalize_spv_len}},
     {"isp.blc",         {g_isp_blc_spv,          g_isp_blc_spv_len}},
     {"isp.crop_blc",    {g_isp_crop_blc_spv,     g_isp_crop_blc_spv_len}},
+    {"isp.crop_blc_norm_cfa", {g_isp_crop_blc_norm_cfa_spv, g_isp_crop_blc_norm_cfa_spv_len}},
     {"isp.crop",         {g_isp_crop_spv,          g_isp_crop_spv_len}},
     {"isp.raw_blc",      {g_isp_raw_blc_spv,       g_isp_raw_blc_spv_len}},
     {"isp.cfa",         {g_isp_cfa_spv,          g_isp_cfa_spv_len}},

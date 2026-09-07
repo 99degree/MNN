@@ -1,0 +1,59 @@
+#version 450
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+layout(set = 0, binding = 0, std430) buffer Uniforms {
+    float width;          // input stride width (W_src, float for convenience)
+    float height;         // input height (H_src)
+    float sensorMax;      // sensor max value (e.g., 1023) for normalization
+    float pad;            // unused
+} u;
+layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };   // raw sensor plane [H_src * W_src]
+layout(set = 0, binding = 2) readonly  buffer BlcBuf { float blc_data[]; };     // per-pixel BLC [H_src * W_src] in sensor units
+layout(set = 0, binding = 3) writeonly buffer OutBuf { float out_data[]; };    // output [4 * H_dst * W_dst] where H_dst = H_src/2, W_dst = W_src/2
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    int w = int(u.width);
+    int h = int(u.height);
+    // Output dimensions: half of input (due to CFA unpack)
+    int outW = w / 2;
+    int outH = h / 2;
+    if (int(x) >= outW || int(y) >= outH) return;
+
+    // Input coordinates of the top-left pixel of the 2x2 Bayer quad
+    int inX = int(x) * 2;
+    int inY = int(y) * 2;
+    int idx = inY * w + inX;  // index into input plane
+
+    // Read raw uint16 values for the 2x2 block
+    float raw00 = in_data[idx];
+    float raw01 = in_data[idx + 1];
+    float raw10 = in_data[idx + w];
+    float raw11 = in_data[idx + w + 1];
+
+    // Read BLC values (float) for the same 2x2 block
+    float blc00 = blc_data[idx];
+    float blc01 = blc_data[idx + 1];
+    float blc10 = blc_data[idx + w];
+    float blc11 = blc_data[idx + w + 1];
+
+    // Convert raw to float, subtract BLC, normalize to [0,1]
+    float norm00 = (float(raw00) - blc00) / u.sensorMax;
+    float norm01 = (float(raw01) - blc01) / u.sensorMax;
+    float norm10 = (float(raw10) - blc10) / u.sensorMax;
+    float norm11 = (float(raw11) - blc11) / u.sensorMax;
+
+    // Bayer quad unpack: assume RGGB pattern (but pattern should be passed via uniform? we hardcode RGGB for now)
+    // Output order: R, Gr, Gb, B  (or TL, TR, BL, BR for RGGB)
+    // Actually, the CFA unpack block outputs [1,4,H/2,W/2] where channels are:
+    //   0: TL (R for RGGB)
+    //   1: TR (G for RGGB)
+    //   2: BL (G for RGGB)
+    //   3: BR (B for RGGB)
+    // We'll hardcode RGGB; in the future we can pass pattern via uniform.
+    int outIdx = (int(y) * outW + int(x)) * 4;
+    out_data[outIdx + 0] = norm00;  // TL -> R
+    out_data[outIdx + 1] = norm01;  // TR -> Gr
+    out_data[outIdx + 2] = norm10;  // BL -> Gb
+    out_data[outIdx + 3] = norm11;  // BR -> B
+}
