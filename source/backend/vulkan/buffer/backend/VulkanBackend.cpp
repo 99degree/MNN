@@ -21,7 +21,7 @@
 #include <vector>
 #include <cstring>
 
-// ── ISP timing helpers (gate behind ISP_DEBUG_VLOG=1) ─────────
+// ── ISP timing helpers (gate behind ISP_DEBUG_VLOG=1) ─────────────
 static inline bool ispVlog() {
     static const bool v = (getenv("ISP_DEBUG_VLOG") &&
                            strcmp(getenv("ISP_DEBUG_VLOG"), "0") != 0);
@@ -48,6 +48,7 @@ static void _logElapsed(const char* label, const std::chrono::steady_clock::time
 }
 
 // ── Path-agnostic Vulkan-backend profiler registry ───────────
+
 // The VulkanTimeProfiler lives on each VulkanBackend instance. Depending on
 // the execution path the active backend may not be reachable via
 // Interpreter::getBackend(session, tensor):
