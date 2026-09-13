@@ -544,7 +544,158 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
         return NOT_SUPPORT;
     }
     _logStage("onEncode: SPIRV_PRESUBMIT", t_stage);
+    // ── Dynamic-size derivation ──
+    // If the baked global_size is invalid (0/negative — from dynamic ONNX input
+    // at convert time), derive the dispatch size from the ACTUAL input tensor
+    // dims at runtime, and patch the const buffer's first two floats (W, H).
+    // dims==1 (scalar op): treat as 1×1. dims==2: [H,W]. dims>=4: [N,C,H,W].
+    int tw = 0, th = 0, tc = 0;
+    if (!inputs.empty() && inputs[0] && inputs[0]->buffer().dimensions >= 1) {
+        int dims = inputs[0]->buffer().dimensions;
+        if (dims == 1) {
+            tw = 1; th = 1;
+        } else if (dims == 2) {
+            th = inputs[0]->buffer().dim[0].extent;
+            tw = inputs[0]->buffer().dim[1].extent;
+        } else {
+            // Layout-aware W/H derivation: ISP chain tensors are plain NCHW
+            // (NHWC is retired — the main input is [1,1,H,W] full-res).
+            // For NCHW the spatial dims live at [dims-2]=H,[dims-1]=W and
+            // the channel count at [1].
+            bool isNhwc = false;
+            if (mSpatialNchw) {
+                // Op declared its input as planar NCHW data: trust dims only.
+                isNhwc = false;
+            } else if (dims >= 4) {
+                auto df = TensorUtils::getDescribe(inputs[0])->dimensionFormat;
+                isNhwc = (df == MNN_DATA_FORMAT_NHWC);
+                if (!isNhwc && inputs[0]->buffer().dim[3].extent <= 8 &&
+                    inputs[0]->buffer().dim[1].extent > 8) {
+                    // Heuristic fallback when the describe tag is missing:
+                    // a trailing dim <= 8 with large dim[1] means channels-last.
+                    isNhwc = true;
+                }
+            }
+            if (isNhwc) {
+                th = inputs[0]->buffer().dim[1].extent;        // H
+                tw = inputs[0]->buffer().dim[2].extent;        // W
+                tc = inputs[0]->buffer().dim[3].extent;        // C
+            } else {
+                tw = inputs[0]->buffer().dim[dims-1].extent;   // W
+                th = inputs[0]->buffer().dim[dims-2].extent;   // H
+                if (dims >= 4) tc = inputs[0]->buffer().dim[1].extent;  // C
+            }
+        }
+    }
+    if (mGlobalSize[0] <= 0 || mGlobalSize[1] <= 0) {
+        if (tw > 0 && th > 0) {
+            mGlobalSize[0] = tw;
+            mGlobalSize[1] = th;
+            mGlobalSize[2] = 1;
+            mNeedAutoTuning = true;
+        } else {
+            // Never dispatch 0 workgroups — vkCmdDispatch requires ≥1. Fall
+            // back to a single thread so the shader at least runs.
+            mGlobalSize[0] = 1;
+            mGlobalSize[1] = 1;
+            mGlobalSize[2] = 1;
+        }
+    }
+    // Elementwise extras: the real dispatch size and the shader's const W,H
+    // must match the ACTUAL input tensor dims — otherwise the shader
+    // early-returns on `x >= w || y >= h` and writes nothing.
+    // Patch BOTH: override global_size from input dims AND hot-swap the
+    // const buffer's first two floats (W,H).
+    if (mElementwise && !mElementwisePatched && tw > 0 && th > 0) {
+        ISP_VLOG("[VulkanFuse] ELEMENTWISE patch: tw=%d th=%d glob=[%d,%d,%d]\n",
+            tw, th, mGlobalSize[0], mGlobalSize[1], mGlobalSize[2]);
+        fflush(stderr);
+        if (mGlobalSize[0] != tw || mGlobalSize[1] != th) {
+            mGlobalSize[0] = tw;
+            mGlobalSize[1] = th;
+            mGlobalSize[2] = 1;
+            mNeedAutoTuning = true;
+        }
+        float v[2] = { (float)tw, (float)th };
+        ErrorCode hs = hotSwapConstBuffer(0, v, sizeof(v));
+        ISP_VLOG("[VulkanFuse] ELEMENTWISE hotSwap done rc=%d\n", (int)hs);
+        fflush(stderr);
+        mElementwisePatched = true;
+    }
+    // Reduction extras: baked const {W,H(,C)} is 0 from dynamic input. Patch
+    // ONCE (first encode) from the actual input tensor so the stride/reduce
+    // loops run over the real image. ispc_stats const = {W,H,C};
+    // calib_stats/af_focus = {W,H}. (Dims are stable for a fixed sensor.)
+    if (mReduce && !mReducePatched && tw > 0 && th > 0) {
+        if (mType == "isp.ispc_stats" && tc > 0) {
+            float v[3] = { (float)tw, (float)th, (float)tc };
+            hotSwapConstBuffer(0, v, sizeof(v));
+        } else {
+            float v[2] = { (float)tw, (float)th };
+            hotSwapConstBuffer(0, v, sizeof(v));
+        }
+        mReducePatched = true;
+    }
     // [STAGE 3] BIND DESCRIPTORS: Bind descriptors for SPIR-V execution
+    // Per-frame tensor→descriptor binding: input/output tensors change
+    // backing buffers every frame (pool churn), so write them into the
+    // descriptor set on EVERY encode — a ctor-time bind would keep stale
+    // device addresses alive after the first frame (black frames / rc=3).
+    for (int i=0; i<(int)inputs.size(); ++i) {
+        int binding = mInputBinding[i];
+        auto tensorBuffer = vkBn->getBuffer(inputs[i]);
+        mDescriptorSet->writeBuffer(tensorBuffer, binding);
+    }
+    if (mType == "isp.demosaic_g2_ccm" && inputs.size() < 2) {
+        // Single-input form: no runtime CCM tensor. Bind a persistent
+        // identity 3x3 matrix at binding 3 so the shader reads a valid
+        // passthrough CCM instead of an unbound descriptor (GPU fault /
+        // garbage colors). Created once, reused every frame.
+        if (!mIdentityCcmBuffer) {
+            const size_t ccmBytes = 9 * sizeof(float);
+            mIdentityCcmBuffer = std::make_shared<VulkanBuffer>(
+                vkBn->getMemoryPool(), false, ccmBytes, nullptr,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                VK_SHARING_MODE_EXCLUSIVE,
+                VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+            float ident[9] = {1.f, 0.f, 0.f, 0.f, 1.f, 0.f, 0.f, 0.f, 1.f};
+            auto* p = (float*)mIdentityCcmBuffer->map();
+            if (p) { ::memcpy(p, ident, ccmBytes); mIdentityCcmBuffer->unmap(); }
+        }
+        mDescriptorSet->writeBuffer(std::make_tuple(mIdentityCcmBuffer->buffer(),
+            (VkDeviceSize)36, (VkDeviceSize)0), 3);
+    }
+    for (int i=0; i<(int)outputs.size(); ++i) {
+        int binding = mOutputBinding[i];
+        auto tensorBuffer = vkBn->getBuffer(outputs[i]);
+        mDescriptorSet->writeBuffer(tensorBuffer, binding);
+    }
+    for (auto& iter : mConstStorageOffset) {
+        mDescriptorSet->writeBuffer(mConstStorageBuffer->buffer(), std::get<0>(iter), std::get<1>(iter), std::get<2>(iter));
+    }
+    for (auto& iter : mConstUniformOffset) {
+        mDescriptorSet->writeBuffer(mConstUniformBuffer->buffer(), std::get<0>(iter), std::get<1>(iter), std::get<2>(iter));
+    }
+    if (mNeedAutoTuning && !mOptimizedDispatch) {
+        // VulkanFuse dispatches a FUSED compute shader whose workgroup size is
+        // FIXED (OpExecutionMode LocalSize) in the SPIR-V — 16x16x1 for all
+        // isp.* ops, matching mPreferredLocalSize (group_size attr or the
+        // {16,16,1} fallback). Compute the dispatch group count from the
+        // shader-fixed local size; no pipeline rebuild needed.
+        int lx = mPreferredLocalSize[0] > 0 ? mPreferredLocalSize[0] : 16;
+        int ly = mPreferredLocalSize[1] > 0 ? mPreferredLocalSize[1] : 16;
+        int lz = mPreferredLocalSize[2] > 0 ? mPreferredLocalSize[2] : 1;
+        mGroupSize[0] = UP_DIV(mGlobalSize[0], lx);
+        mGroupSize[1] = UP_DIV(mGlobalSize[1], ly);
+        mGroupSize[2] = UP_DIV(mGlobalSize[2], lz);
+        mNeedAutoTuning = false;
+    } else if (mOptimizedDispatch) {
+        // Group count = ceil(global_size / local_size).
+        mGroupSize[0] = UP_DIV(mGlobalSize[0], ALIMAX(1, mPreferredLocalSize[0]));
+        mGroupSize[1] = UP_DIV(mGlobalSize[1], ALIMAX(1, mPreferredLocalSize[1]));
+        mGroupSize[2] = UP_DIV(mGlobalSize[2], ALIMAX(1, mPreferredLocalSize[2]));
+        mNeedAutoTuning = false;
+    }
     t_stage = std::chrono::steady_clock::now();
     ISP_VLOG("[VulkanFuse-STAGE] onEncode: BIND_DESCRIPTORS start");
     mPipeline->bind(cmdBuffer->get(), mDescriptorSet->get());
