@@ -534,12 +534,12 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
     // [STAGE 2] SPIR-V PRESUBMIT: Verify shader pipeline before dispatch
     t_stage = std::chrono::steady_clock::now();
     ISP_VLOG("[VulkanFuse-STAGE] onEncode: SPIRV_PRESUBMIT start");
-    if (!mPipeline) {
+    if (!mPipeline.get()) {
         ISP_VLOG("[VulkanFuse-STAGE] onEncode: SPIRV_PRESUBMIT error: no pipeline");
         return NOT_SUPPORT;
     }
     // Validate descriptor sets
-    if (!mDescriptorSet) {
+    if (!mDescriptorSet.get()) {
         ISP_VLOG("[VulkanFuse-STAGE] onEncode: SPIRV_PRESUBMIT error: no descriptor set");
         return NOT_SUPPORT;
     }
