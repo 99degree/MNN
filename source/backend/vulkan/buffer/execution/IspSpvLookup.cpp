@@ -18,7 +18,6 @@
 #include "isp_spv/isp_cfa_spv.h"
 #include "isp_spv/isp_debayer_g2_spv.h"
 #include "isp_spv/isp_bayer_wb_spv.h"
-#include "isp_spv/g_isp_cfa_spv.h"
 #include "isp_spv/g_isp_bad_pixel_lsc_bayer_wb_spv.h"
 #include "isp_spv/isp_demosaic_edge_spv.h"
 #include "isp_spv/isp_ccm_spv.h"
