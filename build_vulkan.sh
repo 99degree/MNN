@@ -25,7 +25,7 @@ cmake .. \
     -DMNN_ARM82=ON \
     -DMNN_OPENCL=OFF \
     -DMNN_USE_SSE=OFF \
-    -DMNN_GPU_TIME_PROFILE=OFF \
+    -DMNN_GPU_TIME_PROFILE=ON \
     -DMNN_ISP_EMBED_SPIRV=OFF \
     -DMNN_BUILD_CONVERTER=$BUILD_CONVERTER
 
@@ -38,8 +38,15 @@ fi
 
 echo "Build complete!"
 ls -lh OFF/libMNN.so
-# Check for the symbol
-nm -D OFF/libMNN.so | grep -i MNNVulkanFuseRegister && echo "Symbol MNNVulkanFuseRegister found in libMNN.so" || echo "Symbol NOT found!"
+
+# Check for the symbol (in libMNN.so when SEP_BUILD=OFF, or libMNN_Vulkan.so when SEP_BUILD=ON)
+if nm -D OFF/libMNN.so | grep -q ' T MNNVulkanFuseRegister'; then
+    echo "Symbol MNNVulkanFuseRegister found in libMNN.so"
+elif nm -D source/backend/vulkan/OFF/libMNN_Vulkan.so 2>/dev/null | grep -q ' T MNNVulkanFuseRegister'; then
+    echo "Symbol MNNVulkanFuseRegister found in libMNN_Vulkan.so"
+else
+    echo "Symbol NOT found!"
+fi
 if [ "$BUILD_CONVERTER" = "ON" ]; then
     find . -name "libMNNConvertDeps.so" -exec ls -lh {} \;
 fi

@@ -180,10 +180,8 @@ MNN_PUBLIC int mnn_convert_onnx_to_mnn_buffer(const void* onnx_data, size_t onnx
     config.optimizeLevel = 2;  // full pipeline incl. IspChainFusion
     config.weightQuantBits = 0;
     config.saveHalfFloat = false;
-    // ISP wire format is packed-Bayer quad-NHWC [1,H/2,W/2,4]. Declare the
-    // 4-D graph inputs NHWC so runtime session tensors match and host→
-    // device uploads stay verbatim (no NCHW↔NHWC reorder scramble).
-    config.onnxInputNHWC = true;
+    // The generic ONNX buffer API follows ONNX's NCHW convention.
+    config.onnxInputNHWC = false;
     config.preserveInputType = true;
     config.saveExternalData = false;
     // PostTreatContext for postTreat() (same as Cli::convertModel).

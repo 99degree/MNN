@@ -18,15 +18,9 @@ VulkanPipelineFactory::~VulkanPipelineFactory() {
 }
 
 void VulkanPipelineFactory::reset() {
-    // Destroy pipelines and shader modules FIRST, before the pipeline cache.
-    // Pipelines are created via vkCreateComputePipelines(pipelineCache=mCache->get()).
-    // If we drop mCache (→ vkDestroyPipelineCache) while pipelines still reference it,
-    // the Vulkan driver dereferences a destroyed cache → SIGSEGV (freedreno).
-    // Clearing mPipelines releases all SharedPtr<VulkanPipeline> refs; the last
-    // ref destroys the VulkanPipeline whose destructor calls vkDestroyPipeline,
-    // which may touch the cache. Only then safely destroy the old cache.
-    mPipelines.clear();
-    mComputeShaderModules.clear();
+    // Session resize collects garbage while executions still borrow pipelines.
+    // Keep the pipelines and their layouts alive until the factory is destroyed;
+    // each pipeline retains its cache through SharedPtr.
     mCache = nullptr;
     mCache = new VulkanPipelineCache(mDevice);
 }
