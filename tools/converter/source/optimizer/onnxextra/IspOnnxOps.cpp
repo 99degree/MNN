@@ -332,7 +332,7 @@ class IspChromaticAberration : public OnnxExtraManager::Transform {
 public:
     virtual EXPRP onExecute(EXPRP expr) const override {
         auto op = expr->get();
-        auto newVar = createVulkanFuseOp(expr, op, "chromaticaberration");
+        auto newVar = createVulkanFuseOp(expr, op, "chromatic_aberration");
         return newVar->expr().first;
     }
 };
@@ -566,7 +566,7 @@ class IspRawBlc : public OnnxExtraManager::Transform {
 public:
     virtual EXPRP onExecute(EXPRP expr) const override {
         auto op = expr->get();
-        auto newVar = createVulkanFuseOp(expr, op, "rawblc");
+        auto newVar = createVulkanFuseOp(expr, op, "raw_blc");
         return newVar->expr().first;
     }
 };

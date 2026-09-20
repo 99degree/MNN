@@ -1,16 +1,16 @@
 #version 450
-// isp.lsc — lens shading correction with PROCEDURAL gain grid generation.
+// isp.lsc_min — MINIMAL opset lens shading correction.
 // 
-// The gain grid is GENERATED PROCEDURALLY from uniform parameters (k1, k2, vcmNorm, strength)
-// instead of reading a large baked tensor (17x13x4 = 884 floats).
+// PROCEDURAL gain grid generation from minimal uniform parameters.
+// NO large tensor inputs - all gain values computed on-the-fly.
 // 
 // Uniform parameters (binding 0):
-//   k1, k2: radial polynomial coefficients
+//   k1, k2: radial polynomial coefficients (r^2, r^4 terms)
 //   vcmNorm: normalized VCM position [0,1]
-//   strength: LSC strength multiplier
+//   strength: LSC strength multiplier [0,1]
 //   wh: frame width/height (hot-swapped per-frame)
 //
-// This eliminates the need for a 884-float baked tensor input (48MB equivalent).
+// This is the MINIMAL opset variant - NO large tensor inputs.
 // The 17x13x4 gain grid is computed per-pixel from the radial polynomial model.
 
 #version 450
@@ -36,7 +36,7 @@ layout(set = 0, binding = 2, std430) writeonly buffer FrameOut { float out_data[
 #define GRID_ROWS 13
 #define GRID_CHANS 4
 
-// Pre-computed center and max radius for radial model (matches VcmLscController.kt)
+// Pre-computed center and max radius for radial model
 const float cy = float(GRID_ROWS - 1) / 2.0;  // 6.0
 const float cx = float(GRID_COLS - 1) / 2.0;  // 8.0
 const float maxR = sqrt(cy * cy + cx * cx);   // 10.0
