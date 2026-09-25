@@ -9,7 +9,6 @@
 //   black_r, black_g, black_b: black level offsets for R, G, B channels
 //   gain: gain multiplier
 
-#version 450
 #extension GL_EXT_scalar_block_layout : require
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;

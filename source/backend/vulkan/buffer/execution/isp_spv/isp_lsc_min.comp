@@ -13,7 +13,6 @@
 // This is the MINIMAL opset variant - NO large tensor inputs.
 // The 17x13x4 gain grid is computed per-pixel from the radial polynomial model.
 
-#version 450
 #extension GL_EXT_scalar_block_layout : require
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
@@ -41,6 +40,23 @@ const float cy = float(GRID_ROWS - 1) / 2.0;  // 6.0
 const float cx = float(GRID_COLS - 1) / 2.0;  // 8.0
 const float maxR = sqrt(cy * cy + cx * cx);   // 10.0
 
+// Helper function to compute gain at grid index (row, col, chan) procedurally
+float computeGain(int row, int col, int c) {
+    float dy = (float(row) - 6.0) / 10.0;  // normalized [-0.6, 0.6]
+    float dx = (float(col) - 8.0) / 10.0;  // normalized [-0.8, 0.8]
+    float r2 = dx * dx + dy * dy;
+    float r4 = r2 * r2;
+    
+    // Radial polynomial: f(r) = k1 * r^2 + k2 * r^4 + vcmNorm
+    // Gain = f(r)^2 * strength (centered at 1.0)
+    float f_r = p.k1 * r2 + p.k2 * r4 + p.vcmNorm;
+    float gain = f_r * f_r;
+    // Clamp to [0.8, 2.5] using conditional
+    if (gain < 0.8) gain = 0.8;
+    if (gain > 2.5) gain = 2.5;
+    return 1.0 + (gain - 1.0) * p.strength;
+}
+
 void main() {
     uint x = gl_GlobalInvocationID.x;
     uint y = gl_GlobalInvocationID.y;
@@ -54,32 +70,16 @@ void main() {
     // Bilinear sampling of the PROCEDURALLY GENERATED 17x13 grid mapped over the full frame.
     float gx = (float(x) / float(w > 1u ? w - 1u : 1u)) * float(GRID_COLS - 1);  // 0..16
     float gy = (float(y) / float(h > 1u ? h - 1u : 1u)) * float(GRID_ROWS - 1);  // 0..12
-    int ix0 = clamp(int(floor(gx)), 0, GRID_COLS - 2);
-    int iy0 = clamp(int(floor(gy)), 0, GRID_ROWS - 2);
+    int ix0 = int(floor(gx));
+    int iy0 = int(floor(gy));
+    if (ix0 < 0) ix0 = 0;
+    if (ix0 > GRID_COLS - 2) ix0 = GRID_COLS - 2;
+    if (iy0 < 0) iy0 = 0;
+    if (iy0 > GRID_ROWS - 2) iy0 = GRID_ROWS - 2;
     float tx = gx - float(ix0);
     float ty = gy - float(iy0);
 
-    // Helper function to compute gain at grid index (row, col, chan) procedurally
-    float computeGain(int row, int col, int c) {
-        float dy = (float(row) - 6.0) / 10.0;  // normalized [-0.6, 0.6]
-        float dx = (float(col) - 8.0) / 10.0;  // normalized [-0.8, 0.8]
-        float r2 = dx * dx + dy * dy;
-        float r4 = r2 * r2;
-        float vcmNorm = p.vcmNorm;
-        
-        // Radial polynomial: f(r) = k1 * r^2 + k2 * r^4 + vcmNorm
-        // Gain = f(r)^2 * strength (centered at 1.0)
-        float f_r = p.k1 * r2 + p.k2 * r4 + vcmNorm;
-        float gain = (f_r * f_r).clamp(0.8, 2.5);
-        return 1.0 + (gain - 1.0) * p.strength;
-    }
-
     // Bilinear interpolation of procedurally generated 4 corners
-    int c00 = (iy0 * GRID_COLS + ix0) * GRID_CHANS + int(chan);
-    int c10 = (iy0 * GRID_COLS + (ix0 + 1)) * GRID_CHANS + int(chan);
-    int c01 = ((iy0 + 1) * GRID_COLS + ix0) * GRID_CHANS + int(chan);
-    int c11 = ((iy0 + 1) * GRID_COLS + (ix0 + 1)) * GRID_CHANS + int(chan);
-
     float g00 = computeGain(iy0, ix0, int(chan));
     float g10 = computeGain(iy0, ix0 + 1, int(chan));
     float g01 = computeGain(iy0 + 1, ix0, int(chan));
