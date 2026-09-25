@@ -229,7 +229,7 @@ extern const int g_isp_chromatic_aberration_min_spv_len;
 extern const unsigned char g_isp_raw_blc_min_spv[];
 extern const int g_isp_raw_blc_min_spv_len;
 
-static const std::unordered_map<std::string, SpvData> g_ispSpvMapMinimal = {
+static const std::unordered_map<std::string, MNN::SpvData> g_ispSpvMapMinimal = {
     {"isp.lsc_min",           {g_isp_lsc_min_spv,           g_isp_lsc_min_spv_len}},
     {"isp.vignetting_min",    {g_isp_vignetting_min_spv,    g_isp_vignetting_min_spv_len}},
     {"isp.chromatic_aberration_min", {g_isp_chromatic_aberration_min_spv, g_isp_chromatic_aberration_min_spv_len}},
