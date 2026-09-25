@@ -20,6 +20,9 @@ endif()
 list(FILTER MNN_Vulkan_SRC EXCLUDE REGEX "\\.asm$")
 list(FILTER MNN_Vulkan_SRC EXCLUDE REGEX "\\.spv$")
 list(FILTER MNN_Vulkan_SRC EXCLUDE REGEX "\\.spv\\.h$")
+# Include .spv.cpp files (they contain the SPIR-V binary data as C++ arrays)
+# but exclude the .spv.cpp files from the buffer/shaders directory that we don't want
+list(FILTER MNN_Vulkan_SRC EXCLUDE REGEX "buffer/shaders/.*\\.spv\\.cpp$")
 
 if(MNN_GPU_TIME_PROFILE)
     add_definitions(-DENABLE_VULKAN_TIME_PROFILE)

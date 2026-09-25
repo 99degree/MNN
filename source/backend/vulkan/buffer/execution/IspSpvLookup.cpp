@@ -16,7 +16,7 @@
 #include "isp_spv/isp_crop_blc_spv.h"
 #include "isp_spv/g_isp_crop_blc_norm_cfa_spv.h"
 #include "isp_spv/isp_cfa_spv.h"
-#include "isp_spv/isp_debayer_g2_spv.h"
+#include "isp_spv/isp_demosaic_g2_spv.h"
 #include "isp_spv/isp_bayer_wb_spv.h"
 #include "isp_spv/g_isp_bad_pixel_lsc_bayer_wb_spv.h"
 #include "isp_spv/isp_demosaic_edge_spv.h"
