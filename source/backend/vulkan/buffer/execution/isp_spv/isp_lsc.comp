@@ -1,31 +1,15 @@
 #version 450
-// isp.lsc — lens shading correction with PROCEDURAL gain grid generation.
-// 
-// The gain grid is GENERATED PROCEDURALLY from uniform parameters (k1, k2, vcmNorm, strength)
-// instead of reading a large baked tensor (17x13x4 = 884 floats).
-// 
-// Uniform parameters (binding 0):
-//   k1, k2: radial polynomial coefficients
-//   vcmNorm: normalized VCM position [0,1]
-//   strength: LSC strength multiplier
-//   wh: frame width/height (hot-swapped per-frame)
-//
-// This eliminates the need for a 884-float baked tensor input (48MB equivalent).
-// The 17x13x4 gain grid is computed per-pixel from the radial polynomial model.
-
-#extension GL_EXT_scalar_block_layout : require
-
+// isp.lsc — lens shading correction with BAKED gain grid input.
+// Binding 0 (const, elementwise hot-swap from VulkanFuse::onEncode): {W, H}.
+// Binding 1 (frame input,  STORAGE_READ):  single-plane Bayer [1,1,H,W] float.
+// Binding 2 (output,        STORAGE_WRITE): [1,1,H,W] float.
+// Binding 3 (const table,   STORAGE_READ):  17x13x4 gains (baked, all-1.0 = identity).
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) buffer LscParams {
-    float k1;           // radial r^2 coefficient
-    float k2;           // radial r^4 coefficient
-    float vcmNorm;      // normalized VCM position [0,1]
-    float strength;     // LSC strength multiplier [0,1]
     vec2 wh;            // (width, height) patched per-frame by elementwise hotSwap
     float pad0;
     float pad1;
-    float pad2;
 } p;
 
 layout(set = 0, binding = 1, std430) readonly buffer FrameIn { float in_data[]; };
@@ -34,29 +18,9 @@ layout(set = 0, binding = 2, std430) writeonly buffer FrameOut { float out_data[
 #define GRID_COLS 17
 #define GRID_ROWS 13
 #define GRID_CHANS 4
-
-// Pre-computed center and max radius for radial model (matches VcmLscController.kt)
-const float cy = float(GRID_ROWS - 1) / 2.0;  // 6.0
-const float cx = float(GRID_COLS - 1) / 2.0;  // 8.0
-const float maxR = sqrt(cy * cy + cx * cx);   // 10.0
-
-// Helper function to compute gain at grid index (row, col, chan) procedurally
-float computeGain(int row, int col, int c) {
-    float dy = (float(row) - 6.0) / 10.0;  // normalized [-0.6, 0.6]
-    float dx = (float(col) - 8.0) / 10.0;  // normalized [-0.8, 0.8]
-    float r2 = dx * dx + dy * dy;
-    float r4 = r2 * r2;
-    float vcmNorm = p.vcmNorm;
-    
-    // Radial polynomial: f(r) = k1 * r^2 + k2 * r^4 + vcmNorm
-    // Gain = f(r)^2 * strength (centered at 1.0)
-    float f_r = p.k1 * r2 + p.k2 * r4 + vcmNorm;
-    float gain = f_r * f_r;
-    // Clamp to [0.8, 2.5] using conditional (GLSL 450 core doesn't have clamp)
-    if (gain < 0.8) gain = 0.8;
-    if (gain > 2.5) gain = 2.5;
-    return 1.0 + (gain - 1.0) * p.strength;
-}
+layout(set = 0, binding = 3, std430) readonly buffer GainTable {
+    float table[GRID_COLS * GRID_ROWS * GRID_CHANS]; // 884 floats
+};
 
 void main() {
     uint x = gl_GlobalInvocationID.x;
@@ -65,12 +29,13 @@ void main() {
     uint h = uint(p.wh.y);
     if (x >= w || y >= h) return;
 
-    // Bayer RGGB quadrant selector -> 4 channels (R, G1, G2, B)
+    // Bayer RGGB quadrant selector -> 4 channels (R, G1, G2, B).
+    // On the all-1.0 default table every channel interpolates to 1.0 => out == in.
     uint chan = ((y & 1u) << 1) | (x & 1u);
 
-    // Bilinear sampling of the PROCEDURALLY GENERATED 17x13 grid mapped over the full frame.
-    float gx = (float(x) / float(w > 1u ? w - 1u : 1u)) * float(GRID_COLS - 1);  // 0..16
-    float gy = (float(y) / float(h > 1u ? h - 1u : 1u)) * float(GRID_ROWS - 1);  // 0..12
+    // Bilinear sampling of the 17x13 grid mapped over the full frame.
+    float gx = (float(x) / float(w > 1u ? w - 1u : 1u)) * float(GRID_COLS - 1);
+    float gy = (float(y) / float(h > 1u ? h - 1u : 1u)) * float(GRID_ROWS - 1);
     int ix0 = int(floor(gx));
     int iy0 = int(floor(gy));
     if (ix0 < 0) ix0 = 0;
@@ -80,21 +45,15 @@ void main() {
     float tx = gx - float(ix0);
     float ty = gy - float(iy0);
 
-    // Bilinear interpolation of procedurally generated 4 corners
     int c00 = (iy0 * GRID_COLS + ix0) * GRID_CHANS + int(chan);
     int c10 = (iy0 * GRID_COLS + (ix0 + 1)) * GRID_CHANS + int(chan);
     int c01 = ((iy0 + 1) * GRID_COLS + ix0) * GRID_CHANS + int(chan);
     int c11 = ((iy0 + 1) * GRID_COLS + (ix0 + 1)) * GRID_CHANS + int(chan);
 
-    float g00 = computeGain(iy0, ix0, int(chan));
-    float g10 = computeGain(iy0, ix0 + 1, int(chan));
-    float g01 = computeGain(iy0 + 1, ix0, int(chan));
-    float g11 = computeGain(iy0 + 1, ix0 + 1, int(chan));
-
-    float g = g00 * (1.0 - tx) * (1.0 - ty)
-            + g10 * tx * (1.0 - ty)
-            + g01 * (1.0 - tx) * ty
-            + g11 * tx * ty;
+    float g = table[c00] * (1.0 - tx) * (1.0 - ty)
+            + table[c10] * tx * (1.0 - ty)
+            + table[c01] * (1.0 - tx) * ty
+            + table[c11] * tx * ty;
 
     uint idx = y * w + x;
     out_data[idx] = in_data[idx] * g;

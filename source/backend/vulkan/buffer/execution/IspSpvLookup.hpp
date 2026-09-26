@@ -136,6 +136,16 @@ extern const int g_isp_yuv_sat_spv_len;
 extern const unsigned char g_isp_zone_stats_spv[];
 extern const int g_isp_zone_stats_spv_len;
 
+// MINIMAL opset shaders (procedural, no large tensor inputs)
+extern const unsigned char g_isp_lsc_min_spv[];
+extern const int g_isp_lsc_min_spv_len;
+extern const unsigned char g_isp_vignetting_min_spv[];
+extern const int g_isp_vignetting_min_spv_len;
+extern const unsigned char g_isp_chromatic_aberration_min_spv[];
+extern const int g_isp_chromatic_aberration_min_spv_len;
+extern const unsigned char g_isp_raw_blc_min_spv[];
+extern const int g_isp_raw_blc_min_spv_len;
+
 namespace MNN {
 
 struct SpvData {
@@ -198,6 +208,10 @@ static const std::unordered_map<std::string, SpvData> g_ispSpvMap = {
     {"isp.hdr_merge",   {g_isp_hdr_merge_spv,    g_isp_hdr_merge_spv_len}},
     {"isp.ldci",        {g_isp_ldci_spv,         g_isp_ldci_spv_len}},
     {"isp.lsc",         {g_isp_lsc_spv,          g_isp_lsc_spv_len}},
+    {"isp.lsc_min",         {g_isp_lsc_min_spv,           g_isp_lsc_min_spv_len}},
+    {"isp.vignetting_min",    {g_isp_vignetting_min_spv,    g_isp_vignetting_min_spv_len}},
+    {"isp.chromatic_aberration_min", {g_isp_chromatic_aberration_min_spv, g_isp_chromatic_aberration_min_spv_len}},
+    {"isp.raw_blc_min",       {g_isp_raw_blc_min_spv,       g_isp_raw_blc_min_spv_len}},
     {"isp.nlm",         {g_isp_nlm_spv,          g_isp_nlm_spv_len}},
     {"isp.pyramid",     {g_isp_pyramid_spv,      g_isp_pyramid_spv_len}},
     {"isp.stats",       {g_isp_stats_spv,        g_isp_stats_spv_len}},
