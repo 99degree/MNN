@@ -10,6 +10,16 @@ layout(set = 0, binding = 0, std430) buffer Uniforms {
 layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
 layout(set = 0, binding = 2) writeonly buffer OutBuf { uint out_data[]; };
 
+// Pack float [0,1] to uint8 with gamma correction and saturation (GLSL 450: conditional)
+uint packChannel(float val, float invGamma) {
+    if (val < 0.0) val = 0.0;
+    val = pow(val, invGamma);
+    val = val * 255.0;
+    if (val < 0.0) val = 0.0;
+    else if (val > 255.0) val = 255.0;
+    return uint(val);
+}
+
 void main() {
     uint x = gl_GlobalInvocationID.x;
     uint y = gl_GlobalInvocationID.y;
@@ -19,11 +29,14 @@ void main() {
     int idx = int(y) * w + int(x);
     int sz = w * h;
     float invGamma = 1.0 / max(u.gamma, 1e-6);
-    float r = clamp(pow(max(in_data[sz * 0 + idx], 0.0), invGamma) * 255.0, 0.0, 255.0);
-    float g = clamp(pow(max(in_data[sz * 1 + idx], 0.0), invGamma) * 255.0, 0.0, 255.0);
-    float b = clamp(pow(max(in_data[sz * 2 + idx], 0.0), invGamma) * 255.0, 0.0, 255.0);
+    float r = in_data[sz * 0 + idx];
+    float g = in_data[sz * 1 + idx];
+    float b = in_data[sz * 2 + idx];
+    uint ur = packChannel(r, invGamma);
+    uint ug = packChannel(g, invGamma);
+    uint ub = packChannel(b, invGamma);
     // Pack ARGB8888 as uint32: alpha<<24 | r<<16 | g<<8 | b (LE: B,G,R,A).
     // Output shape [1,1,h,w] uint32 (one uint32 per pixel, each = a<24|r<16|g<8|b).
-    uint packed = (255u << 24) | (uint(b) << 16) | (uint(g) << 8) | uint(r);
+    uint packed = (255u << 24) | (ub << 16) | (ug << 8) | ur;
     out_data[idx] = packed;
 }

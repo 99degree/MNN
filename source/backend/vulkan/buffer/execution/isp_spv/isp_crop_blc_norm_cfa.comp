@@ -47,11 +47,11 @@ void main() {
     float norm10 = (float(raw10) - blcGb) / sensorMax;
     float norm11 = (float(raw11) - blcB) / sensorMax;
 
-    // Clamp to [0,1] after BLC subtraction
-    norm00 = clamp(norm00, 0.0, 1.0);
-    norm01 = clamp(norm01, 0.0, 1.0);
-    norm10 = clamp(norm10, 0.0, 1.0);
-    norm11 = clamp(norm11, 0.0, 1.0);
+    // Clamp to [0,1] after BLC subtraction (GLSL 450: use conditional)
+    if (norm00 < 0.0) norm00 = 0.0; else if (norm00 > 1.0) norm00 = 1.0;
+    if (norm01 < 0.0) norm01 = 0.0; else if (norm01 > 1.0) norm01 = 1.0;
+    if (norm10 < 0.0) norm10 = 0.0; else if (norm10 > 1.0) norm10 = 1.0;
+    if (norm11 < 0.0) norm11 = 0.0; else if (norm11 > 1.0) norm11 = 1.0;
 
     // Output: [1,4,H/2,W/2] where channels are R, Gr, Gb, B
     int outIdx = (int(y) * outW + int(x)) * 4;

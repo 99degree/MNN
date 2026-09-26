@@ -22,8 +22,8 @@ layout(set = 0, binding = 5) readonly  buffer BayerGains { float bayer_gains[]; 
 float read_px(int x, int y) {
     int w = int(u.width);
     int h = int(u.height);
-    x = clamp(x, 0, w - 1);
-    y = clamp(y, 0, h - 1);
+    x = (x < 0 ? 0 : (x > w - 1 ? w - 1 : x));
+    y = (y < 0 ? 0 : (y > h - 1 ? h - 1 : y));
     return in_data[y * w + x];
 }
 
@@ -48,18 +48,33 @@ float bad_pixel_correct(int x, int y) {
     float hi = vmax - center;
     float limit = max(lo, hi);
     if (limit > 0.5f) limit = 0.5f;
-    return clamp(center, center - limit, center + limit);
+    float lo_clamp = center - limit;
+    float hi_clamp = center + limit;
+    // clamp(center, center - limit, center + limit)
+    if (center < lo_clamp) return lo_clamp;
+    if (center > hi_clamp) return hi_clamp;
+    return center;
 }
 
 // LSC: bilinear interpolation of 17x13x4 gain table
 float lsc_correct(float value, int x, int y) {
     int w = int(u.width);
     int h = int(u.height);
-    float fx = clamp(float(x) * 16.0f / max(float(w), 1.0f), 0.0f, 16.0f);
-    float fy = clamp(float(y) * 12.0f / max(float(h), 1.0f), 0.0f, 12.0f);
-    int x0 = clamp(int(fx), 0, 15);
+    float fx = float(x) * 16.0f / max(float(w), 1.0f);
+    float fy = float(y) * 12.0f / max(float(h), 1.0f);
+    // clamp(fx, 0.0f, 16.0f)
+    if (fx < 0.0f) fx = 0.0f;
+    if (fx > 16.0f) fx = 16.0f;
+    // clamp(fy, 0.0f, 12.0f)
+    if (fy < 0.0f) fy = 0.0f;
+    if (fy > 12.0f) fy = 12.0f;
+    int x0 = int(fx);
+    if (x0 < 0) x0 = 0;
+    if (x0 > 15) x0 = 15;
     int x1 = min(x0 + 1, 16);
-    int y0 = clamp(int(fy), 0, 12);
+    int y0 = int(fy);
+    if (y0 < 0) y0 = 0;
+    if (y0 > 11) y0 = 11;
     int y1 = min(y0 + 1, 12);
     float wx = fx - float(x0);
     float wy = fy - float(y0);
@@ -69,7 +84,9 @@ float lsc_correct(float value, int x, int y) {
     float g01 = lsc_gain[(y1 * 17 + x0) * 4 + ch];
     float g11 = lsc_gain[(y1 * 17 + x1) * 4 + ch];
     float gain = mix(mix(g00, g10, wx), mix(g01, g11, wx), wy);
-    gain = clamp(gain, 0.5f, 4.0f);
+    // clamp(gain, 0.5f, 4.0f)
+    if (gain < 0.5f) gain = 0.5f;
+    if (gain > 4.0f) gain = 4.0f;
     return value * gain;
 }
 
@@ -77,7 +94,9 @@ float lsc_correct(float value, int x, int y) {
 float bayer_wb(float value, int x, int y) {
     int ch = (x + y + int(u.bayer_pattern)) & 3;
     float gain = bayer_gains[ch];
-    gain = clamp(gain, 0.5f, 4.0f);
+    // clamp(gain, 0.5f, 4.0f)
+    if (gain < 0.5f) gain = 0.5f;
+    if (gain > 4.0f) gain = 4.0f;
     return value * gain;
 }
 

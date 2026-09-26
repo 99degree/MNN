@@ -30,7 +30,13 @@ layout(set = 0, binding = 1) readonly  buffer InBuf   { float in_data[]; };
 layout(set = 0, binding = 2) writeonly buffer OutBuf  { uint out_data[]; };
 layout(set = 0, binding = 3) readonly  buffer CcmBuf  { float ccm[]; }; // 9 floats
 
-uint quant(float v) { return uint(clamp(v * 255.0, 0.0, 255.0)); }
+// Quantize float [0,1] to uint8 [0,255] with saturation (GLSL 450: conditional)
+uint quant(float v) {
+    v = v * 255.0;
+    if (v < 0.0) v = 0.0;
+    else if (v > 255.0) v = 255.0;
+    return uint(v);
+}
 
 void main() {
     // One invocation per 4-pixel run: wordX in [0, qw/4), y in [0, qh).
