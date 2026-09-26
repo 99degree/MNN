@@ -6,7 +6,7 @@
 // 
 // Uniform parameters (binding 0):
 //   width, height: frame dimensions
-//   cx, cy: center coordinates (normalized or pixel)
+//   cx, cy: center coordinates (pixel)
 //   k_r, k_b: radial polynomial coefficients for R and B channels
 //   strength: CA correction strength [0,1]
 
@@ -33,10 +33,10 @@ float sampleIn(float x, float y, int w, int h, int c, int channels) {
     int yi = int(floor(y));
     float fx = x - float(xi);
     float fy = y - float(yi);
-    xi = clamp(xi, 0, w - 1);
-    yi = clamp(yi, 0, h - 1);
-    int xi1 = min(xi + 1, w - 1);
-    int yi1 = min(yi + 1, h - 1);
+    xi = (xi < 0 ? 0 : (xi > w - 1 ? w - 1 : xi));
+    yi = (yi < 0 ? 0 : (yi > h - 1 ? h - 1 : yi));
+    int xi1 = (xi + 1 > w - 1 ? w - 1 : xi + 1);
+    int yi1 = (yi + 1 > h - 1 ? h - 1 : yi + 1);
     int base = (yi * w + xi) * channels + c;
     int base_x = (yi * w + xi1) * channels + c;
     int base_y = (yi1 * w + xi) * channels + c;
@@ -56,16 +56,16 @@ void main() {
     if (int(x) >= w || int(y) >= h) return;
     
     // Normalized coordinates [-1, 1] relative to center
-    // Note: u.cx and u.cx are in pixel coordinates? Assuming they are pixel coordinates.
-    // If they are normalized [0,1], we need to adjust. Based on original, they are pixel.
     float fx = (float(x) - u.cx) / (u.cx > 0.0 ? u.cx : 1.0);
     float fy = (float(y) - u.cy) / (u.cy > 0.0 ? u.cy : 1.0);
     float r2 = fx * fx + fy * fy;
     float r = sqrt(r2);
     
     // Lateral CA displacement: dr = k * r^2 * sign(x) * strength
-    float dr = u.k_r * r2 * sign(fx) * u.strength;
-    float db = u.k_b * r2 * sign(fx) * u.strength;
+    // sign(fx) = (fx > 0.0 ? 1.0 : (fx < 0.0 ? -1.0 : 0.0))
+    float sgn = (fx > 0.0 ? 1.0 : (fx < 0.0 ? -1.0 : 0.0));
+    float dr = u.k_r * r2 * sgn * u.strength;
+    float db = u.k_b * r2 * sgn * u.strength;
     
     // Source coordinates for R and B channels (G is reference at center)
     float src_x_r = float(x) + dr;
@@ -73,9 +73,9 @@ void main() {
     float src_y = float(y);
     
     // Clamp to valid range
-    src_x_r = clamp(src_x_r, 0.0, float(w - 1));
-    src_x_b = clamp(src_x_b, 0.0, float(w - 1));
-    src_y = clamp(src_y, 0.0, float(h - 1));
+    src_x_r = (src_x_r < 0.0 ? 0.0 : (src_x_r > float(w - 1) ? float(w - 1) : src_x_r));
+    src_x_b = (src_x_b < 0.0 ? 0.0 : (src_x_b > float(w - 1) ? float(w - 1) : src_x_b));
+    src_y = (src_y < 0.0 ? 0.0 : (src_y > float(h - 1) ? float(h - 1) : src_y));
     
     // Sample R channel (channel 0), G channel (channel 1), B channel (channel 2)
     // Input is [1, 3, H, W] NCHW layout: channels=3, stride = w*h

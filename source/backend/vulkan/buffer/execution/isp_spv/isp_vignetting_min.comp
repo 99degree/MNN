@@ -5,24 +5,26 @@
 // NO large tensor inputs - gain computed from radial falloff model.
 // 
 // Uniform parameters (binding 0):
+//   width, height: frame dimensions
+//   cx, cy: center coordinates (pixel)
 //   k0, k1, k2: radial polynomial coefficients
 //   strength: vignetting strength [0,1]
-//   wh: frame width/height (hot-swapped per-frame)
+//   (matches non-minimal layout for compatibility)
 
 #extension GL_EXT_scalar_block_layout : require
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-layout(set = 0, binding = 0, std430) buffer VignParams {
-    float k0;          // radial constant term
-    float k1;          // radial r^2 coefficient
-    float k2;          // radial r^4 coefficient
-    float strength;    // vignetting strength [0,1]
-    vec2 wh;           // (width, height) patched per-frame by elementwise hotSwap
-    float pad0;
-    float pad1;
-    float pad2;
-} p;
+layout(set = 0, binding = 0, std430) buffer Uniforms {
+    float width;
+    float height;
+    float cx;
+    float cy;
+    float k0;
+    float k1;
+    float k2;
+    float strength;
+} u;
 
 layout(set = 0, binding = 1) readonly buffer InBuf { float in_data[]; };
 layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
@@ -30,23 +32,16 @@ layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
 void main() {
     uint x = gl_GlobalInvocationID.x;
     uint y = gl_GlobalInvocationID.y;
-    uint w = uint(p.wh.x);
-    uint h = uint(p.wh.y);
-    if (x >= w || y >= h) return;
-
-    // Normalized coordinates centered at (0,0), range [-1, 1]
-    float fx = (float(x) / float(w > 1u ? w - 1u : 1u)) * 2.0 - 1.0;
-    float fy = (float(y) / float(h > 1u ? h - 1u : 1u)) * 2.0 - 1.0;
-    float r2 = fx * fx + fy * fy;
-    float r4 = r2 * r2;
-    
-    // Radial polynomial: f(r) = k0 + k1*r^2 + k2*r^4
-    float vignette = p.k0 + p.k1 * r2 + p.k2 * r4;
-    
-    // Apply strength and clamp to prevent black holes
-    vignette = 1.0 + (vignette - 1.0) * p.strength;
-    vignette = vignette = (vignette < 0.0 ? 0.0 : vignette); vignette = (vignette > 2.0 ? 2.0 : vignette);;
-    
-    uint idx = y * w + x;
-    out_data[idx] = in_data[idx] * vignette;
+    int w = int(u.width);
+    int h = int(u.height);
+    if (int(x) >= w || int(y) >= h) return;
+    float dx = float(x) - u.cx;
+    float dy = float(y) - u.cy;
+    float r2 = dx * dx + dy * dy;
+    float falloff = 1.0 / (u.k0 + u.k1 * sqrt(r2) + u.k2 * r2);
+    falloff = 1.0 + (falloff - 1.0) * u.strength;
+    int idx = (int(y) * w + int(x)) * 3;
+    out_data[idx + 0] = in_data[idx + 0] * falloff;
+    out_data[idx + 1] = in_data[idx + 1] * falloff;
+    out_data[idx + 2] = in_data[idx + 2] * falloff;
 }
