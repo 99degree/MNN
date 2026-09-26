@@ -12,8 +12,8 @@ for shader in ['isp_display_uint32_rgba', 'isp_display_uint32_bgra', 'isp_displa
         f.write(('const int g_' + shader + '_spv_len = ' + str(len(data)) + ';\n').encode())
     print(f'Generated {shader}_spv.h, size: {len(data)}')
 
-# Generate SPIR-V header files for minimal opset shaders
-for shader in ['isp_lsc_min', 'isp_vignetting_min', 'isp_chromatic_aberration_min', 'isp_raw_blc_min']:
+# Generate SPIR-V header files for display shaders
+for shader in ['isp_lsc', 'isp_vignetting', 'isp_chromatic_aberration', 'isp_raw_blc']:
     spv_file = shader + '.spv'
     h_file = shader + '_spv.h'
     if not os.path.exists(spv_file):
