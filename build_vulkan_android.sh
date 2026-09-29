@@ -1,65 +1,65 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -e
 
-# Android Vulkan build script for MNN (using Termux clang)
-# Usage: ./build_vulkan_android.sh [BUILD_DIR] [ANDROID_ABI] [ANDROID_API_LEVEL] [BUILD_CONVERTER]
+# Android Vulkan build script for MNN (using Android NDK)
+# Usage: ./build_vulkan_android.sh [BUILD_DIR] [ANDROID_ABI] [ANDROID_API_LEVEL] [BUILD_CONVERTER] [ANDROID_NDK]
 
 BUILD_DIR="${1:-build_isp}"
 ANDROID_ABI="${2:-arm64-v8a}"
 ANDROID_API_LEVEL="${3:-android-21}"
 BUILD_CONVERTER="${4:-ON}"
+ANDROID_NDK="${5:-$ANDROID_NDK}"
+
+if [ -z "$ANDROID_NDK" ]; then
+    echo "Error: ANDROID_NDK environment variable not set and not provided as argument"
+    echo "Usage: $0 [BUILD_DIR] [ANDROID_ABI] [ANDROID_API_LEVEL] [BUILD_CONVERTER] [ANDROID_NDK]"
+    echo "Example: $0 build_isp arm64-v8a android-21 ON ~/android-sdk/ndk/29.0.14206865"
+    exit 1
+fi
+
+# Expand tilde in NDK path
+ANDROID_NDK="${ANDROID_NDK/#\~/$HOME}"
+
+if [ ! -d "$ANDROID_NDK" ]; then
+    echo "Error: NDK path does not exist: $ANDROID_NDK"
+    exit 1
+fi
+
+TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake"
+if [ ! -f "$TOOLCHAIN_FILE" ]; then
+    echo "Error: Android toolchain file not found: $TOOLCHAIN_FILE"
+    exit 1
+fi
 
 cd "$(dirname "$0")"
 
-echo "Building MNN with Vulkan for Android (using Termux clang)"
+echo "Building MNN with Vulkan for Android"
 echo "  Build Dir: $BUILD_DIR"
 echo "  ABI: $ANDROID_ABI"
 echo "  API Level: $ANDROID_API_LEVEL"
+echo "  NDK: $ANDROID_NDK"
 
 # Set STL based on ABI
 if [ "$ANDROID_ABI" = "armeabi-v7a" ]; then
     ANDROID_STL="c++_static"
     ARM82="OFF"
-    TARGET_TRIPLE="armv7a-linux-androideabi${ANDROID_API_LEVEL#android-}"
 else
     ANDROID_STL="c++_static"
     ARM82="ON"
-    TARGET_TRIPLE="aarch64-linux-android${ANDROID_API_LEVEL#android-}"
 fi
 
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
-# Unset Android NDK environment variables that interfere with CMake
-unset ANDROID_NDK
-unset ANDROID_NDK_HOME
-unset ANDROID_HOME
-unset ANDROID_SDK
-
-# Use Termux clang with Android target - set env vars before cmake
-export CC="/data/data/com.termux/files/usr/bin/clang"
-export CXX="/data/data/com.termux/files/usr/bin/clang++"
-export AS="/data/data/com.termux/files/usr/bin/clang"
-export AR="/data/data/com.termux/files/usr/bin/llvm-ar"
-export RANLIB="/data/data/com.termux/files/usr/bin/llvm-ranlib"
-export STRIP="/data/data/com.termux/files/usr/bin/llvm-strip"
-
-# Set target flags via CFLAGS/CXXFLAGS
-export CFLAGS="--target=$TARGET_TRIPLE -fPIC"
-export CXXFLAGS="--target=$TARGET_TRIPLE -fPIC"
+# Use Android NDK toolchain with legacy toolchain file (newer toolchain requires newer CMake)
+export ANDROID_USE_LEGACY_TOOLCHAIN_FILE=ON
 
 cmake .. \
+    -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
     -DCMAKE_BUILD_TYPE=Release \
-    -DCMAKE_C_COMPILER="$CC" \
-    -DCMAKE_CXX_COMPILER="$CXX" \
-    -DCMAKE_ASM_COMPILER="$AS" \
-    -DCMAKE_AR="$AR" \
-    -DCMAKE_RANLIB="$RANLIB" \
-    -DCMAKE_STRIP="$STRIP" \
-    -DCMAKE_SYSTEM_NAME=Android \
-    -DCMAKE_SYSTEM_VERSION=21 \
-    -DCMAKE_ANDROID_ARCH_ABI="$ANDROID_ABI" \
+    -DANDROID_ABI="$ANDROID_ABI" \
     -DANDROID_STL="$ANDROID_STL" \
+    -DANDROID_NATIVE_API_LEVEL="$ANDROID_API_LEVEL" \
     -DANDROID_TOOLCHAIN=clang \
     -DMNN_VULKAN=ON \
     -DMNN_VULKAN_IMAGE=OFF \
