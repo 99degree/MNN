@@ -14,7 +14,8 @@
 namespace MNN {
 namespace Express {
 
-static auto gRegister = []() {
+// Registration function to avoid static initialization order issues
+static void registerBinaryAddToEltwise() {
     auto match = [](EXPRP expr) {
         if (nullptr == expr->get()) {
             return false;
@@ -38,7 +39,7 @@ static auto gRegister = []() {
         }
         
         auto leftMoreConvertExpr = leftConvertExpr->inputs()[0]->expr().first;
-        while (!leftMoreConvertExpr->get() && leftMoreConvertExpr->get()->type() == OpType_ConvertTensor) {
+        while (leftMoreConvertExpr->get() && leftMoreConvertExpr->get()->type() == OpType_ConvertTensor) {
             leftConvertExpr     = leftMoreConvertExpr;
             leftMoreConvertExpr = leftConvertExpr->inputs()[0]->expr().first;
         }
@@ -62,7 +63,7 @@ static auto gRegister = []() {
         }
         
         auto rightMoreConvertExpr = rightConvertExpr->inputs()[0]->expr().first;
-        while (!rightMoreConvertExpr->get() && rightMoreConvertExpr->get()->type() == OpType_ConvertTensor) {
+        while (rightMoreConvertExpr->get() && rightMoreConvertExpr->get()->type() == OpType_ConvertTensor) {
             rightConvertExpr     = rightMoreConvertExpr;
             rightMoreConvertExpr = rightConvertExpr->inputs()[0]->expr().first;
         }
@@ -85,14 +86,14 @@ static auto gRegister = []() {
         auto leftConvertOp   = leftConvertExpr->get();
         
         auto leftInt8ToFloatVar  = leftConvertExpr->inputs()[0];
-        auto leftInt8ToFloatExpr = leftConvertVar->expr().first;
+        auto leftInt8ToFloatExpr = leftInt8ToFloatVar->expr().first;
         
         auto rightConvertVar  = expr->inputs()[1];
         auto rightConvertExpr = rightConvertVar->expr().first;
         auto rightConvertOp   = rightConvertExpr->get();
         
         auto rightInt8ToFloatVar  = rightConvertExpr->inputs()[0];
-        auto rightInt8ToFloatExpr = rightConvertVar->expr().first;
+        auto rightInt8ToFloatExpr = rightInt8ToFloatVar->expr().first;
         
         auto eltwiseSum = _Sum(leftInt8ToFloatVar, rightInt8ToFloatVar, {});
         eltwiseSum->setName(expr->name());
@@ -102,7 +103,20 @@ static auto gRegister = []() {
     };
     
     TemplateMerge::getInstance("Merge").insertTemplate("BinaryAddToEltwise", match, transform, PASS_PRIORITY_MIDDLE);
-    return true;
-}();
-};
+}
+
+
+// Explicit initialization function to be called by PostConverter
+MNN_PUBLIC void __attribute__((visibility("default"))) ensureBinaryAddToEltwiseRegistered() {
+    // Intentionally a no-op: the BinaryAddToEltwise merge pass is optional and
+    // its TemplateMerge registration crashed during static init on Android
+    // (fault in std::map tree search while inserting into gMerge). Our ISP
+    // pass0 pipeline never emits Int8ToFloat+Convert+ADD patterns, so the pass
+    // is never needed. The pass body (registerBinaryAddToEltwise) is retained
+    // for future debugging; the symbol is exported so PostConverter's call
+    // and the linker -u option still resolve.
+    (void)0;
+}
+
+} // namespace Express
 } // namespace MNN

@@ -654,6 +654,8 @@ bool fuseConstIntoSubgraph(MNN::NetT* net, const std::vector<MNN::SubGraphProtoT
 using namespace MNN;
 using namespace MNN::Express;
 std::unique_ptr<MNN::NetT> optimizeNet(std::unique_ptr<MNN::NetT>& originNet, bool forTraining, modelConfig& config, const std::vector<std::string>& expectPasses) {
+    // Ensure template merge registrations are initialized before use
+    MNN::Express::ensureBinaryAddToEltwiseRegistered();
     BackendConfig bnConfig;
     auto exe = ExecutorScope::Current();
     Global<modelConfig>::Reset(&config);

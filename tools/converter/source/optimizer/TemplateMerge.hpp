@@ -45,9 +45,11 @@ public:
                         PassPriority priority = PASS_PRIORITY_HIGH);
     void insertTemplateV2(std::string key, std::function<bool(EXPRP)> transform, PassPriority priority = PASS_PRIORITY_HIGH);
 
-private:
+public:
     TemplateMerge() {
     }
+
+private:
     std::vector<std::vector<std::string>> mPriorities;
     std::map<std::string, std::function<bool(EXPRP)>> mTemplates;
 };

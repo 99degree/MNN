@@ -39,7 +39,7 @@ ConstantFolding::ConstantFolding() {
         return true /*matched*/;
     };
 
-    auto fold = [this](EXPRP expr) -> bool {
+    auto fold = [](EXPRP expr) -> bool {
         std::vector<VARP> outputs = helpers::OutputVars(expr);
         if (outputs.size() == 1) {
             VARP output;
@@ -80,7 +80,15 @@ ConstantFolding::ConstantFolding() {
     TemplateMerge::getInstance("Merge").insertTemplate("ConstantFolding", match, fold);
 }
 
-static ConstantFolding g_constant_folding;
+// Use function-local static to avoid static initialization order issues
+static void initConstantFolding() {
+    static ConstantFolding g_constant_folding;
+}
+
+// Force initialization via constructor attribute
+__attribute__((constructor)) static void init_constant_folding_on_load() {
+    initConstantFolding();
+}
 
 } // namespace Express
 } // namespace MNN

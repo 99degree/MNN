@@ -21,8 +21,15 @@ IF(MNN_SEP_BUILD)
     if (MNN_BUILD_FOR_ANDROID_COMMAND)
         set(CMAKE_LIBRARY_OUTPUT_DIRECTORY "../")
     endif()
-    add_library(MNN_Express SHARED ${MNN_EXPR_SRCS})
+    add_library(MNN_Express SHARED ${MNN_EXPR_SRCS} ${CMAKE_CURRENT_LIST_DIR}/BinaryAddToEltwise.cpp ${CMAKE_CURRENT_LIST_DIR}/TemplateMerge.cpp)
     target_link_libraries(MNN_Express MNN ${EXTRA_LIBS})
+    target_link_options(MNN_Express PRIVATE -Wl,--export-dynamic -Wl,-u,MNN::Express::ensureBinaryAddToEltwiseRegistered)
+    set_target_properties(MNN_Express PROPERTIES VISIBILITY_INLINES_HIDDEN 1 CXX_VISIBILITY_PRESET "default")
+    target_include_directories(MNN_Express PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../tools/converter/source)
+    target_include_directories(MNN_Express PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../tools/converter/source/optimizer)
+    target_include_directories(MNN_Express PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../tools/converter/source/optimizer/merge)
+    target_include_directories(MNN_Express PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../tools/converter)
+    target_include_directories(MNN_Express PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../tools/converter/include)
     install(TARGETS MNN_Express
         LIBRARY DESTINATION lib
         ARCHIVE DESTINATION lib
