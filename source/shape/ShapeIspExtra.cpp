@@ -116,6 +116,56 @@ public:
             TensorUtils::setLinearLayout(output);
             return true;
         }
+        if (type == "isp.demosaic_g2") {
+            // Same as debayer_g2 for shape inference
+            auto input  = inputs[0];
+            auto output = outputs[0];
+            int dims = input->buffer().dimensions;
+            if (dims != 4) return false;
+            output->buffer().dimensions = 4;
+            output->buffer().dim[0].extent = input->buffer().dim[0].extent;
+            output->buffer().dim[1].extent = 3;
+            output->buffer().dim[2].extent = input->buffer().dim[2].extent;
+            output->buffer().dim[3].extent = input->buffer().dim[3].extent;
+            TensorUtils::getDescribe(output)->dimensionFormat = MNN_DATA_FORMAT_NCHW;
+            output->buffer().type = inputs[0]->buffer().type;
+            TensorUtils::setLinearLayout(output);
+            return true;
+        }
+        if (type == "isp.lsc") {
+            // isp.lsc: lens shading correction, same spatial dims, same channels
+            // as input (multiplies per-pixel gain)
+            auto input  = inputs[0];
+            auto output = outputs[0];
+            int dims = input->buffer().dimensions;
+            if (dims < 4) return false;
+            output->buffer().dimensions = 4;
+            output->buffer().dim[0].extent = input->buffer().dim[0].extent;
+            output->buffer().dim[1].extent = input->buffer().dim[1].extent;
+            output->buffer().dim[2].extent = input->buffer().dim[2].extent;
+            output->buffer().dim[3].extent = input->buffer().dim[3].extent;
+            TensorUtils::getDescribe(output)->dimensionFormat = MNN_DATA_FORMAT_NCHW;
+            output->buffer().type = inputs[0]->buffer().type;
+            TensorUtils::setLinearLayout(output);
+            return true;
+        }
+        if (type == "isp.lsc_min" || type == "isp.vignetting_min" || 
+            type == "isp.chromatic_aberration_min" || type == "isp.raw_blc_min") {
+            // Min ops: procedural grid generation, output spatial dims match input
+            auto input  = inputs[0];
+            auto output = outputs[0];
+            int dims = input->buffer().dimensions;
+            if (dims < 4) return false;
+            output->buffer().dimensions = 4;
+            output->buffer().dim[0].extent = input->buffer().dim[0].extent;
+            output->buffer().dim[1].extent = input->buffer().dim[1].extent;
+            output->buffer().dim[2].extent = input->buffer().dim[2].extent;
+            output->buffer().dim[3].extent = input->buffer().dim[3].extent;
+            TensorUtils::getDescribe(output)->dimensionFormat = MNN_DATA_FORMAT_NCHW;
+            output->buffer().type = inputs[0]->buffer().type;
+            TensorUtils::setLinearLayout(output);
+            return true;
+        }
         if (type == "isp.demosaic_g2_ccm") {
             // Fused [debayer_g2 + CCM + x255 saturate + Cast u8].
             // Input: 4-plane quad [N,4,h,w] (+ optional runtime CCM

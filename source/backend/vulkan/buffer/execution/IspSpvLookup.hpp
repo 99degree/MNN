@@ -51,6 +51,8 @@ extern const unsigned char g_isp_bayer_wb_spv[];
 extern const int g_isp_bayer_wb_spv_len;
 extern const unsigned char g_isp_demosaic_edge_spv[];
 extern const int g_isp_demosaic_edge_spv_len;
+extern const unsigned char g_isp_demosaic_edge_ccm_spv[];
+extern const int g_isp_demosaic_edge_ccm_spv_len;
 extern const unsigned char g_isp_ccm_spv[];
 extern const int g_isp_ccm_spv_len;
 extern const unsigned char g_isp_downscale_spv[];
@@ -175,6 +177,7 @@ static const std::unordered_map<std::string, SpvData> g_ispSpvMap = {
     {"isp.demosaic_g2",  {g_isp_demosaic_g2_spv,   g_isp_demosaic_g2_spv_len}},
     {"isp.bayer_wb",    {g_isp_bayer_wb_spv,     g_isp_bayer_wb_spv_len}},
     {"isp.demosaic_edge",{g_isp_demosaic_edge_spv, g_isp_demosaic_edge_spv_len}},
+    {"isp.demosaic_edge_ccm",{g_isp_demosaic_edge_ccm_spv, g_isp_demosaic_edge_ccm_spv_len}},
     {"isp.ccm",         {g_isp_ccm_spv,          g_isp_ccm_spv_len}},
     {"isp.downscale",   {g_isp_downscale_spv,    g_isp_downscale_spv_len}},
     {"isp.vignetting",  {g_isp_vignetting_spv,   g_isp_vignetting_spv_len}},

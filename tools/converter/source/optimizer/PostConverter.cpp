@@ -152,7 +152,9 @@ void RunNetPass(const std::vector<std::string>& passes, std::unique_ptr<MNN::Net
         }
         auto originSize = originNet->oplists.size();
         auto originDesSize = originNet->extraTensorDescribe.size();
+        MNN_PRINT("[DBG] RunNetPass: before %s\n", pass.c_str());
         bool valid = convert->onExecute(originNet);
+        MNN_PRINT("[DBG] RunNetPass: after %s (valid=%d)\n", pass.c_str(), (int)valid);
         if (dumpPass) {
             auto newSize = originNet->oplists.size();
             auto newDesSize = originNet->extraTensorDescribe.size();
@@ -175,8 +177,11 @@ std::unique_ptr<MNN::NetT> RunExtraPass(std::unique_ptr<MNN::NetT>& originNet,
     bool dumpPass = config != nullptr && config->dumpPass;
     auto originOpCount = originNet->oplists.size();
 
+    MNN_PRINT("[DBG] RunExtraPass entry\n");
     auto program = MNN::Express::Program::create(originNet.get(), true, true);
+    MNN_PRINT("[DBG] Program::create done\n");
     program->input(inputs, true);
+    MNN_PRINT("[DBG] program->input done\n");
 
     std::string pass = "TFExtra";
     switch (originNet->sourceType) {
@@ -201,7 +206,9 @@ std::unique_ptr<MNN::NetT> RunExtraPass(std::unique_ptr<MNN::NetT>& originNet,
     if (dumpPass) {
         MNN_PRINT("[DumpPass] Running ExtraPass: %s\n", pass.c_str());
     }
+    MNN_PRINT("[DBG] before getInstance(%s)\n", pass.c_str());
     auto& merge = MNN::Express::TemplateMerge::getInstance(pass);
+    MNN_PRINT("[DBG] getInstance done\n");
     merge.onExecute(program->outputs());
     originNet->oplists.clear();
     originNet->tensorName.clear();
@@ -231,13 +238,18 @@ std::unique_ptr<MNN::NetT> RunMergePass(std::unique_ptr<MNN::NetT>& originNet,
         MNN_PRINT("[DumpPass] Running MergePass (priority=%s)\n", priorityName);
     }
 
+    MNN_PRINT("[DBG] RunMergePass entry\n");
     auto program = MNN::Express::Program::create(originNet.get(), true, true);
+    MNN_PRINT("[DBG] MergePass Program::create done\n");
     auto boundary = program->input(inputs, true);
+    MNN_PRINT("[DBG] MergePass program->input done\n");
 
     std::string pass = "Merge";
     auto& merge      = MNN::Express::TemplateMerge::getInstance(pass);
     std::map<std::string, VARP> updateVars;
+    MNN_PRINT("[DBG] before merge.onExecute\n");
     merge.onExecute(program->outputs(), priority, updateVars, boundary);
+    MNN_PRINT("[DBG] merge.onExecute done\n");
 
     auto Update = [&](std::shared_ptr<Program> program, const std::vector<std::string>& tensorName) {
         program->updateVars(updateVars, tensorName);
@@ -264,6 +276,7 @@ std::unique_ptr<MNN::NetT> RunMergePass(std::unique_ptr<MNN::NetT>& originNet,
 
 std::unique_ptr<MNN::NetT> optimizeNetImpl(std::unique_ptr<MNN::NetT>& originNet,
                                            const std::unordered_map<std::string, VARP>& inputs) {
+    MNN_PRINT("[DBG] optimizeNetImpl entry, ops=%zu\n", originNet->oplists.size());
     auto current = ExecutorScope::Current();
     current->lazyEval = true;
     current->setLazyComputeMode(Executor::LAZY_FULL);
@@ -654,8 +667,10 @@ bool fuseConstIntoSubgraph(MNN::NetT* net, const std::vector<MNN::SubGraphProtoT
 using namespace MNN;
 using namespace MNN::Express;
 std::unique_ptr<MNN::NetT> optimizeNet(std::unique_ptr<MNN::NetT>& originNet, bool forTraining, modelConfig& config, const std::vector<std::string>& expectPasses) {
+    MNN_PRINT("[DBG] optimizeNet entry\n");
     // Ensure template merge registrations are initialized before use
     MNN::Express::ensureBinaryAddToEltwiseRegistered();
+    MNN_PRINT("[DBG] ensureBinary done\n");
     BackendConfig bnConfig;
     auto exe = ExecutorScope::Current();
     Global<modelConfig>::Reset(&config);
