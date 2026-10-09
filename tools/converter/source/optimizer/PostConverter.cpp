@@ -346,14 +346,6 @@ std::unique_ptr<MNN::NetT> optimizeNetImpl(std::unique_ptr<MNN::NetT>& originNet
     newNet = std::move(RunMergePass(newNet, inputs, PASS_PRIORITY_HIGH));
 
     std::vector<std::string> afterProgramConvert = {
-        // ── ISP fusion: convert standard ISP ops (Conv/BinaryOp/Pool/...)
-        // into fused VulkanFuse Extra ops carrying pre-compiled SPIR-V.
-        // Requires MNN_ISP_EMBED_SPIRV=ON for actual SPIR-V bytecode; without it,
-        // the pass is a no-op (logs a warning per missing shader).
-        // Runs early so Pass1 can match canonical Conv+Sub+Clip/etc. shapes
-        // before subsequent passes reshape the graph.
-        "IspChainFusion",
-
         // Turn BatchNormal to Scale When inference, if `forTraining` flag is set, BN will be reserved
         "TransformBatchNormal",
 
@@ -405,11 +397,11 @@ std::unique_ptr<MNN::NetT> optimizeNetImpl(std::unique_ptr<MNN::NetT>& originNet
         "RemoveExtraConvertTensor",
 
         // Normalize defaultDimentionFormat to NCHW for all non-Input ops.
-        // The Op schema defaults to NHWC; with onnxInputNHWC=true the whole
-        // graph inherits it and primitive consumers (Conv/Cast/Gather) of
-        // isp.* outputs shape-infer nonsense (e.g. C=128 for a [1,3,H,W]
-        // tensor). Must run AFTER AddTensorFormatConverter/RemoveExtra...
-        // so the final op set is tagged once, consistently.
+        // The Op schema defaults to NHWC, so the importer's NCHW-tagged
+        // inputs would flow into NHWC-defaulted primitive consumers
+        // (Conv/Cast/Gather) that shape-infer nonsense (e.g. C=128 for a
+        // [1,3,H,W] tensor). Must run AFTER AddTensorFormatConverter/
+        // RemoveExtra... so the final op set is tagged once, consistently.
         "NchwTagNormalize",
 
         // Turn group convolution to Slice - Convolution - Concat

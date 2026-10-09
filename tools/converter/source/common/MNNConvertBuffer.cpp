@@ -7,7 +7,7 @@
 //
 //   onnx bytes ──ParseFromArray──▶ onnx::ModelProto
 //        ──onnx2MNNNet──▶ MNN::NetT
-//        ──optimizeNet (optimizeLevel=2, incl. IspChainFusion)──▶ NetT'
+//        ──optimizeNet (optimizeLevel=2)──▶ NetT'
 //        ──postTreat + MNN::Net::Pack──▶ MNN flatbuffer bytes
 //
 // The caller frees the returned buffer with free().
@@ -177,11 +177,9 @@ MNN_PUBLIC int mnn_convert_onnx_to_mnn_buffer(const void* onnx_data, size_t onnx
     modelConfig config;
     config.model = modelConfig::ONNX;
     config.bizCode = "MNN";
-    config.optimizeLevel = 2;  // full pipeline incl. IspChainFusion
+    config.optimizeLevel = 2;
     config.weightQuantBits = 0;
     config.saveHalfFloat = false;
-    // The generic ONNX buffer API follows ONNX's NCHW convention.
-    config.onnxInputNHWC = false;
     config.preserveInputType = true;
     config.saveExternalData = false;
     // PostTreatContext for postTreat() (same as Cli::convertModel).
