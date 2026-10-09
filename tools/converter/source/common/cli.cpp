@@ -711,6 +711,12 @@ bool Cli::convertModel(modelConfig& modelPath) {
         _reorderInputs(inputNames, netT.get());
         error = writeFb(netT, modelPath, std::move(metaOp));
     }
+    if (error == 0) {
+        std::cout << "Converted Success!" << std::endl;
+    } else {
+        std::cout << "Converted Failed!" << std::endl;
+        return false;
+    }
     if (modelPath.testDir.size() > 0) {
         std::cout << "Check convert result by " << modelPath.testDir << ", thredhold is " << modelPath.testThredhold << std::endl;
         Cli::testconvert(modelPath.MNNModel, modelPath.testDir, modelPath.testThredhold, modelPath.testConfig);
