@@ -132,6 +132,40 @@ public:
             TensorUtils::setLinearLayout(output);
             return true;
         }
+        if (type == "isp.demosaic_edge") {
+            // isp.demosaic_edge: 4-channel CFA quad [N,4,H,W] -> 3-channel RGB [N,3,H,W]
+            // Spatial dimensions preserved, channel count 4->3
+            auto input  = inputs[0];
+            auto output = outputs[0];
+            int dims = input->buffer().dimensions;
+            if (dims != 4) return false;
+            output->buffer().dimensions = 4;
+            output->buffer().dim[0].extent = input->buffer().dim[0].extent;
+            output->buffer().dim[1].extent = 3;
+            output->buffer().dim[2].extent = input->buffer().dim[2].extent;
+            output->buffer().dim[3].extent = input->buffer().dim[3].extent;
+            TensorUtils::getDescribe(output)->dimensionFormat = MNN_DATA_FORMAT_NCHW;
+            output->buffer().type = inputs[0]->buffer().type;
+            TensorUtils::setLinearLayout(output);
+            return true;
+        }
+        if (type == "isp.demosaic_ccm") {
+            // isp.demosaic_ccm: fused demosaic + CCM, same shape as demosaic_edge
+            // 4-channel CFA quad [N,4,H,W] -> 3-channel RGB [N,3,H,W]
+            auto input  = inputs[0];
+            auto output = outputs[0];
+            int dims = input->buffer().dimensions;
+            if (dims != 4) return false;
+            output->buffer().dimensions = 4;
+            output->buffer().dim[0].extent = input->buffer().dim[0].extent;
+            output->buffer().dim[1].extent = 3;
+            output->buffer().dim[2].extent = input->buffer().dim[2].extent;
+            output->buffer().dim[3].extent = input->buffer().dim[3].extent;
+            TensorUtils::getDescribe(output)->dimensionFormat = MNN_DATA_FORMAT_NCHW;
+            output->buffer().type = inputs[0]->buffer().type;
+            TensorUtils::setLinearLayout(output);
+            return true;
+        }
         if (type == "isp.lsc") {
             // isp.lsc: lens shading correction, same spatial dims, same channels
             // as input (multiplies per-pixel gain)
@@ -148,6 +182,24 @@ public:
             output->buffer().type = inputs[0]->buffer().type;
             TensorUtils::setLinearLayout(output);
             return true;
+        }
+        if (type == "isp.algo_gamma") {
+            // isp.algo_gamma: gamma computation from analog_gain + scene_change
+            // Inputs: scalar analog_gain [1], scalar scene_change [1]
+            // Output: scalar gamma [1]
+            if (inputs.size() >= 2) {
+                auto input  = inputs[0];  // analog_gain
+                auto output = outputs[0];
+                int dims = input->buffer().dimensions;
+                if (dims != 1 || input->buffer().dim[0].extent != 1) return false;
+                output->buffer().dimensions = 1;
+                output->buffer().dim[0].extent = 1;
+                TensorUtils::getDescribe(output)->dimensionFormat = MNN_DATA_FORMAT_NCHW;
+                output->buffer().type = input->buffer().type;
+                TensorUtils::setLinearLayout(output);
+                return true;
+            }
+            return false;
         }
         if (type == "isp.lsc_min" || type == "isp.vignetting_min" || 
             type == "isp.chromatic_aberration_min" || type == "isp.raw_blc_min") {

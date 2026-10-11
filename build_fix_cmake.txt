@@ -1,0 +1,16 @@
+# To fix the stripped static initializer in libMNN_Vulkan.so, we need to either:
+# 1. Disable -Wl,--gc-sections for MNN_Vulkan target
+# 2. Or add __attribute__((used)) to the gResistor static initializer
+# 3. Or link without -fvisibility=hidden for this target
+
+# Since we can't easily modify the built library, let's rebuild MNN_Vulkan
+# with the fix.
+
+# In MNN/source/backend/vulkan/CMakeLists.txt, add:
+# if (MNN_SEP_BUILD)
+#     target_link_options(MNN_Vulkan PRIVATE -Wl,-u,_ZGVZN4MNN22VulkanRuntimeCreatorC1EvE8gResistor)
+#     # OR: set_target_properties(MNN_Vulkan PROPERTIES LINK_FLAGS "-Wl,--no-gc-sections")
+# endif()
+
+# Better: Add __attribute__((used)) to gResistor in VulkanRuntime.cpp
+# static bool gResistor __attribute__((used)) = []() { ... }();

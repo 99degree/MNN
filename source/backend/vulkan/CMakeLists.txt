@@ -49,6 +49,12 @@ IF(MNN_SEP_BUILD)
         ${MNN_Vulkan_SRC}
         )
     target_link_libraries(MNN_Vulkan MNN)
+    # Prevent --gc-sections from stripping the VulkanRuntimeCreator static initializer (gResistor)
+    # Also ensure the .init_array from VulkanRuntime.cpp.o is included
+    # Override the global -s flag to preserve .init_array entries
+    target_link_options(MNN_Vulkan PRIVATE -Wl,--no-gc-sections -Wl,-u,_ZN3MNNL9gResistorE -Wl,-u,_ZN3MNNL36ensure_vulkan_runtime_registered_ptrE)
+    # Override link flags to remove -s
+    set_target_properties(MNN_Vulkan PROPERTIES LINK_FLAGS "")
     if (MNN_USE_SYSTEM_LIB)
         target_link_libraries(MNN_Vulkan ${Vulkan_LIBRARY})
     else()

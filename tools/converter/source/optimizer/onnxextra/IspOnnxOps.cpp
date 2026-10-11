@@ -237,12 +237,12 @@ public:
         return newVar->expr().first;
     }
 };
-// ── isp.ai::AlgoGamma → isp.algogamma Extra op ──
+// ── isp.ai::AlgoGamma → isp.algo_gamma Extra op ──
 class IspAlgoGamma : public OnnxExtraManager::Transform {
 public:
     virtual EXPRP onExecute(EXPRP expr) const override {
         auto op = expr->get();
-        auto newVar = createVulkanFuseOp(expr, op, "algogamma");
+        auto newVar = createVulkanFuseOp(expr, op, "algo_gamma");
         return newVar->expr().first;
     }
 };
@@ -680,14 +680,22 @@ static bool gReg = []() {
     mgr->insert("Aaf", std::make_shared<IspAaf>());
     mgr->insert("Ae", std::make_shared<IspAe>());
     mgr->insert("AfFocus", std::make_shared<IspAfFocus>());
-    mgr->insert("AlgoGamma", std::make_shared<IspAlgoGamma>());
+    // AlgoGamma transform REMOVED: our AlgoGammaBlock computes a SCALAR gamma from analog_gain+scene_change (no image input).
+    // The fused isp.algo_gamma op expects an image input [1,3,H,W] for per-pixel gamma correction.
+    // Our block uses primitive ONNX ops (Add/Log/Div/Mul/Sub/Clip) for scalar gamma computation.
+    // Registering the transform would incorrectly fuse the primitive chain into isp.algo_gamma, which fails shape inference.
+    // mgr->insert("AlgoGamma", std::make_shared<IspAlgoGamma>());
     mgr->insert("Awb", std::make_shared<IspAwb>());
     mgr->insert("BayerWb", std::make_shared<IspBayerWb>());
     mgr->insert("Blc", std::make_shared<IspBlc>());
     mgr->insert("Bnf", std::make_shared<IspBnf>());
     mgr->insert("CalibStats", std::make_shared<IspCalibStats>());
     mgr->insert("Ccm", std::make_shared<IspCcm>());
-    mgr->insert("Cct", std::make_shared<IspCct>());
+    // Cct transform REMOVED: our AlgoCctBlock computes a SCALAR CCT from RGB means (no image input).
+    // The fused isp.cct op expects an image input [1,3,H,W] for per-pixel CCT computation.
+    // Our block uses primitive ONNX ops (Slice/Add/Div/Sub/Mul/Clip) for scalar CCT computation.
+    // Registering the transform would incorrectly fuse the primitive chain into isp.cct, which fails shape inference.
+    // mgr->insert("Cct", std::make_shared<IspCct>());
     mgr->insert("Ceh", std::make_shared<IspCeh>());
     mgr->insert("Cfa", std::make_shared<IspCfa>());
     mgr->insert("ChromaticAberration", std::make_shared<IspChromaticAberration>());

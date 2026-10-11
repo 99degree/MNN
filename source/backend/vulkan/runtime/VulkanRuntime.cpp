@@ -292,8 +292,22 @@ public:
     }
 };
 
-static bool gResistor = []() {
+static bool mnn_vulkan_runtime_register() {
     MNNInsertExtraRuntimeCreator(MNN_FORWARD_VULKAN, new VulkanRuntimeCreator, true);
     return false;
-}();
 }
+
+static bool gResistor __attribute__((used, visibility("default"))) = mnn_vulkan_runtime_register();
+
+__attribute__((constructor, used, visibility("default")))
+static void ensure_vulkan_runtime_registered() {
+    // Force the registration to happen even if gResistor is stripped
+    // This directly calls MNNInsertExtraRuntimeCreator to ensure registration
+    MNNInsertExtraRuntimeCreator(MNN_FORWARD_VULKAN, new VulkanRuntimeCreator, true);
+}
+
+// Also add the function to .init_array explicitly with external linkage
+__attribute__((section(".init_array"), used, visibility("default")))
+void (*ensure_vulkan_runtime_registered_ptr)(void) = &ensure_vulkan_runtime_registered;
+
+} // namespace MNN
