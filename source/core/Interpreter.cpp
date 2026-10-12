@@ -342,6 +342,8 @@ Session* Interpreter::createMultiPathSession(const std::vector<ScheduleConfig>& 
             fprintf(stderr, "%s", _ispbuf);
             if (ispOpsetTrapEnabled()) {
                 MNN_ERROR("[MNN-ISP-TRAP] MNN_ISP_TRAP=1 -> failing session creation\n");
+                fprintf(stderr, "[MNN-ISP-TRAP] MNN_ISP_TRAP=1 -> failing session creation\n");
+                fflush(stderr);
                 return nullptr;
             }
         }
@@ -365,6 +367,8 @@ Session* Interpreter::createMultiPathSession(const std::vector<ScheduleConfig>& 
             fflush(stderr);
             if (ispOpsetTrapEnabled()) {
                 MNN_ERROR("[MNN-ISP-TRAP] MNN_ISP_TRAP=1 -> failing session creation\n");
+                fprintf(stderr, "[MNN-ISP-TRAP] MNN_ISP_TRAP=1 -> failing session creation\n");
+                fflush(stderr);
                 return nullptr;
             }
         }
