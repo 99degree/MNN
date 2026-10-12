@@ -12,6 +12,7 @@
 #include "MNN_generated.h"
 #include "OnnxUtils.hpp"
 #include "logkit.h"
+#include "core/IspOpsetValidate.hpp"
 
 #include "OnnxTmpGraph.hpp"
 #include "../optimizer/Global.hpp"
@@ -134,6 +135,12 @@ int onnx2MNNNet(onnx::ModelProto& onnxModel, const std::string& modelDir, const 
         int i = idxMap.size() == nodeCount ? idxMap[idx] : idx;
         const auto& onnxNode = onnxGraph.node(i);
         const auto& opType   = onnxNode.op_type();
+        // [ISP OPSET TRAP] Remember that this graph is ISP-bearing even if the
+        // isp.* nodes are later dropped/rewritten (domain may be carried on the
+        // node instead of the op_type prefix).
+        if (opType.rfind("isp.", 0) == 0 || onnxNode.domain() == "isp") {
+            MNN::ispModelFlag() = true;
+        }
 
         // name maybe null, use the first output name as node-name
         const auto& name = onnxNode.output(0);
@@ -166,6 +173,37 @@ int onnx2MNNNet(onnx::ModelProto& onnxModel, const std::string& modelDir, const 
         }
         // build op
         opConverter->run(MNNOp, &onnxNode, scope.get());
+        // [MNN-ISP-CONVERT] Trace isp.* domain ops as they are lowered from ONNX
+        // to MNN Extra, and validate the emitted MNN isp.* name against the
+        // canonical IspSpvLookup table. Catches name drift (e.g. "isp.algogamma"
+        // vs "isp.algo_gamma") at conversion time, before VulkanFuse ever sees it.
+        if (opType.rfind("isp.", 0) == 0) {
+            MNN::ispModelFlag() = true;
+            const char* _mnnEngine = "<n/a>";
+            std::string _mnnTypeStr = "<n/a>";
+            if (MNNOp->main.type == MNN::OpParameter_Extra && MNNOp->main.value != nullptr) {
+                auto* _ex = reinterpret_cast<MNN::ExtraT*>(MNNOp->main.value);
+                _mnnEngine  = _ex->engine.c_str();
+                _mnnTypeStr = _ex->type;
+            }
+            fprintf(stderr,
+                    "[MNN-ISP-CONVERT] onnx domain=%s op_type=%s -> mnn OpType=%d OpParam=%d engine=%s type=%s name=%s\n",
+                    onnxNode.domain().c_str(), opType.c_str(), (int)MNNOp->type,
+                    (int)MNNOp->main.type, _mnnEngine, _mnnTypeStr.c_str(), MNNOp->name.c_str());
+            fflush(stderr);
+            if (!MNN::isKnownIspOp(_mnnTypeStr)) {
+                fprintf(stderr,
+                        "[MNN-ISP-TRAP] INVALID isp.* opset at convert: onnx op_type=%s -> mnn type=%s "
+                        "(no matching IspSpvLookup shader)\n",
+                        opType.c_str(), _mnnTypeStr.c_str());
+                fflush(stderr);
+                if (MNN::ispOpsetTrapEnabled()) {
+                    fprintf(stderr, "[MNN-ISP-TRAP] MNN_ISP_TRAP=1 -> aborting conversion\n");
+                    fflush(stderr);
+                    abort();
+                }
+            }
+        }
         if (MNNOp->type == MNN::OpType_Const) {
             scope->insertConstant(name, MNNOp);
         }
@@ -180,6 +218,37 @@ int onnx2MNNNet(onnx::ModelProto& onnxModel, const std::string& modelDir, const 
 
     netT->sourceType = MNN::NetSource_ONNX;
     netT->bizCode    = bizCode;
+    // [ISP OPSET TRAP] MISSING: this ONNX graph declared isp-domain nodes, but
+    // none survived as isp.* Extra ops in the emitted MNN model. Every ISP block
+    // degraded to CPU primitives — report it here (and let the session-time trap
+    // enforce it) instead of silently shipping a CPU-only model.
+    {
+        int ispOpEmitted = 0;
+        for (const auto& op : netT->oplists) {
+            if (op != nullptr && op->type == MNN::OpType_Extra && op->main.type == MNN::OpParameter_Extra &&
+                op->main.value != nullptr) {
+                auto* ex = reinterpret_cast<MNN::ExtraT*>(op->main.value);
+                if (ex->type.rfind("isp.", 0) == 0) {
+                    ++ispOpEmitted;
+                }
+            }
+        }
+        if (MNN::ispModelFlag() && ispOpEmitted == 0) {
+            fprintf(stderr,
+                    "[MNN-ISP-TRAP] MISSING isp.* opset at convert: ONNX graph had isp-domain nodes but "
+                    "the MNN model contains 0 isp.* Extra ops\n");
+            fflush(stderr);
+            if (MNN::ispOpsetTrapEnabled()) {
+                fprintf(stderr, "[MNN-ISP-TRAP] MNN_ISP_TRAP=1 -> aborting conversion\n");
+                fflush(stderr);
+                abort();
+            }
+        } else {
+            fprintf(stderr, "[MNN-ISP-CONVERT] isp-domain model=%d isp Extra ops emitted=%d\n",
+                    MNN::ispModelFlag() ? 1 : 0, ispOpEmitted);
+            fflush(stderr);
+        }
+    }
     auto metaSize = onnxModel.metadata_props_size();
     for (int i=0; i<metaSize; ++i) {
         std::unique_ptr<MNN::AttributeT> dstMeta(new MNN::AttributeT);

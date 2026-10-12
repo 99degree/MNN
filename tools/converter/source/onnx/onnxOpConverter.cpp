@@ -12,6 +12,7 @@
 #include "OnnxTmpGraph.hpp"
 #include "core/FileLoader.hpp"
 #include "core/MNNFileUtils.h"
+#include "core/IspOpsetValidate.hpp"
 #include "config.hpp"
 #include "../optimizer/Global.hpp"
 
@@ -736,6 +737,40 @@ std::vector<std::string> OnnxScope::buildSubGraph(const onnx::GraphProto* graph,
         }
         subgraph->inputs.erase(subgraph->inputs.begin() + originIdx, subgraph->inputs.end());
         subgraph->nodes.emplace_back(MNNOp);
+        // [MNN-ISP-CONVERT] Trace isp.* domain ops as they are lowered from ONNX to
+        // MNN Extra. Prints the incoming ONNX op_type and the produced MNN op
+        // (OpType/OpParameter + Extra engine/type) so a mismatch between the ONNX
+        // isp.* name and the MNN isp.* name is visible at conversion time.
+        if (opType.rfind("isp.", 0) == 0) {
+            const char* _mnnEngine = "<n/a>";
+            const char* _mnnType   = "<n/a>";
+            if (MNNOp->main.type == OpParameter_Extra && MNNOp->main.value != nullptr) {
+                auto* _ex = reinterpret_cast<ExtraT*>(MNNOp->main.value);
+                _mnnEngine = _ex->engine.c_str();
+                _mnnType   = _ex->type.c_str();
+            }
+            fprintf(stderr, "[MNN-ISP-CONVERT] onnx domain=%s op_type=%s -> mnn OpType=%d OpParam=%d engine=%s type=%s name=%s\n",
+                    onnxNode.domain().c_str(), opType.c_str(), (int)MNNOp->type,
+                    (int)MNNOp->main.type, _mnnEngine, _mnnType, MNNOp->name.c_str());
+            fflush(stderr);
+            // [ISP OPSET TRAP] Validate the emitted MNN isp.* name against the
+            // canonical table (IspSpvLookup keys). Catches typos like
+            // "isp.algogamma" vs "isp.algo_gamma" at conversion time, before the
+            // model ever reaches VulkanFuse. Set MNN_ISP_TRAP=1 to abort.
+            const std::string _mnnTypeStr = (_mnnType != nullptr) ? std::string(_mnnType) : std::string();
+            if (!isKnownIspOp(_mnnTypeStr)) {
+                fprintf(stderr,
+                        "[MNN-ISP-TRAP] INVALID isp.* opset at convert: onnx op_type=%s -> mnn type=%s "
+                        "(no matching IspSpvLookup shader)\n",
+                        opType.c_str(), _mnnTypeStr.c_str());
+                fflush(stderr);
+                if (ispOpsetTrapEnabled()) {
+                    fprintf(stderr, "[MNN-ISP-TRAP] MNN_ISP_TRAP=1 -> aborting conversion\n");
+                    fflush(stderr);
+                    abort();
+                }
+            }
+        }
     }
     if (!forLoop) {
         std::vector<std::string> resOutside;
