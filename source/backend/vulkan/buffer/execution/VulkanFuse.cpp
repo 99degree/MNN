@@ -386,13 +386,25 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
     // binding 3 the shader never references, so the descriptor is valid and the
     // shader never dereferences them.
     if (types.empty() && !mType.empty() && mType.rfind("isp.", 0) == 0) {
-        int maxBind = 3;
-        types.assign(maxBind + 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER); // 0,1,2,3
+        // UNIVERSAL isp.* binding map — one positional rule for ALL shaders:
+        //   binding 0 = params SSBO (const/uniform block)
+        //   binding 1 = input[0]   — always the frame (RO)
+        //   binding 2 = output[0]  — always the frame (WO)
+        //   binding n+2 = input[n]  for n>=1  (in[1]->3, in[2]->4, ...)
+        //   binding n+2 = output[n] for n>=1  (out[1]->3, out[2]->4, ...)
+        // i.e. slot 0 of each direction is pinned (in=1, out=2); every extra
+        // tensor — input or output — takes the next binding in order.
+        // isp.crop_blc_norm_cfa was retargeted to this map (out 3->2, BLC
+        // param 2->3) so the entire opset shares a single convention.
+        const int maxBind = 3 +
+            (inputSize  > 1 ? inputSize  - 1 : 0) +
+            (outputSize > 1 ? outputSize - 1 : 0);
+        types.assign(maxBind + 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
         for (int i = 0; i < inputSize; ++i) {
-            mInputBinding[i] = (i == 0) ? 1 : 3; // frame->bind1; extras->dummy bind3
+            mInputBinding[i] = (i == 0) ? 1 : i + 2;
         }
         for (int i = 0; i < outputSize; ++i) {
-            mOutputBinding[i] = (i == 0) ? 2 : 3; // frame->bind2
+            mOutputBinding[i] = (i == 0) ? 2 : i + 2;
         }
         // binding 0 param SSBO: allocate a zero-filled, host-visible storage
         // buffer so the shader reads valid (zero) params -> bounds-checks all
