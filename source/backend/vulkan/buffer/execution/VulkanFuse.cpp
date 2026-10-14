@@ -443,6 +443,20 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
         types.resize(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
     }
     mPipeline = factory->createComputePipeline(data, dataSize, types, std::vector<uint32_t>{});
+    // createComputePipeline returns nullptr when the device rejects the shader
+    // (VK_ERROR_INVALID_SHADER_NV / OOM / a driver without the needed feature).
+    // Dereferencing it here faults at [null + 0x40] inside
+    // VulkanPipeline::createSet (the SharedPtr<VulkanLayout> member), which is
+    // exactly the device SIGSEGV: fault_addr=0x40, pc=createSet+8. Leave
+    // mPipeline/mDescriptorSet null so the Creator can reject the op and let
+    // MNN fall back to the CPU backend instead of crashing the process.
+    if (!mPipeline.get()) {
+        fprintf(stderr, "[VulkanFuse] pipeline creation FAILED for %s — op will not run\n",
+                mType.c_str());
+        fflush(stderr);
+        fence->wait();
+        return;
+    }
     mDescriptorSet = mPipeline->createSet();
     fence->wait();
 }
