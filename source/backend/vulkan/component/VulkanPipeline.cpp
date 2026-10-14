@@ -9,6 +9,8 @@
 #include "VulkanPipeline.hpp"
 #include <string.h>
 #include <map>
+#include <atomic>
+#include <cstdio>
 namespace MNN {
 VulkanPipelineFactory::VulkanPipelineFactory(const VulkanDevice& dev) : mDevice(dev) {
     mCache = new VulkanPipelineCache(dev);
@@ -93,7 +95,31 @@ VulkanPipeline* VulkanPipelineFactory::createComputePipeline(const uint8_t* data
         FUNC_PRINT(res);
         return nullptr;
     }
-    return new VulkanPipeline(mDevice, pipeline, layout, VK_PIPELINE_BIND_POINT_COMPUTE, shader, mCache, specConstants);
+    auto* result = new VulkanPipeline(mDevice, pipeline, layout, VK_PIPELINE_BIND_POINT_COMPUTE, shader, mCache, specConstants);
+    // ── Retention: the factory must outlive every pipeline it created ──────
+    // A VulkanPipeline/VulkanLayout holds `const VulkanDevice&` (a BARE
+    // reference, not a shared_ptr), and its destructor calls
+    // vkDestroyPipeline / vkDestroyPipelineLayout / vkDestroyDescriptorSetLayout
+    // through it. If the caller (VulkanFuse::mPipeline) is the SOLE owner, the
+    // pipeline is destroyed whenever that execution drops its last reference —
+    // which can be AFTER VulkanRuntime's destructor already released
+    // mDevice (std::shared_ptr<VulkanDevice>). vkDestroy* then dereferences a
+    // freed VkDevice → SIGSEGV at a small offset (observed fault_addr=0x40 in
+    // ~VulkanPipeline → ~VulkanLayout), i.e. a use-after-free of the device.
+    //
+    // Retaining the pipeline in the factory pins the device for as long as the
+    // runtime lives: VulkanRuntime's destructor nulls mPipelineFactory BEFORE
+    // mDevice (VulkanRuntime.cpp:143 vs :145), so these destructors always run
+    // while the device is still valid.
+    {
+        static std::atomic<uint64_t> sPipelineSeq{0};
+        char retentionKey[64];
+        snprintf(retentionKey, sizeof(retentionKey), "__retained_pipeline_%llu",
+                 (unsigned long long)sPipelineSeq.fetch_add(1));
+        SharedPtr<VulkanPipeline> retained = result;
+        mPipelines.insert(std::make_pair(std::string(retentionKey), retained));
+    }
+    return result;
 }
 
 const VulkanPipeline* VulkanPipelineFactory::getPipeline(const std::string& key,
