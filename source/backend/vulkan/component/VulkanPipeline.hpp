@@ -192,6 +192,10 @@ public:
                                           const std::vector<uint32_t>& specConstants = std::vector<uint32_t>()) const;
     SharedPtr<VulkanShaderModule> createShader(const std::string& key) const;
     void reset();
+    // Destroy the retained pipelines NOW, while the caller still owns the
+    // VulkanDevice. See the definition for why this cannot be left to the
+    // destructor.
+    void clearRetainedPipelines();
 private:
     const VulkanDevice& mDevice;
     mutable std::map<std::string, SharedPtr<VulkanPipeline>> mPipelines;

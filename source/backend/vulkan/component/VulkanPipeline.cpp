@@ -27,6 +27,25 @@ void VulkanPipelineFactory::reset() {
     mCache = new VulkanPipelineCache(mDevice);
 }
 
+void VulkanPipelineFactory::clearRetainedPipelines() {
+    // A VulkanPipeline holds `const VulkanDevice&` and its destructor calls
+    // vkDestroyPipeline/vkDestroyPipelineLayout/vkDestroyDescriptorSetLayout
+    // through it. Retaining created pipelines in this factory (see
+    // createComputePipeline) is what keeps them from being freed while a
+    // dispatch is still in flight — but it also means they are freed when the
+    // FACTORY dies. If anything else holds a reference to the factory (the
+    // Executor does), that happens after VulkanRuntime has already dropped
+    // mDevice, and the destroy calls then dereference a dead VkDevice
+    // (SIGSEGV inside vkDestroyPipeline, libvulkan_freedreno, fault_addr=0x11).
+    //
+    // The runtime therefore calls this explicitly in its destructor, after
+    // vkDeviceWaitIdle and before releasing the device, so the pipelines are
+    // always torn down while the device is still valid. Any execution still
+    // holding a SharedPtr keeps its own pipeline alive; this only drops the
+    // factory's reference.
+    mPipelines.clear();
+}
+
 SharedPtr<VulkanShaderModule> VulkanPipelineFactory::createShader(const std::string& key) const {
     auto content = mStorage->search(key);
     if (nullptr == content.first) {
