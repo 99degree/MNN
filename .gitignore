@@ -415,3 +415,7 @@ apps/iOS/MNNLLMChat/MNNLLMiOS/LocalModel/Qwen2.5-Omni-3B-MNN
 *.o.tmp
 *.bak
 test_vulkan_check
+
+# SPIR-V generator scratch: .comp -> .spv intermediates live here; the
+# checked-in artefact is the embedded <name>_spv.h header.
+source/backend/vulkan/buffer/execution/isp_spv/.spv_fresh/
