@@ -296,6 +296,44 @@ public:
             }
             return false;
         }
+        // ── Scalar sibling ops ───────────────────────────────────────────────
+        // These consume a reduced stats/means tensor (or a runtime scalar) and
+        // emit small metadata tensors. The generic tail computer would copy the
+        // INPUT's shape onto every output, which is wrong here: a [9] stats
+        // input would make each scalar output [9] and the readback would hand
+        // Kotlin 9 elements where the graph declared 1. Declare the real
+        // per-output extents instead, and only fall back to a scalar when an
+        // extent is unknown.
+        if (type == "isp.algo_ae" || type == "isp.algo_cct" ||
+            type == "isp.algo_awb" || type == "isp.algo_gamma_scalar") {
+            // output extents, in declaration order, matching the ONNX
+            // value-infos the blocks emit.
+            static const int kAeExtents[]     = {1, 1, 1};  // gain, lum_mean, target
+            static const int kCctExtents[]    = {1};
+            static const int kAwbExtents[]    = {3};        // R,G,B gains
+            static const int kGammaExtents[]  = {1};
+            const int* extents = nullptr;
+            int nExt = 0;
+            if (type == "isp.algo_ae")                 { extents = kAeExtents;    nExt = 3; }
+            else if (type == "isp.algo_cct")           { extents = kCctExtents;   nExt = 1; }
+            else if (type == "isp.algo_awb")           { extents = kAwbExtents;   nExt = 1; }
+            else /* isp.algo_gamma_scalar */           { extents = kGammaExtents; nExt = 1; }
+            if (outputs.empty() || (int)outputs.size() < nExt) return false;
+            // All these ops are hosted on a device that also sees the input on
+            // binding 1, so a missing/opaque input dtype must not stop us: use
+            // the input dtype when present, else float.
+            halide_type_t dt = inputs.empty() ? halide_type_of<float>()
+                                              : inputs[0]->buffer().type;
+            for (int i = 0; i < nExt; ++i) {
+                auto output = outputs[i];
+                output->buffer().dimensions = 1;
+                output->buffer().dim[0].extent = extents[i];
+                TensorUtils::getDescribe(output)->dimensionFormat = MNN_DATA_FORMAT_NCHW;
+                output->buffer().type = dt;
+                TensorUtils::setLinearLayout(output);
+            }
+            return true;
+        }
         if (type == "isp.lsc_min" || type == "isp.vignetting_min" ||
             type == "isp.chromatic_aberration_min") {
             // Grid-generating MINIMAL ops: output spatial dims match input.

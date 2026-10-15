@@ -1,0 +1,48 @@
+#version 450
+// isp.algo_awb — white-balance gains from channel means (grey world).
+//
+// Scalar-producing sibling of `isp.awb`. isp.awb APPLIES per-channel gains to
+// a full frame (in [1,3,H,W] -> out [1,3,H,W]) and stays the op WbGainsBlock
+// uses. AlgoAwbBlock does the opposite direction: it MEASURES the frame and
+// emits the gains — and the measurement is already done by the stats block, so
+// this op consumes the REDUCED means tensor, not an image.
+//
+// Consuming means rather than reducing the frame is not just an optimisation:
+// VulkanFuse derives its dispatch from inputs[0]'s dims, so a full-res image
+// input would launch one workgroup per 16x16 tile and each would reduce its own
+// tile into the same 3 output slots. A 3-float input yields a single workgroup,
+// which is the only shape that makes a whole-input reduction well-defined.
+//
+//   binding 1 = means input  (R,G,B at rIdx,gIdx,bIdx)
+//   binding 2 = gains output float[3] = (G/R, 1, G/B)
+//
+// Uniforms (binding 0, baked as a `const` attr by AlgoAwbBlock):
+//   {count, eps, rIdx, gIdx, bIdx}
+// Indices are uniforms rather than hard-coded 0/1/2 so the same shader works
+// whether the means arrive as [R,G,B] or at an offset inside a wider stats
+// tensor (unified_stats puts them at 0,1,2; a tone-ordered tensor would not).
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer Uniforms {
+    float count;
+    float eps;
+    float rIdx;
+    float gIdx;
+    float bIdx;
+} u;
+
+layout(set = 0, binding = 1) readonly  buffer MeansBuf { float means[]; };
+layout(set = 0, binding = 2) writeonly buffer GainsBuf { float gains[]; };
+
+void main() {
+    if (gl_GlobalInvocationID.x != 0u || gl_GlobalInvocationID.y != 0u) return;
+
+    float rMean = means[int(u.rIdx)];
+    float gMean = means[int(u.gIdx)];
+    float bMean = means[int(u.bIdx)];
+
+    // Normalise each channel to G (camera ISP convention).
+    gains[0] = gMean / (rMean + u.eps);
+    gains[1] = 1.0;
+    gains[2] = gMean / (bMean + u.eps);
+}

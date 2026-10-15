@@ -1,0 +1,60 @@
+#version 450
+// isp.algo_ae — auto-exposure scalars derived from a statistics tensor.
+//
+// Outputs THREE independent float[1] scalars, not a packed [1,3] vector:
+//   binding 2 = exposure gain      (output[0] — the block's frame edge)
+//   binding 3 = mean luminance     (output[1] — extra output 0)
+//   binding 4 = target luminance   (output[2] — extra output 1)
+// The binding numbers follow VulkanFuse's universal isp.* positional map:
+// frame in->1, frame out->2, then every extra output from 3 onward, so an op
+// that later grows extra inputs still cannot alias an output slot.
+//
+// Only ONE work-item does the reduction. VulkanFuse derives the dispatch from
+// inputs[0]'s dims, and a stats tensor ([9] or [1,9]) is far smaller than the
+// 16x16 workgroup, so every other work-item is clipped by the bounds check.
+// A real group reduction would buy nothing for 9 floats.
+//
+// Uniforms (binding 0, baked as a `const` attr by AlgoAeBlock):
+//   {count, lumOffset, target, minEv, maxEv, minGain, maxGain, eps, ln2}
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer Uniforms {
+    float count;
+    float lumOffset;
+    float target;
+    float minEv;
+    float maxEv;
+    float minGain;
+    float maxGain;
+    float eps;
+    float ln2;
+} u;
+
+layout(set = 0, binding = 1) readonly  buffer StatsBuf  { float stats[]; };
+layout(set = 0, binding = 2) writeonly buffer GainBuf   { float gain[]; };
+layout(set = 0, binding = 3) writeonly buffer LumBuf    { float lum[]; };
+layout(set = 0, binding = 4) writeonly buffer TargetBuf { float tgt[]; };
+
+void main() {
+    if (gl_GlobalInvocationID.x != 0u || gl_GlobalInvocationID.y != 0u) return;
+
+    int count = int(u.count);
+    if (count < 1) count = 1;
+    int off = int(u.lumOffset);
+    if (off < 0) off = 0;
+    if (off >= count) off = count - 1;
+
+    float lumMean = stats[off];
+
+    // ratio = target / (lum + eps) ; EV = log2(ratio) = ln(ratio) / ln(2)
+    float ratio = u.target / (lumMean + u.eps);
+    float ev    = log(ratio) / u.ln2;
+    ev = clamp(ev, u.minEv, u.maxEv);
+
+    float g = exp(ev * u.ln2);
+    g = clamp(g, u.minGain, u.maxGain);
+
+    gain[0] = g;
+    lum[0]  = lumMean;
+    tgt[0]  = u.target;
+}

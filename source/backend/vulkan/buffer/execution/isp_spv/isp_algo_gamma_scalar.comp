@@ -1,0 +1,49 @@
+#version 450
+// isp.algo_gamma_scalar — display gamma from analog gain + scene change.
+//
+// This is the SCALAR sibling of `isp.algo_gamma`. The pre-existing shader is a
+// full-frame per-pixel tone op (in [1,3,H,W] -> out [1,3,H,W]) and cannot host
+// AlgoGammaBlock, which has NO image input at all: it reads two runtime
+// scalars and emits one float[1]. Keeping them separate means neither has to
+// pretend to be the other.
+//
+//   binding 1 = analog gain  float[1]
+//   binding 2 = gamma output float[1]
+//
+// scene_change is a real runtime input but the shader does not need a buffer
+// for it: VulkanFuse's universal map gives extra inputs bindings 3.., so it
+// lands on binding 3 which we declare and read.
+//
+//   binding 3 = scene change float[1]
+//
+// Uniforms (binding 0, baked as a `const` attr by AlgoGammaBlock):
+//   {count, eps, ln10, k1, k2, baseGamma, gMin, gMax}
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer Uniforms {
+    float count;
+    float eps;
+    float ln10;
+    float k1;
+    float k2;
+    float baseGamma;
+    float gMin;
+    float gMax;
+} u;
+
+layout(set = 0, binding = 1) readonly  buffer AGainBuf { float analogGain[]; };
+layout(set = 0, binding = 2) writeonly buffer GammaBuf { float gamma[]; };
+layout(set = 0, binding = 3) readonly  buffer SceneBuf { float sceneChange[]; };
+
+void main() {
+    if (gl_GlobalInvocationID.x != 0u || gl_GlobalInvocationID.y != 0u) return;
+
+    float ag = analogGain[0];
+    if (ag < u.eps) ag = u.eps;
+
+    // gamma = clip(base + k1*log10(ag) - k2*scene_change, gMin, gMax)
+    float log10Ag = log(ag) / u.ln10;
+    float v = u.baseGamma + u.k1 * log10Ag - u.k2 * sceneChange[0];
+
+    gamma[0] = clamp(v, u.gMin, u.gMax);
+}

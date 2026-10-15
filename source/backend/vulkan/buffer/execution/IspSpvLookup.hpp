@@ -83,6 +83,17 @@ extern const unsigned char g_isp_display_uint32_bgra_spv[];
 extern const int g_isp_display_uint32_bgra_spv_len;
 extern const unsigned char g_isp_algo_gamma_spv[];
 extern const int g_isp_algo_gamma_spv_len;
+// Scalar algo siblings. `isp.algo_gamma` is a full-frame per-pixel tone op;
+// these four consume a reduced stats/means tensor and emit scalars, which is
+// what the AlgoAe/AlgoCct/AlgoGamma/AlgoAwb blocks actually compute.
+extern const unsigned char g_isp_algo_gamma_scalar_spv[];
+extern const int g_isp_algo_gamma_scalar_spv_len;
+extern const unsigned char g_isp_algo_ae_spv[];
+extern const int g_isp_algo_ae_spv_len;
+extern const unsigned char g_isp_algo_cct_spv[];
+extern const int g_isp_algo_cct_spv_len;
+extern const unsigned char g_isp_algo_awb_spv[];
+extern const int g_isp_algo_awb_spv_len;
 extern const unsigned char g_isp_histogram_spv[];
 extern const int g_isp_histogram_spv_len;
 extern const unsigned char g_isp_aaf_spv[];
@@ -193,6 +204,11 @@ static const std::unordered_map<std::string, SpvData> g_ispSpvMap = {
     {"isp.display_uint32_rgba", {g_isp_display_uint32_rgba_spv, g_isp_display_uint32_rgba_spv_len}},
     {"isp.display_uint32_bgra", {g_isp_display_uint32_bgra_spv, g_isp_display_uint32_bgra_spv_len}},
     {"isp.algo_gamma",  {g_isp_algo_gamma_spv,   g_isp_algo_gamma_spv_len}},
+    // Scalar algo siblings — see the extern block above.
+    {"isp.algo_gamma_scalar", {g_isp_algo_gamma_scalar_spv, g_isp_algo_gamma_scalar_spv_len}},
+    {"isp.algo_ae",     {g_isp_algo_ae_spv,      g_isp_algo_ae_spv_len}},
+    {"isp.algo_cct",    {g_isp_algo_cct_spv,     g_isp_algo_cct_spv_len}},
+    {"isp.algo_awb",    {g_isp_algo_awb_spv,     g_isp_algo_awb_spv_len}},
     {"isp.histogram",   {g_isp_histogram_spv,    g_isp_histogram_spv_len}},
     {"isp.aaf",         {g_isp_aaf_spv,          g_isp_aaf_spv_len}},
     {"isp.auto_contrast",{g_isp_auto_contrast_spv, g_isp_auto_contrast_spv_len}},

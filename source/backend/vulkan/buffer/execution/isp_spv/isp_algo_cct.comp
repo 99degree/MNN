@@ -1,0 +1,53 @@
+#version 450
+// isp.algo_cct — correlated colour temperature from channel means (McCamy).
+//
+// Scalar-producing op: consumes the [N]-shaped means tensor produced by the
+// stats block and writes ONE float[1]. The full-frame `isp.cct` shader is a
+// different thing (per-pixel CCT map) and is deliberately left untouched.
+//
+//   binding 1 = means input (R,G,B at 0,1,2)
+//   binding 2 = cct output  float[1]
+//
+// Only one work-item computes; the input is 3 floats.
+//
+// Uniforms (binding 0, baked as a `const` attr by AlgoCctBlock):
+//   {count, eps, rRef, bRef, c3, c2, c1, c0, cctMin, cctMax}
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer Uniforms {
+    float count;
+    float eps;
+    float rRef;
+    float bRef;
+    float c3;
+    float c2;
+    float c1;
+    float c0;
+    float cctMin;
+    float cctMax;
+} u;
+
+layout(set = 0, binding = 1) readonly  buffer MeansBuf { float means[]; };
+layout(set = 0, binding = 2) writeonly buffer CctBuf   { float cct[]; };
+
+void main() {
+    if (gl_GlobalInvocationID.x != 0u || gl_GlobalInvocationID.y != 0u) return;
+
+    float r = means[0];
+    float g = means[1];
+    float b = means[2];
+    float sum = r + g + b + u.eps;
+
+    float rChroma = r / sum;
+    float bChroma = b / sum;
+
+    // n = (R_chroma - 0.332) / (B_chroma - 0.1858)
+    float n = (rChroma - u.rRef) / (bChroma - u.bRef + u.eps);
+
+    // CCT = c3*n^3 + c2*n^2 + c1*n + c0
+    float n2 = n * n;
+    float n3 = n2 * n;
+    float v = u.c3 * n3 + u.c2 * n2 + u.c1 * n + u.c0;
+
+    cct[0] = clamp(v, u.cctMin, u.cctMax);
+}
