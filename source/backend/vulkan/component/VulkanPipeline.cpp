@@ -11,7 +11,6 @@
 #include <map>
 #include <atomic>
 #include <cstdio>
-#include <cstdlib>
 namespace MNN {
 VulkanPipelineFactory::VulkanPipelineFactory(const VulkanDevice& dev) : mDevice(dev) {
     mCache = new VulkanPipelineCache(dev);
