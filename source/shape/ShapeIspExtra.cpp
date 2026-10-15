@@ -244,16 +244,18 @@ public:
             if (dims < 4) return false;
             int H = input->buffer().dim[dims - 2].extent;
             int W = input->buffer().dim[dims - 1].extent;
-            if (H < 1 || W < 1) {
-                TensorUtils::copyShape(input, output, true);
-                output->buffer().type = input->buffer().type;
-                return true;
-            }
+            // The graph input is declared dynamic ([1,1,-1,-1]) and MNN calls
+            // this computer BEFORE the real dims are known for some pipelines.
+            // Keep the tensor 4-channel even then (H/W stay dynamic) — copying
+            // the raw shape would hand downstream ops a 1-channel tensor and
+            // break CCM/demosaic inference.
+            const int outH = (H > 0) ? (H / 2) : H;
+            const int outW = (W > 0) ? (W / 2) : W;
             output->buffer().dimensions = 4;
             output->buffer().dim[0].extent = 1;
             output->buffer().dim[1].extent = 4;
-            output->buffer().dim[2].extent = H / 2;
-            output->buffer().dim[3].extent = W / 2;
+            output->buffer().dim[2].extent = outH;
+            output->buffer().dim[3].extent = outW;
             TensorUtils::getDescribe(output)->dimensionFormat = MNN_DATA_FORMAT_NCHW;
             output->buffer().type = halide_type_of<float>();
             TensorUtils::setLinearLayout(output);
