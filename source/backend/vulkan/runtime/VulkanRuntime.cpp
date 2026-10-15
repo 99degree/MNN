@@ -137,10 +137,7 @@ VulkanRuntime::~VulkanRuntime() {
     // still executing commands that reference them causes use-after-free in the
     // driver"), but the destructor — the path taken when a Session is simply
     // dropped, which is what happens at the end of a createModel/run/destroy
-    // cycle — was missing it. The visible symptom was a SIGSEGV inside
-    // vkDestroyPipeline (libvulkan_freedreno, fault_addr=0x11) from
-    // ~VulkanPipeline when the factory released its retained pipelines: the
-    // queue still held the dispatch that used them.
+    // cycle — was missing it.
     if (mDevice) {
         ::vkDeviceWaitIdle(mDevice->get());
     }
@@ -152,14 +149,6 @@ VulkanRuntime::~VulkanRuntime() {
     mCmdPool = nullptr;
     mSampler = nullptr;
     mClampSampler = nullptr;
-    // Drop the factory's retained pipelines HERE: their destructors call
-    // vkDestroyPipeline* through the device, which is still alive. Leaving them
-    // to the factory's own destructor is not safe — the factory is a
-    // shared_ptr that the Executor may keep alive past this point, so the
-    // destroy calls would run against a freed VkDevice.
-    if (mPipelineFactory) {
-        mPipelineFactory->clearRetainedPipelines();
-    }
     mPipelineFactory = nullptr;
     mMemoryPool = nullptr;
     mDevice = nullptr;

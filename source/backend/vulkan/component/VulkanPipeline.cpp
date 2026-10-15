@@ -11,6 +11,7 @@
 #include <map>
 #include <atomic>
 #include <cstdio>
+#include <cstdlib>
 namespace MNN {
 VulkanPipelineFactory::VulkanPipelineFactory(const VulkanDevice& dev) : mDevice(dev) {
     mCache = new VulkanPipelineCache(dev);
@@ -27,24 +28,6 @@ void VulkanPipelineFactory::reset() {
     mCache = new VulkanPipelineCache(mDevice);
 }
 
-void VulkanPipelineFactory::clearRetainedPipelines() {
-    // A VulkanPipeline holds `const VulkanDevice&` and its destructor calls
-    // vkDestroyPipeline/vkDestroyPipelineLayout/vkDestroyDescriptorSetLayout
-    // through it. Retaining created pipelines in this factory (see
-    // createComputePipeline) is what keeps them from being freed while a
-    // dispatch is still in flight — but it also means they are freed when the
-    // FACTORY dies. If anything else holds a reference to the factory (the
-    // Executor does), that happens after VulkanRuntime has already dropped
-    // mDevice, and the destroy calls then dereference a dead VkDevice
-    // (SIGSEGV inside vkDestroyPipeline, libvulkan_freedreno, fault_addr=0x11).
-    //
-    // The runtime therefore calls this explicitly in its destructor, after
-    // vkDeviceWaitIdle and before releasing the device, so the pipelines are
-    // always torn down while the device is still valid. Any execution still
-    // holding a SharedPtr keeps its own pipeline alive; this only drops the
-    // factory's reference.
-    mPipelines.clear();
-}
 
 SharedPtr<VulkanShaderModule> VulkanPipelineFactory::createShader(const std::string& key) const {
     auto content = mStorage->search(key);
@@ -115,29 +98,19 @@ VulkanPipeline* VulkanPipelineFactory::createComputePipeline(const uint8_t* data
         return nullptr;
     }
     auto* result = new VulkanPipeline(mDevice, pipeline, layout, VK_PIPELINE_BIND_POINT_COMPUTE, shader, mCache, specConstants);
-    // ── Retention: the factory must outlive every pipeline it created ──────
-    // A VulkanPipeline/VulkanLayout holds `const VulkanDevice&` (a BARE
-    // reference, not a shared_ptr), and its destructor calls
-    // vkDestroyPipeline / vkDestroyPipelineLayout / vkDestroyDescriptorSetLayout
-    // through it. If the caller (VulkanFuse::mPipeline) is the SOLE owner, the
-    // pipeline is destroyed whenever that execution drops its last reference —
-    // which can be AFTER VulkanRuntime's destructor already released
-    // mDevice (std::shared_ptr<VulkanDevice>). vkDestroy* then dereferences a
-    // freed VkDevice → SIGSEGV at a small offset (observed fault_addr=0x40 in
-    // ~VulkanPipeline → ~VulkanLayout), i.e. a use-after-free of the device.
+    // ── Return a raw, UNNETWORKED pointer — do NOT take a reference here ──
+    // `new VulkanPipeline` starts its RefCount at 1, which is already the
+    // caller's reference. Wrapping it in a SharedPtr (even a temporary, and
+    // even just to stash it in an owning map) adds a SECOND reference that
+    // nothing symmetrically releases, so the count never reaches zero and the
+    // destructor never runs on that path. Wrapping it in a raw-owning map made
+    // it run TWICE instead: refcount went 1 -> 0 -> -1 and vkDestroyPipeline
+    // was called on an already-destroyed VkPipeline — the SIGSEGV at
+    // fault_addr=0x100 inside libvulkan_freedreno at the end of a plain
+    // createModel/run/destroy cycle.
     //
-    // Retaining the pipeline in the factory pins the device for as long as the
-    // runtime lives: VulkanRuntime's destructor nulls mPipelineFactory BEFORE
-    // mDevice (VulkanRuntime.cpp:143 vs :145), so these destructors always run
-    // while the device is still valid.
-    {
-        static std::atomic<uint64_t> sPipelineSeq{0};
-        char retentionKey[64];
-        snprintf(retentionKey, sizeof(retentionKey), "__retained_pipeline_%llu",
-                 (unsigned long long)sPipelineSeq.fetch_add(1));
-        SharedPtr<VulkanPipeline> retained = result;
-        mPipelines.insert(std::make_pair(std::string(retentionKey), retained));
-    }
+    // Lifetime is the CALLER's job: VulkanFuse holds mPipeline in a SharedPtr
+    // and its destructor runs before the runtime releases the device.
     return result;
 }
 
