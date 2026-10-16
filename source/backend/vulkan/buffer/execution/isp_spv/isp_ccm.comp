@@ -1,30 +1,31 @@
 #version 450
 // isp.ccm — Color Correction Matrix: out = CCM * in + offset, 3-channel.
-// Uniforms (binding 0): {W, H, ccm00..ccm22, offr, offg, offb} = 15 floats.
-//   VulkanFuse's ELEMENTWISE patch hot-swaps W/H (first two floats) from the
-//   input tensor dims at first encode.
-// In:  float[1,3,H,W] NCHW PLANAR image (R plane, G plane, B plane) —
-//      matches isp.demosaic_g2's output layout.
+// Uniforms (binding 0): {W, H, pad0, pad1} — W/H are HOT-SWAPPED from the input
+//   tensor dims at first encode (elementwise attr). The CCM coefficients are
+//   NOT baked here — they ride in on binding 3 as a runtime float[9] tensor.
+// Params (binding 3): ccm[9] row-major CCM matrix (same slot as every other
+//   metadata input under the universal isp.* binding map: input[1] -> binding 3).
+// In:  float[1,3,H,W] NCHW PLANAR image (R plane, G plane, B plane) — matches
+//      isp.demosaic_g2's output layout.
 // Out: float[1,3,H,W], same planar layout.
 //
-// LAYOUT CONTRACT (2026-10-16): every isp.* stage in the RGB chain uses
-// PLANAR NCHW. The previous interleaved indexing ((y*w+x)*3) on planar data
-// scrambled channels per-pixel — the "snow" pattern — because the demosaic
-// upstream writes planes, not packed pixels.
+// LAYOUT CONTRACT (2026-10-16): every isp.* stage in the RGB chain uses PLANAR
+// NCHW. The previous interleaved indexing ((y*w+x)*3) on planar data scrambled
+// channels per-pixel — the "snow" pattern — because the demosaic upstream
+// writes planes, not packed pixels.
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) buffer Uniforms {
     float width;
     float height;
-    float ccm00; float ccm01; float ccm02;
-    float ccm10; float ccm11; float ccm12;
-    float ccm20; float ccm21; float ccm22;
-    float offr; float offg; float offb;
+    float pad0;
+    float pad1;
 } u;
 
 layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
 layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
+layout(set = 0, binding = 3) readonly  buffer ParamBuf { float params[]; };
 
 void main() {
     uint x = gl_GlobalInvocationID.x;
@@ -39,7 +40,13 @@ void main() {
     float g = in_data[plane + idx];
     float b = in_data[2 * plane + idx];
 
-    out_data[idx]            = u.ccm00 * r + u.ccm01 * g + u.ccm02 * b + u.offr;
-    out_data[plane + idx]    = u.ccm10 * r + u.ccm11 * g + u.ccm12 * b + u.offg;
-    out_data[2 * plane + idx] = u.ccm20 * r + u.ccm21 * g + u.ccm22 * b + u.offb;
+    float c00 = params[0]; float c01 = params[1]; float c02 = params[2];
+    float c10 = params[3]; float c11 = params[4]; float c12 = params[5];
+    float c20 = params[6]; float c21 = params[7]; float c22 = params[8];
+
+    out_data[idx]            = c00 * r + c01 * g + c02 * b;
+    out_data[plane + idx]    = c10 * r + c11 * g + c12 * b;
+    out_data[2 * plane + idx] = c20 * r + c21 * g + c22 * b;
 }
+EOF
+echo done

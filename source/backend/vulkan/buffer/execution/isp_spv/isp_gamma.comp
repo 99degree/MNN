@@ -1,26 +1,30 @@
 #version 450
 // isp.gamma — Gamma correction: out = pow(in, inv_gamma), 3-channel.
-// Uniforms (binding 0, baked as a `const` attr by GammaBlock):
-//   {W, H, inv_gamma} — W/H are HOT-SWAPPED from the input tensor dims at
-//   first encode (elementwise attr); inv_gamma stays as baked.
-// In:  float[1,3,H,W] NCHW PLANAR image (R,G,B planes).
+// Binding 0 uniforms: {W, H, pad, pad} — W/H are HOT-SWAPPED from the input
+//   tensor dims at first encode (elementwise attr).
+// Binding 3 params:    {inv_gamma} runtime per-frame float tensor — the graph's
+//   TONE_CURVE/GAMMA_RECIP extra input, same pattern as isp.normalize's
+//   sensor_max. This keeps the exponent a dedicated input tensor, shared with
+//   every other block that consumes toneGammaRecip, and lets the controller
+//   update it per frame instead of baking a build-time constant.
+// In:  float[1,3,H,W] NCHW PLANAR image (R plane, G plane, B plane) — matches
+//      isp.ccm / isp.downscale / isp.demosaic_g2's planar layout.
 // Out: float[1,3,H,W], same planar layout.
 //
-// LAYOUT CONTRACT (2026-10-16): planar NCHW throughout the RGB chain. The
-// previous single-plane idx=y*w+x form processed only the R plane and left
-// G/B unwritten — combined with the ccm/downscale interleave mismatch this
-// produced the full-screen noise.
+// LAYOUT CONTRACT (2026-10-16): planar NCHW throughout the RGB chain.
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) buffer Uniforms {
     float width;
     float height;
-    float inv_gamma;
+    float pad0;
+    float pad1;
 } u;
 
 layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
 layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
+layout(set = 0, binding = 3) readonly  buffer ParamBuf { float params[]; };
 
 void main() {
     uint x = gl_GlobalInvocationID.x;
@@ -29,17 +33,15 @@ void main() {
     int h = int(u.height);
     if (int(x) >= w || int(y) >= h) return;
 
+    float inv = max(params[0], 1e-6);
     int plane = w * h;
     int idx = int(y) * w + int(x);
+
     float r = in_data[idx];
     float g = in_data[plane + idx];
     float b = in_data[2 * plane + idx];
 
-    r = exp(log(clamp(r, 0.0, 1e10) + 1e-9) * u.inv_gamma);
-    g = exp(log(clamp(g, 0.0, 1e10) + 1e-9) * u.inv_gamma);
-    b = exp(log(clamp(b, 0.0, 1e10) + 1e-9) * u.inv_gamma);
-
-    out_data[idx] = r;
-    out_data[plane + idx] = g;
-    out_data[2 * plane + idx] = b;
+    out_data[idx]            = exp(log(clamp(r, 0.0, 1e10) + 1e-9) * inv);
+    out_data[plane + idx]    = exp(log(clamp(g, 0.0, 1e10) + 1e-9) * inv);
+    out_data[2 * plane + idx] = exp(log(clamp(b, 0.0, 1e10) + 1e-9) * inv);
 }
