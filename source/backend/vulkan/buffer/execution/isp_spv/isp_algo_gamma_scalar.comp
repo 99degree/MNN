@@ -7,43 +7,53 @@
 // scalars and emits one float[1]. Keeping them separate means neither has to
 // pretend to be the other.
 //
-//   binding 1 = analog gain  float[1]
-//   binding 2 = gamma output float[1]
+// Bindings follow the universal isp.* positional map:
+//   binding 1 = analog gain   float[1]
+//   binding 2 = gamma output  float[1]
+//   binding 3 = scene change  float[1]
+//   binding 4 = ALGO_GAMMA_GAMMA_BASE   float[1]
+//   binding 5 = ALGO_GAMMA_K1           float[1]
+//   binding 6 = ALGO_GAMMA_K2           float[1]
+//   binding 7 = ALGO_GAMMA_GMIN         float[1]
+//   binding 8 = ALGO_GAMMA_GMAX         float[1]
 //
-// scene_change is a real runtime input but the shader does not need a buffer
-// for it: VulkanFuse's universal map gives extra inputs bindings 3.., so it
-// lands on binding 3 which we declare and read.
-//
-//   binding 3 = scene change float[1]
-//
-// Uniforms (binding 0, baked as a `const` attr by AlgoGammaBlock):
-//   {count, eps, ln10, k1, k2, baseGamma, gMin, gMax}
+// Uniforms (binding 0): zeros — a zeroed const attr is REQUIRED so VulkanFuse
+//   builds a hotSwap buffer (even though a scalar op doesn't use W/H).
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) buffer Uniforms {
     float count;
-    float eps;
-    float ln10;
-    float k1;
-    float k2;
-    float baseGamma;
-    float gMin;
-    float gMax;
+    float pad0;
+    float pad1;
+    float pad2;
 } u;
 
-layout(set = 0, binding = 1) readonly  buffer AGainBuf { float analogGain[]; };
-layout(set = 0, binding = 2) writeonly buffer GammaBuf { float gamma[]; };
-layout(set = 0, binding = 3) readonly  buffer SceneBuf { float sceneChange[]; };
+layout(set = 0, binding = 1) readonly  buffer AGainBuf  { float analogGain[]; };
+layout(set = 0, binding = 2) writeonly buffer GammaBuf  { float gamma[]; };
+layout(set = 0, binding = 3) readonly  buffer SceneBuf  { float sceneChange[]; };
+layout(set = 0, binding = 4) readonly  buffer GammaBaseBuf { float gammaBase[]; };
+layout(set = 0, binding = 5) readonly  buffer K1Buf     { float k1[]; };
+layout(set = 0, binding = 6) readonly  buffer K2Buf     { float k2[]; };
+layout(set = 0, binding = 7) readonly  buffer GMinBuf   { float gMin[]; };
+layout(set = 0, binding = 8) readonly  buffer GMaxBuf   { float gMax[]; };
 
 void main() {
     if (gl_GlobalInvocationID.x != 0u || gl_GlobalInvocationID.y != 0u) return;
 
     float ag = analogGain[0];
-    if (ag < u.eps) ag = u.eps;
+    float eps = 1e-6f;
+    if (ag < eps) ag = eps;
+
+    float gammaBase = gammaBase[0];
+    float k1        = k1[0];
+    float k2        = k2[0];
+    float gMin      = gMin[0];
+    float gMax      = gMax[0];
+    float scene     = sceneChange[0];
 
     // gamma = clip(base + k1*log10(ag) - k2*scene_change, gMin, gMax)
-    float log10Ag = log(ag) / u.ln10;
-    float v = u.baseGamma + u.k1 * log10Ag - u.k2 * sceneChange[0];
+    float log10Ag = log(ag) / 2.302585092994046f;  // / ln(10)
+    float v = gammaBase + k1 * log10Ag - k2 * scene;
 
-    gamma[0] = clamp(v, u.gMin, u.gMax);
+    gamma[0] = clamp(v, gMin, gMax);
 }

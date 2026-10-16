@@ -1,45 +1,49 @@
 #version 450
 // isp.downscale — 2x2 box downsample, 3-channel.
-// Uniforms (binding 0): {W, H, outW, outH} — W/H hot-swapped by the
-// ELEMENTWISE patch from the input tensor dims at first encode.
-// In:  float[1,3,H,W] NCHW PLANAR image (R,G,B planes) — matches the
-//      isp.ccm output layout.
+//
+// Uniforms (binding 0): {W, H, pad, pad} — W/H HOT-SWAPPED by the ELEMENTWISE
+//   patch from the input tensor dims at first encode.
+// Params (binding 3): DOWNSCALE_HW float[4] = {W, H, outW, outH} — the output
+//   resolution rides in as a runtime per-frame input tensor, so the controller
+//   can resize per frame instead of baking it at build time.
+// In:  float[1,3,H,W] NCHW PLANAR image (R,G,B planes) — matches isp.ccm output.
 // Out: float[1,3,H/2,W/2], same planar layout.
 //
-// LAYOUT CONTRACT (2026-10-16): planar NCHW throughout the RGB chain. The
-// previous interleaved indexing ((y*w+x)*3) on planar data scrambled
-// channels — the "snow" pattern.
+// LAYOUT CONTRACT (2026-10-16): planar NCHW throughout the RGB chain.
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) buffer Uniforms {
     float width;
     float height;
-    float outW;
-    float outH;
+    float pad0;
+    float pad1;
 } u;
 
 layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
 layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
+layout(set = 0, binding = 3) readonly  buffer ParamBuf { float params[]; };
 
 void main() {
     uint x = gl_GlobalInvocationID.x;
     uint y = gl_GlobalInvocationID.y;
-    int ow = int(u.outW);
-    int oh = int(u.outH);
-    if (int(x) >= ow || int(y) >= oh) return;
     int w = int(u.width);
-    int inW = w;
-    int inH = int(u.height);
+    int h = int(u.height);
+    if (int(x) >= w || int(y) >= h) return;
 
-    int iplane = inW * inH;
+    int ow = int(params[2]);
+    int oh = int(params[3]);
+    if (ow < 1 || oh < 1) return;          // not yet configured this frame
+    if (int(x) >= ow || int(y) >= oh) return;
+
+    int iplane = w * h;
     int oplane = ow * oh;
     int oidx = int(y) * ow + int(x);
     int sx = int(x) * 2;
     int sy = int(y) * 2;
-    int i00 = sy * inW + sx;
+    int i00 = sy * w + sx;
     int i01 = i00 + 1;
-    int i10 = i00 + inW;
+    int i10 = i00 + w;
     int i11 = i10 + 1;
 
     out_data[oidx]           = (in_data[i00] + in_data[i01] + in_data[i10] + in_data[i11]) * 0.25;
