@@ -57,6 +57,8 @@ extern const unsigned char g_isp_ccm_spv[];
 extern const int g_isp_ccm_spv_len;
 extern const unsigned char g_isp_downscale_spv[];
 extern const int g_isp_downscale_spv_len;
+extern const unsigned char g_isp_demosaic_malvar_spv[];
+extern const int g_isp_demosaic_malvar_spv_len;
 extern const unsigned char g_isp_vignetting_spv[];
 extern const int g_isp_vignetting_spv_len;
 extern const unsigned char g_isp_saturation_spv[];
@@ -191,6 +193,7 @@ static const std::unordered_map<std::string, SpvData> g_ispSpvMap = {
     {"isp.demosaic_edge_ccm",{g_isp_demosaic_edge_ccm_spv, g_isp_demosaic_edge_ccm_spv_len}},
     {"isp.ccm",         {g_isp_ccm_spv,          g_isp_ccm_spv_len}},
     {"isp.downscale",   {g_isp_downscale_spv,    g_isp_downscale_spv_len}},
+    {"isp.demosaic_malvar", {g_isp_demosaic_malvar_spv, g_isp_demosaic_malvar_spv_len}},
     {"isp.vignetting",  {g_isp_vignetting_spv,   g_isp_vignetting_spv_len}},
     {"isp.saturation",  {g_isp_saturation_spv,   g_isp_saturation_spv_len}},
     {"isp.local_contrast",{g_isp_local_contrast_spv, g_isp_local_contrast_spv_len}},

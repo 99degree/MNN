@@ -23,6 +23,7 @@
 #include "isp_spv/isp_demosaic_edge_ccm_spv.h"
 #include "isp_spv/isp_ccm_spv.h"
 #include "isp_spv/isp_downscale_spv.h"
+#include "isp_spv/isp_demosaic_malvar_spv.h"
 #include "isp_spv/isp_vignetting_spv.h"
 #include "isp_spv/isp_saturation_spv.h"
 #include "isp_spv/isp_local_contrast_spv.h"
