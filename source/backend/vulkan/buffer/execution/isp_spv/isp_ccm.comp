@@ -1,10 +1,28 @@
 #version 450
+// isp.ccm — Color Correction Matrix: out = CCM * in + offset, 3-channel.
+// Uniforms (binding 0): {W, H, ccm00..ccm22, offr, offg, offb} = 15 floats.
+//   VulkanFuse's ELEMENTWISE patch hot-swaps W/H (first two floats) from the
+//   input tensor dims at first encode.
+// In:  float[1,3,H,W] NCHW PLANAR image (R plane, G plane, B plane) —
+//      matches isp.demosaic_g2's output layout.
+// Out: float[1,3,H,W], same planar layout.
+//
+// LAYOUT CONTRACT (2026-10-16): every isp.* stage in the RGB chain uses
+// PLANAR NCHW. The previous interleaved indexing ((y*w+x)*3) on planar data
+// scrambled channels per-pixel — the "snow" pattern — because the demosaic
+// upstream writes planes, not packed pixels.
+
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
 layout(set = 0, binding = 0, std430) buffer Uniforms {
-    float width; float height; float ccm00; float ccm01; float ccm02;
-    float ccm10; float ccm11; float ccm12; float ccm20; float ccm21; float ccm22;
-    float offr; float offg; float offb; float pad;
+    float width;
+    float height;
+    float ccm00; float ccm01; float ccm02;
+    float ccm10; float ccm11; float ccm12;
+    float ccm20; float ccm21; float ccm22;
+    float offr; float offg; float offb;
 } u;
+
 layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
 layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
 
@@ -14,11 +32,14 @@ void main() {
     int w = int(u.width);
     int h = int(u.height);
     if (int(x) >= w || int(y) >= h) return;
-    int idx = (int(y) * w + int(x)) * 3;
-    float r = in_data[idx + 0];
-    float g = in_data[idx + 1];
-    float b = in_data[idx + 2];
-    out_data[idx + 0] = u.ccm00 * r + u.ccm01 * g + u.ccm02 * b + u.offr;
-    out_data[idx + 1] = u.ccm10 * r + u.ccm11 * g + u.ccm12 * b + u.offg;
-    out_data[idx + 2] = u.ccm20 * r + u.ccm21 * g + u.ccm22 * b + u.offb;
+
+    int plane = w * h;
+    int idx = int(y) * w + int(x);
+    float r = in_data[idx];
+    float g = in_data[plane + idx];
+    float b = in_data[2 * plane + idx];
+
+    out_data[idx]            = u.ccm00 * r + u.ccm01 * g + u.ccm02 * b + u.offr;
+    out_data[plane + idx]    = u.ccm10 * r + u.ccm11 * g + u.ccm12 * b + u.offg;
+    out_data[2 * plane + idx] = u.ccm20 * r + u.ccm21 * g + u.ccm22 * b + u.offb;
 }

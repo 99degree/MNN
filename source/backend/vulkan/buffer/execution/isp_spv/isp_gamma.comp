@@ -1,8 +1,15 @@
 #version 450
-// isp.gamma — Gamma correction: out = pow(in, 1/gamma)
-// Uniforms: {W, H, gamma}
-// In: float[NCHW] image
-// Out: float[NCHW]
+// isp.gamma — Gamma correction: out = pow(in, inv_gamma), 3-channel.
+// Uniforms (binding 0, baked as a `const` attr by GammaBlock):
+//   {W, H, inv_gamma} — W/H are HOT-SWAPPED from the input tensor dims at
+//   first encode (elementwise attr); inv_gamma stays as baked.
+// In:  float[1,3,H,W] NCHW PLANAR image (R,G,B planes).
+// Out: float[1,3,H,W], same planar layout.
+//
+// LAYOUT CONTRACT (2026-10-16): planar NCHW throughout the RGB chain. The
+// previous single-plane idx=y*w+x form processed only the R plane and left
+// G/B unwritten — combined with the ccm/downscale interleave mismatch this
+// produced the full-screen noise.
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
@@ -18,18 +25,21 @@ layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
 void main() {
     uint x = gl_GlobalInvocationID.x;
     uint y = gl_GlobalInvocationID.y;
-    uint w = uint(u.width);
-    uint h = uint(u.height);
-    if (x >= w || y >= h) return;
+    int w = int(u.width);
+    int h = int(u.height);
+    if (int(x) >= w || int(y) >= h) return;
 
-    uint plane = w * h;
-    uint idx = y * w + x;
-    float v = in_data[idx];
+    int plane = w * h;
+    int idx = int(y) * w + int(x);
+    float r = in_data[idx];
+    float g = in_data[plane + idx];
+    float b = in_data[2 * plane + idx];
 
-    // pow(x, 1/gamma) via log/exp for Vulkan 1.0 (no pow in GLSL ES? No — GLSL 450 has pow()!)
-    v = clamp(v, 0.0, 1e10);
-    v = v + 1e-9;
-    v = exp(log(v) * u.inv_gamma);
+    r = exp(log(clamp(r, 0.0, 1e10) + 1e-9) * u.inv_gamma);
+    g = exp(log(clamp(g, 0.0, 1e10) + 1e-9) * u.inv_gamma);
+    b = exp(log(clamp(b, 0.0, 1e10) + 1e-9) * u.inv_gamma);
 
-    out_data[idx] = v;
+    out_data[idx] = r;
+    out_data[plane + idx] = g;
+    out_data[2 * plane + idx] = b;
 }
