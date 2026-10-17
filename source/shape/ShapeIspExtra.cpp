@@ -90,6 +90,66 @@ public:
             }
             return true;
         }
+        if (type.rfind("isp.display_uint32_", 0) == 0) {
+            // isp.display_uint32_{rgba,bgra,argb}: RGB float planes [1,3,H,W] →
+            // packed NCHW [1,1,H,W] uint32 (one RGBA pixel per uint32 lane).
+            // Without this rule the generic fallback copies the input shape
+            // [1,3,H,W] float, so the shader writes only 1/3 of the tensor and
+            // the readback interprets the rest as garbage (black/snow screen).
+            auto input  = inputs[0];
+            auto output = outputs[0];
+            int dims = input->buffer().dimensions;
+            if (dims < 2) return false;
+            int H, W;
+            if (dims >= 4) {
+                H = input->buffer().dim[2].extent;
+                W = input->buffer().dim[3].extent;
+            } else if (dims == 3) {
+                H = input->buffer().dim[1].extent;
+                W = input->buffer().dim[2].extent;
+            } else {
+                W = input->buffer().dim[1].extent;
+                H = input->buffer().dim[0].extent;
+            }
+            output->buffer().dimensions = 4;
+            output->buffer().dim[0].extent = 1;
+            output->buffer().dim[1].extent = 1;
+            output->buffer().dim[2].extent = H;
+            output->buffer().dim[3].extent = W;
+            TensorUtils::getDescribe(output)->dimensionFormat = MNN_DATA_FORMAT_NCHW;
+            output->buffer().type = halide_type_of<uint32_t>();
+            TensorUtils::setLinearLayout(output);
+            return true;
+        }
+        if (type.rfind("isp.display_uint8_", 0) == 0 && type != "isp.display_uint8_argb") {
+            // isp.display_uint8_{rgba,bgra}: RGB float planes [1,3,H,W] →
+            // packed NCHW [1,1,H*4,W*4]? No — [1,1,H,W*4] uint8? Keep the same
+            // [1,4,H,W] uint8 contract as argb for consistency: 4 channels.
+            auto input  = inputs[0];
+            auto output = outputs[0];
+            int dims = input->buffer().dimensions;
+            if (dims < 2) return false;
+            int H, W;
+            if (dims >= 4) {
+                H = input->buffer().dim[2].extent;
+                W = input->buffer().dim[3].extent;
+            } else if (dims == 3) {
+                H = input->buffer().dim[1].extent;
+                W = input->buffer().dim[2].extent;
+            } else {
+                W = input->buffer().dim[1].extent;
+                H = input->buffer().dim[0].extent;
+            }
+            output->buffer().dimensions = 4;
+            output->buffer().dim[0].extent = 1;
+            output->buffer().dim[1].extent = 4;
+            output->buffer().dim[2].extent = H;
+            output->buffer().dim[3].extent = W;
+            TensorUtils::getDescribe(output)->dimensionFormat = MNN_DATA_FORMAT_NCHW;
+            output->buffer().type = halide_type_of<uint8_t>();
+            TensorUtils::setLinearLayout(output);
+            return true;
+        }
         if (type == "isp.cfa") {
             // Packed-Bayer wire on unified NCHW: input is [1, 4, h, w] where
             // the channel slots carry the 2x2 RGGB quad (h/w = QUAD dims).
