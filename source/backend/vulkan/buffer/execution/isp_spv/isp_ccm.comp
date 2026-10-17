@@ -48,5 +48,3 @@ void main() {
     out_data[plane + idx]    = c10 * r + c11 * g + c12 * b;
     out_data[2 * plane + idx] = c20 * r + c21 * g + c22 * b;
 }
-EOF
-echo done
