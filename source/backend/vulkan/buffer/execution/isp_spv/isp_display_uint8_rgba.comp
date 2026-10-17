@@ -24,9 +24,10 @@ void main() {
     float r = clamp(pow(max(in_data[sz * 0 + idx], 0.0), invGamma) * 255.0, 0.0, 255.0);
     float g = clamp(pow(max(in_data[sz * 1 + idx], 0.0), invGamma) * 255.0, 0.0, 255.0);
     float b = clamp(pow(max(in_data[sz * 2 + idx], 0.0), invGamma) * 255.0, 0.0, 255.0);
-    // Pack RGBA8888 as four uint8 lanes inside one uint32 (LE: A,B,G,R).
-    // Caller reads bytes 0..3 of each uint32 lane: R=byte0, G=byte1, B=byte2, A=byte3=255.
-    // Output shape [1,1,h,w*4] uint8 (NHWC bytes).
-    uint packed = (255u << 24) | (uint(r) << 16) | (uint(g) << 8) | uint(b);
+    // Pack RGBA8888 as four uint8 lanes inside one uint32. Android RGBA_8888
+    // expects byte0=R, byte1=G, byte2=B, byte3=A. On little-endian, byte0 is
+    // the LOW byte of the uint32, so pack (A<<24)|(B<<16)|(G<<8)|R:
+    //   byte0 = R (low), byte1 = G, byte2 = B, byte3 = A (high).
+    uint packed = (255u << 24) | (uint(b) << 16) | (uint(g) << 8) | uint(r);
     out_data[idx] = packed;
 }
