@@ -657,6 +657,19 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
         float v[2] = { (float)tw, (float)th };
         ErrorCode hs = hotSwapConstBuffer(0, v, sizeof(v));
         ISP_VLOG("[VulkanFuse] ELEMENTWISE hotSwap done rc=%d\n", (int)hs);
+        // Structural verification: dump the first 4 floats of the binding-0
+        // const buffer AFTER the patch. Catches the W/H-offset class of bugs
+        // (e.g. lsc_min had wh at offsets 4/5 — the patch wrote W/H into k1/k2
+        // and left wh=(0,0) → shader early-returned → white screen).
+        if (ispVlog() && !mConstStorageOffset.empty()) {
+            auto& off0 = mConstStorageOffset[0];
+            const float* cb = (const float*)mConstStorageBuffer->map();
+            if (cb) {
+                ISP_VLOG("[VulkanFuse] %s const[0..3] after ELEMENTWISE patch: [%.1f, %.1f, %.3f, %.3f] (expect [W,H,...])\n",
+                         mType.c_str(), cb[0], cb[1], cb[2], cb[3]);
+                mConstStorageBuffer->unmap();
+            }
+        }
         fflush(stderr);
         mElementwisePatched = true;
     }
