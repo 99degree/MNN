@@ -123,8 +123,11 @@ public:
         }
         if (type.rfind("isp.display_uint8_", 0) == 0 && type != "isp.display_uint8_argb") {
             // isp.display_uint8_{rgba,bgra}: RGB float planes [1,3,H,W] →
-            // packed NCHW [1,1,H*4,W*4]? No — [1,1,H,W*4] uint8? Keep the same
-            // [1,4,H,W] uint8 contract as argb for consistency: 4 channels.
+            // packed NCHW [1,1,H*4,W*4] uint8. The shader writes one uint32 per
+            // pixel at index y*W+x (LE bytes [R,G,B,A]), so the byte layout is
+            // 4H rows × 4W bytes — NCHW [1,1,4H,4W] uint8. The old [1,4,H,W]
+            // shape misdeclared the row stride (W bytes vs 4W bytes), corrupting
+            // the AHB row walk.
             auto input  = inputs[0];
             auto output = outputs[0];
             int dims = input->buffer().dimensions;
@@ -142,9 +145,9 @@ public:
             }
             output->buffer().dimensions = 4;
             output->buffer().dim[0].extent = 1;
-            output->buffer().dim[1].extent = 4;
-            output->buffer().dim[2].extent = H;
-            output->buffer().dim[3].extent = W;
+            output->buffer().dim[1].extent = 1;
+            output->buffer().dim[2].extent = H * 4;
+            output->buffer().dim[3].extent = W * 4;
             TensorUtils::getDescribe(output)->dimensionFormat = MNN_DATA_FORMAT_NCHW;
             output->buffer().type = halide_type_of<uint8_t>();
             TensorUtils::setLinearLayout(output);
