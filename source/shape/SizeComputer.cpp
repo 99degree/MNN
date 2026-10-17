@@ -160,6 +160,23 @@ bool SizeComputer::computeOutputSize(const MNN::Op* op, const std::vector<Tensor
         for (auto& t : inputs) {
             for (int i=0; i < t->dimensions(); ++i) {
                 if (t->length(i) < 0) {
+                    // Log which op and input has the unresolved dynamic dim so
+                    // the caller can pinpoint the opset that blocks resize.
+                    if (op->name() != nullptr) {
+                        MNN_ERROR("[SizeComputer] op '%s' (type=%d): input has dynamic dim (-1), cannot compute output size\n",
+                                  op->name()->c_str(), op->type());
+                    } else {
+                        MNN_ERROR("[SizeComputer] op type=%d: input has dynamic dim (-1), cannot compute output size\n",
+                                  op->type());
+                    }
+                    for (size_t ti = 0; ti < inputs.size(); ++ti) {
+                        auto tin = inputs[ti];
+                        MNN_ERROR("  input[%zu]: dims=%d ext=[", ti, tin->dimensions());
+                        for (int d = 0; d < tin->dimensions(); ++d) {
+                            MNN_ERROR("%s%d", d > 0 ? "," : "", tin->length(d));
+                        }
+                        MNN_ERROR("]\n");
+                    }
                     return false;
                 }
             }
