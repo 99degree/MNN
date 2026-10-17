@@ -37,6 +37,6 @@ void main() {
     uint ub = packChannel(b, invGamma);
     // Pack ARGB8888 as uint32: alpha<<24 | r<<16 | g<<8 | b (LE: B,G,R,A).
     // Output shape [1,1,h,w] uint32 (one uint32 per pixel, each = a<24|r<16|g<8|b).
-    uint packed = (255u << 24) | (ub << 16) | (ug << 8) | ur;
+    uint packed = (ub << 24) | (ug << 16) | (ur << 8) | 255u;
     out_data[idx] = packed;
 }

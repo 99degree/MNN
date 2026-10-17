@@ -24,6 +24,6 @@ void main() {
     float b = clamp(pow(max(in_data[sz * 2 + idx], 0.0), invGamma) * 255.0, 0.0, 255.0);
     // Pack BGRA8888 as uint32: alpha<<24 | b<<16 | g<<8 | r (LE: R,G,B,A).
     // Output shape [1,1,h,w] uint32 (one uint32 per pixel, each = a<24|b<16|g<8|r).
-    uint packed = (255u << 24) | (uint(g) << 16) | (uint(r) << 8) | uint(b);
+    uint packed = (255u << 24) | (uint(r) << 16) | (uint(g) << 8) | uint(b);
     out_data[idx] = packed;
 }
