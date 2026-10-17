@@ -18,11 +18,16 @@
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) buffer LscParams {
+    // wh MUST be at offset 0/1: the VulkanFuse ELEMENTWISE patch hot-swaps
+    // W/H into the FIRST TWO floats of the binding-0 const buffer. With wh
+    // at any other offset the shader reads wh=(0,0) → early-returns → the
+    // output tensor is never written → downstream reads uninitialized memory.
+    float width;        // hot-swapped from input tensor dims
+    float height;       // hot-swapped from input tensor dims
     float k1;           // radial r^2 coefficient
     float k2;           // radial r^4 coefficient
     float vcmNorm;      // normalized VCM position [0,1]
     float strength;     // LSC strength multiplier [0,1]
-    vec2 wh;            // (width, height) patched per-frame by elementwise hotSwap
     float pad0;
     float pad1;
     float pad2;
@@ -61,8 +66,8 @@ float computeGain(int row, int col, int c) {
 void main() {
     uint x = gl_GlobalInvocationID.x;
     uint y = gl_GlobalInvocationID.y;
-    uint w = uint(p.wh.x);
-    uint h = uint(p.wh.y);
+    uint w = uint(p.width);
+    uint h = uint(p.height);
     if (x >= w || y >= h) return;
 
     // Bayer RGGB quadrant selector -> 4 channels (R, G1, G2, B)
