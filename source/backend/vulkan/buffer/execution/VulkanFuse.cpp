@@ -451,9 +451,12 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
     // mPipeline/mDescriptorSet null so the Creator can reject the op and let
     // MNN fall back to the CPU backend instead of crashing the process.
     if (!mPipeline.get()) {
-        fprintf(stderr, "[VulkanFuse] pipeline creation FAILED for %s — op will not run\n",
-                mType.c_str());
-        fflush(stderr);
+        // MNN_ERROR so the message lands on the MNNJNI logcat tag (captured by
+        // the app's MNN_INTERNAL tee), not just raw stderr which the app does
+        // not persist. Knowing WHICH isp.* op failed pipeline creation is the
+        // fastest way to pinpoint a bad shader on a new device.
+        MNN_ERROR("[VulkanFuse] pipeline creation FAILED for %s — op will not run\n",
+                  mType.c_str());
         fence->wait();
         return;
     }
