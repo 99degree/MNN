@@ -1,10 +1,26 @@
 #version 450
+// isp.blc — post-CFA per-channel black level correction.
+// Input:  [1, 4, h, w] NCHW PLANAR CFA quad (plane p = channel p of every px;
+//         plane 0=R(TL) 1=G1(TR) 2=G2(BL) 3=B(BR) — same layout isp.cfa writes).
+// Output: same shape/planarity; out = (in - black_c) * gain per channel.
+// Bindings (universal isp.* positional map, explicit attrs from BlcBlock):
+//   binding 0 = {W/2, H/2, pad, pad, pad, gain} — W/H at offsets 0/1 for the
+//               VulkanFuse ELEMENTWISE per-frame hot-swap. The per-channel
+//               black coeffs ride in as the BLC_PATTERN float[4] RUNTIME
+//               TENSOR (binding 3), NOT baked here.
+//   binding 1 = input CFA quad (readonly, planar)
+//   binding 2 = output CFA quad (writeonly, planar)
+//   binding 3 = BLC_PATTERN [4] {R, Gr, Gb, B} in graph space [0,1]
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 layout(set = 0, binding = 0, std430) buffer Uniforms {
-    float width; float height; float black_r; float black_g; float black_b; float gain;
+    float width;   // = quad W (input dim[3]); hot-swapped per frame
+    float height;  // = quad H (input dim[2]); hot-swapped per frame
+    float pad0; float pad1; float pad2;
+    float gain;
 } u;
 layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
 layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
+layout(set = 0, binding = 3) readonly  buffer BlcBuf { float blc_data[]; }; // [4]
 
 void main() {
     uint x = gl_GlobalInvocationID.x;
@@ -12,8 +28,13 @@ void main() {
     int w = int(u.width);
     int h = int(u.height);
     if (int(x) >= w || int(y) >= h) return;
-    int idx = (int(y) * w + int(x)) * 3;
-    out_data[idx + 0] = (in_data[idx + 0] - u.black_r) * u.gain;
-    out_data[idx + 1] = (in_data[idx + 1] - u.black_g) * u.gain;
-    out_data[idx + 2] = (in_data[idx + 2] - u.black_b) * u.gain;
+
+    int idx = int(y) * w + int(x);      // pixel index inside one plane
+    uint plane = uint(w) * uint(h);     // plane stride
+
+    // BLC_PATTERN order {R, Gr, Gb, B} = CFA plane order {0,1,2,3}
+    out_data[idx]               = (in_data[idx]               - blc_data[0]) * u.gain; // R  plane 0
+    out_data[plane + idx]       = (in_data[plane + idx]       - blc_data[1]) * u.gain; // G1 plane 1
+    out_data[plane * 2u + idx]  = (in_data[plane * 2u + idx]  - blc_data[2]) * u.gain; // G2 plane 2
+    out_data[plane * 3u + idx]  = (in_data[plane * 3u + idx]  - blc_data[3]) * u.gain; // B  plane 3
 }
