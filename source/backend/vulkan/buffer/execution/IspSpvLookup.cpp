@@ -13,6 +13,7 @@
 #include "isp_spv/isp_tone_spv.h"
 #include "isp_spv/isp_normalize_spv.h"
 #include "isp_spv/isp_blc_spv.h"
+#include "isp_spv/isp_blc_min_spv.h"
 #include "isp_spv/isp_crop_blc_spv.h"
 #include "isp_spv/g_isp_crop_blc_norm_cfa_spv.h"
 #include "isp_spv/isp_cfa_spv.h"

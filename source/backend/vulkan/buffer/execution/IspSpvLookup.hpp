@@ -32,6 +32,8 @@ extern const int g_isp_tone_spv_len;
 extern const unsigned char g_isp_normalize_spv[];
 extern const int g_isp_normalize_spv_len;
 extern const unsigned char g_isp_blc_spv[];
+extern const int g_isp_blc_min_spv_len;
+extern const unsigned char g_isp_blc_min_spv[];
 extern const int g_isp_blc_spv_len;
 extern const unsigned char g_isp_crop_blc_spv[];
 extern const unsigned char g_isp_crop_spv[];
@@ -181,6 +183,7 @@ static const std::unordered_map<std::string, SpvData> g_ispSpvMap = {
     {"isp.tone",        {g_isp_tone_spv,         g_isp_tone_spv_len}},
     {"isp.normalize",   {g_isp_normalize_spv,    g_isp_normalize_spv_len}},
     {"isp.blc",         {g_isp_blc_spv,          g_isp_blc_spv_len}},
+    {"isp.blc_min",     {g_isp_blc_min_spv,      g_isp_blc_min_spv_len}},
     {"isp.crop_blc",    {g_isp_crop_blc_spv,     g_isp_crop_blc_spv_len}},
     {"isp.crop_blc_norm_cfa", {g_isp_crop_blc_norm_cfa_spv, g_isp_crop_blc_norm_cfa_spv_len}},
     {"isp.crop",         {g_isp_crop_spv,          g_isp_crop_spv_len}},
