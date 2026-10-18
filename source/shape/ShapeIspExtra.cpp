@@ -154,9 +154,12 @@ public:
             return true;
         }
         if (type == "isp.cfa") {
-            // Packed-Bayer wire on unified NCHW: input is [1, 4, h, w] where
-            // the channel slots carry the 2x2 RGGB quad (h/w = QUAD dims).
-            // Output: NCHW [1, 4, h, w] (channel plane layout tag).
+            // RAW quad site-select on the unified NCHW wire:
+            //   input  = [1, 1, H_src, W_src] full-res planar raw plane
+            //   output = [1, 4, H_src/2, W_src/2] planar quad
+            // The old rule assumed a packed [1,4,h,w] quad INPUT and copied
+            // h,w through; with the planar full-res input that left the quad
+            // at full resolution (4x the pixels the shader writes).
             auto input  = inputs[0];
             auto output = outputs[0];
             int dims = input->buffer().dimensions;
@@ -170,8 +173,8 @@ public:
             output->buffer().dimensions = 4;
             output->buffer().dim[0].extent = 1;
             output->buffer().dim[1].extent = 4;
-            output->buffer().dim[2].extent = h;
-            output->buffer().dim[3].extent = w;
+            output->buffer().dim[2].extent = h > 0 ? h / 2 : h;
+            output->buffer().dim[3].extent = w > 0 ? w / 2 : w;
             TensorUtils::getDescribe(output)->dimensionFormat = MNN_DATA_FORMAT_NCHW;
             output->buffer().type = inputs[0]->buffer().type;
             TensorUtils::setLinearLayout(output);

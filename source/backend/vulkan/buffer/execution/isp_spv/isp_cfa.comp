@@ -1,27 +1,44 @@
 #version 450
-// isp.cfa — packed-Bayer NHWC → channel-plane deinterleave.
-// Input:  [1, h, w, 4] float; each pixel packs its 2x2 RGGB quad:
-//         ch0=R(TL) ch1=G1(TR) ch2=G2(BL) ch3=B(BR).
-// Output: [1, 4, h, w] NCHW float planes (plane p = channel p of every px).
-// Dispatch covers the pixel grid (w, h); pure channel shuffle, no spatial
-// gather — the packing already did the "demosaic site selection".
+// isp.cfa — RAW Bayer quad site-select: [1,1,H,W] planar -> [1,4,H/2,W/2] planar.
+//
+// Input:  [1,1,H,W] float raw plane (full-res, one sample per pixel).
+// Output: [1,4,H/2,W/2] NCHW float PLANAR quad: plane p holds channel p of
+//         every quad — [TL, TR, BL, BR] = [R, G1, G2, B] for RGGB.
+// Bindings: 0 = uniforms {W_src,H_src,pad,pad} (W/H hot-swapped per encode);
+//           1 = input plane; 2 = output quad planes.
+//
+// The previous shader assumed a packed [1,h,w,4] NHWC input (base = idx*4) and
+// dispatched over the QUAD grid — wrong for the planar raw plane it is fed.
+// This version dispatches over the QUAD grid and reads the 2x2 sites directly
+// from the full-res plane.
+#extension GL_EXT_scalar_block_layout : require
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 layout(set = 0, binding = 0, std430) buffer Uniforms {
-    float width; float height; float pad0; float pad1;
+    float width;   // source (full-res) W
+    float height;  // source (full-res) H
+    float pad0; float pad1;
 } u;
 layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
 layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
 
 void main() {
-    uint x = gl_GlobalInvocationID.x;
-    uint y = gl_GlobalInvocationID.y;
-    int w = int(u.width);
-    int h = int(u.height);
-    if (int(x) >= w || int(y) >= h) return;
-    int idx  = int(y) * w + int(x);   // plane/quad index
-    int base = idx * 4;               // NHWC flat base for this pixel
-    out_data[idx]                 = in_data[base + 0];   // R  plane 0
-    out_data[w * h * 1 + idx]     = in_data[base + 1];   // G1 plane 1
-    out_data[w * h * 2 + idx]     = in_data[base + 2];   // G2 plane 2
-    out_data[w * h * 3 + idx]     = in_data[base + 3];   // B  plane 3
+    uint x = gl_GlobalInvocationID.x;   // quad column
+    uint y = gl_GlobalInvocationID.y;   // quad row
+    int srcW = int(u.width);
+    int srcH = int(u.height);
+    int qw = srcW / 2;
+    int qh = srcH / 2;
+    if (int(x) >= qw || int(y) >= qh) return;
+
+    int inX = int(x) * 2;
+    int inY = int(y) * 2;
+    int base = inY * srcW + inX;
+    int idx  = int(y) * qw + int(x);       // quad index
+    uint plane = uint(qw) * uint(qh);      // plane stride
+
+    // quad sites: TL, TR, BL, BR
+    out_data[idx]              = in_data[base];             // TL -> plane 0
+    out_data[plane + idx]      = in_data[base + 1];         // TR -> plane 1
+    out_data[plane * 2u + idx] = in_data[base + srcW];      // BL -> plane 2
+    out_data[plane * 3u + idx] = in_data[base + srcW + 1];  // BR -> plane 3
 }

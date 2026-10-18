@@ -1,16 +1,21 @@
 #version 450
-// isp.normalize — packed-Bayer NHWC scale: out = raw / sensor_max.
-// Input:  [1, h, w, 4] float (u16→f32 promoted by host feed path), where
-//         each pixel packs its full 2x2 RGGB quad into 4 channel slots:
-//         ch0=R(TL) ch1=G1(TR) ch2=G2(BL) ch3=B(BR).
-// Params: binding 3 = {sensor_max} runtime float tensor (per-frame WB-style).
-// Output: [1, h, w, 4] float, identical layout (flat elementwise scale).
+// isp.normalize — planar single-channel RAW scale: out = raw / sensor_max.
+//
+// Input:  [1,1,H,W] float raw plane (host promoted u16->f32).
+// Output: [1,1,H,W] float, identical layout (flat elementwise scale).
+// Params: binding 3 = {sensor_max} runtime float tensor (per-frame).
+// Bindings: 0 = uniforms {W,H,pad,pad} (W/H hot-swapped per encode);
+//           1 = input plane; 2 = output plane; 3 = sensor_max[1].
+//
+// The previous shader assumed a packed [1,h,w,4] NHWC quad (base = idx*4) and
+// therefore read 4x past each pixel of the actual planar raw plane.
+#extension GL_EXT_scalar_block_layout : require
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 layout(set = 0, binding = 0, std430) buffer Uniforms {
     float width; float height; float pad0; float pad1;
 } u;
-layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
-layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
+layout(set = 0, binding = 1) readonly  buffer InBuf   { float in_data[]; };
+layout(set = 0, binding = 2) writeonly buffer OutBuf  { float out_data[]; };
 layout(set = 0, binding = 3) readonly  buffer ParamBuf { float params[]; };
 
 void main() {
@@ -19,10 +24,7 @@ void main() {
     int w = int(u.width);
     int h = int(u.height);
     if (int(x) >= w || int(y) >= h) return;
-    // NHWC flat base: pixel (x, y) owns elements [base .. base+3].
-    int base = (int(y) * w + int(x)) * 4;
+    int idx = int(y) * w + int(x);
     float smax = max(params[0], 1e-6);
-    for (int c = 0; c < 4; ++c) {
-        out_data[base + c] = in_data[base + c] / smax;
-    }
+    out_data[idx] = in_data[idx] / smax;
 }
