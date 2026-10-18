@@ -101,6 +101,16 @@ void main() {
             + g01 * (1.0 - tx) * ty
             + g11 * tx * ty;
 
+    // Plane-walk: the input is the [1,4,h,w] PLANAR CFA quad produced by
+    // isp.cfa / isp.blc_min. The previous body indexed y*w+x (a SINGLE plane)
+    // and wrote only plane 0, leaving the three chroma planes at whatever the
+    // memory pool held — demosaic/ccm then consumed garbage. Multiply all four
+    // planes by the same procedural gain (channels share the radial model; the
+    // per-channel `chan` selector above only positions the grid sample).
     uint idx = y * w + x;
-    out_data[idx] = in_data[idx] * g;
+    uint plane = w * h;
+    for (int c = 0; c < 4; ++c) {
+        uint o = uint(c) * plane + idx;
+        out_data[o] = in_data[o] * g;
+    }
 }
