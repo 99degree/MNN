@@ -472,7 +472,7 @@ public:
             if (inC < 1) inC = 1;
             float fW = 0.f, fH = 0.f;
             ispConstFloat(extra, 2, &fW);   // cropW
-            ispConstFloat(extra, 3, &fH);   // cropH
+            ispConstFloat(extra, 3, &fH);   // cropH (<=0 = full source height)
             int outW = (fW > 0.f) ? (int)fW : inW;
             int outH = (fH > 0.f) ? (int)fH : inH;
             if (outW <= 0 || outH <= 0) {
