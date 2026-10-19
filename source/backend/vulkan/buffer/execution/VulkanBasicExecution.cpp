@@ -22,6 +22,13 @@ ErrorCode VulkanBasicExecutionDirect::onExecute(const std::vector<Tensor *> &inp
     if (NO_ERROR != code) {
         return code;
     }
+    // [TRACE] Per-frame execution marker: proves each Vulkan op's dispatch
+    // actually runs. Output goes to the VulkanFuse trace file when armed.
+    extern FILE* ispTraceSink();
+    if (FILE* tf = ispTraceSink()) {
+        fprintf(tf, "[EXEC] onExecute op=%s\n", mEncoder->getName().c_str());
+        fflush(tf);
+    }
     extra->pushCommand(mCmdBuffer->get());
     // [PROBE] Under ISP_DEBUG_VLOG: flush the queue so the recorded
     // dispatch + probe copy complete, then dump via afterExecute().

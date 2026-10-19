@@ -42,6 +42,9 @@ static void ensureTraceFile() {
     }
 }
 
+// Trace sink accessor for other TUs (VulkanBasicExecution per-frame trace).
+FILE* ispTraceSink() { return s_traceFile; }
+
 // Runtime override (JNI): setprop/file unnecessary — broadcast-toggleable.
 static std::atomic<bool> s_vlogOverride{false};
 extern "C" __attribute__((visibility("default"))) void ispSetVlog(bool on) {
