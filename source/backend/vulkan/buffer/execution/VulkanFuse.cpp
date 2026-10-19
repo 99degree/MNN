@@ -8,6 +8,7 @@
 
 #include <stdio.h>
 #include <android/log.h>
+#include <sys/system_properties.h>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -32,9 +33,16 @@ namespace MNN {
 // camera stream) dominate host overhead; they are opt-in via ISP_DEBUG_VLOG so
 // the default build is silent + fast. Default OFF.
 static inline bool ispVlog() {
-    static const bool v = (getenv("ISP_DEBUG_VLOG") &&
-                           strcmp(getenv("ISP_DEBUG_VLOG"), "0") != 0);
-    return v;
+    // Env OR system property (setprop debug.isp_vlog 1) — the property is
+    // readable at runtime from Termux without an app restart.
+    static const bool envV = [] {
+        const char* e = getenv("ISP_DEBUG_VLOG");
+        return e && strcmp(e, "0") != 0;
+    }();
+    if (envV) return true;
+    char propVal[PROP_VALUE_MAX] = {0};
+    __system_property_get("debug.isp_vlog", propVal);
+    return propVal[0] != '\0' && strcmp(propVal, "0") != 0;
 }
 #define ISP_VLOG(...) do { if (ispVlog()) { \
         char _vbuf[512]; snprintf(_vbuf, sizeof(_vbuf), __VA_ARGS__); \
