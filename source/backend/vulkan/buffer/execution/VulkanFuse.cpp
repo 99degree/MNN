@@ -47,6 +47,7 @@ static std::atomic<bool> s_vlogOverride{false};
 extern "C" __attribute__((visibility("default"))) void ispSetVlog(bool on) {
     s_vlogOverride.store(on);
     if (on) ensureTraceFile();
+    if (s_traceFile) { fprintf(s_traceFile, "[VulkanFuse] ispSetVlog(%d) — trace armed\n", on ? 1 : 0); fflush(s_traceFile); }
     __android_log_print(ANDROID_LOG_INFO, "VulkanFuse", "ispSetVlog: %d", on ? 1 : 0);
 }
 
