@@ -1,5 +1,8 @@
 #version 450
-// isp.ispc_stats — ReduceMean over spatial dims, per-channel
+// isp.ispc_stats — ReduceMean over spatial dims, per-channel. PURE compute:
+// the running average lives in the ISPController (USER DIRECTIVE 2026-10-20),
+// which feeds the smoothed coefficients back via the UNIFIED_STATS runtime
+// input handled outside this op.
 // Uniforms: {W, H, C}
 // In:  float[C,H,W]  NCHW image (C channels, C ≤ 256, 256 % C == 0)
 // Out: float[C] per-channel means
@@ -7,7 +10,7 @@
 // the channel, tid / C is the lane within that channel's group. Each group
 // strides its own H*W plane, then tree-reduces within the group only.
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
-layout(set = 0, binding = 0, std430) buffer Uniforms { float width; float height; float channels; } u;
+layout(set = 0, binding = 0, std430) buffer Uniforms { float width; float height; float channels; float pad; } u;
 layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
 layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
 
