@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <android/log.h>
 #include <sys/system_properties.h>
+#include <ctime>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -40,9 +41,22 @@ static inline bool ispVlog() {
         return e && strcmp(e, "0") != 0;
     }();
     if (envV) return true;
-    char propVal[PROP_VALUE_MAX] = {0};
-    __system_property_get("debug.isp_vlog", propVal);
-    return propVal[0] != '\0' && strcmp(propVal, "0") != 0;
+    // File-based gate: /sdcard/Download/isp_vlog — writable from Termux,
+    // readable by the app (media_rw). Cache the stat result for 2 s.
+    static long lastCheck = 0;
+    static bool lastVal = false;
+    long now = (long)time(nullptr);
+    if (now - lastCheck >= 2) {
+        lastCheck = now;
+        lastVal = false;
+        FILE* f = fopen("/sdcard/Download/isp_vlog", "r");
+        if (f) {
+            char buf[8] = {0};
+            if (fgets(buf, sizeof(buf), f) && strcmp(buf, "0") != 0) lastVal = true;
+            fclose(f);
+        }
+    }
+    return lastVal;
 }
 #define ISP_VLOG(...) do { if (ispVlog()) { \
         char _vbuf[512]; snprintf(_vbuf, sizeof(_vbuf), __VA_ARGS__); \
