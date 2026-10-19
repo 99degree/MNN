@@ -77,6 +77,12 @@ public:
     virtual VulkanBasicExecution* onCreate(const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs, const MNN::Op* op,
                                 Backend* backend) const override {
         auto extra = op->main_as_Extra();
+        if (extra && extra->type()) {
+            // [TRACE] Every Extra op reaching the Vulkan creator — logged to
+            // the trace file if armed. Shows WHICH ops reach VulkanFuse.
+            FILE* tf = fopen("/sdcard/Download/isp_vlog_trace", "a");
+            if (tf) { fprintf(tf, "[VulkanFuseCreator] onCreate type=%s\n", extra->type()->str().c_str()); fflush(tf); fclose(tf); }
+        }
         if (nullptr == extra) return nullptr;
         if (nullptr == extra->attr()) return nullptr;
         if(extra->type()->str() == "ExtraConvolution2DPrelu") return nullptr;

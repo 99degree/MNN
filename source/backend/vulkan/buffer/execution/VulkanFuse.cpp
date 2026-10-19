@@ -96,6 +96,10 @@ static void _logElapsed(const char* label, const std::chrono::steady_clock::time
 }
 
 VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outputSize) : VulkanBasicExecution(bn) {
+    if (s_traceFile && extra->type()) {
+        fprintf(s_traceFile, "[VulkanFuse] CREATED op type=%s\n", extra->type()->str().c_str());
+        fflush(s_traceFile);
+    }
     auto vkBn = static_cast<VulkanBackend*>(bn);
     auto factory = vkBn->getPipelineFactory();
     if (extra->type()) mType = extra->type()->str();
