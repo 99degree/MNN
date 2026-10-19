@@ -43,6 +43,7 @@
 #include "isp_spv/isp_algo_cct_spv.h"
 #include "isp_spv/isp_algo_awb_spv.h"
 #include "isp_spv/isp_crop_spv.h"
+#include "isp_spv/isp_crop_debug_spv.h"
 #include "isp_spv/isp_raw_blc_spv.h"
 #include "isp_spv/isp_histogram_spv.h"
 #include "isp_spv/isp_aaf_spv.h"

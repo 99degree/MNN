@@ -1,0 +1,35 @@
+#version 450
+#extension GL_EXT_scalar_block_layout : require
+// DEBUG BISECT VARIANT of isp.crop: ignores the input and writes
+// out_data[idx] = float(idx). If the output tensor shows 0,1,2,... the WRITE
+// path works and the problem is the input binding; if it stays 0 the write
+// path (or the dispatch) is broken.
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) uniform Uniforms {
+    float width;
+    float height;
+    float cropW;
+    float cropH;
+    float startW;
+    float startH;
+};
+
+layout(set = 0, binding = 1, std430) readonly buffer InBuf {
+    float in_data[];
+};
+
+layout(set = 0, binding = 2, std430) writeonly buffer OutBuf {
+    float out_data[];
+};
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    int ow = int(cropW);
+    int oh = int(cropH);
+    if (ow <= 0) ow = int(width);
+    if (oh <= 0) oh = int(height);
+    if (int(x) >= ow || int(y) >= oh) return;
+    out_data[int(y) * ow + int(x)] = float(int(y) * ow + int(x));
+}
