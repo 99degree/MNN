@@ -8,6 +8,7 @@
 
 #include <stdio.h>
 #include <android/log.h>
+#include <atomic>
 #include <sys/system_properties.h>
 #include <ctime>
 #include <chrono>
@@ -41,6 +42,14 @@ static void ensureTraceFile() {
     }
 }
 
+// Runtime override (JNI): setprop/file unnecessary — broadcast-toggleable.
+static std::atomic<bool> s_vlogOverride{false};
+extern "C" void ispSetVlog(bool on) {
+    s_vlogOverride.store(on);
+    if (on) ensureTraceFile();
+    __android_log_print(ANDROID_LOG_INFO, "VulkanFuse", "ispSetVlog: %d", on ? 1 : 0);
+}
+
 static inline bool ispVlog() {
     // Env OR system property (setprop debug.isp_vlog 1) — the property is
     // readable at runtime from Termux without an app restart.
@@ -65,8 +74,10 @@ static inline bool ispVlog() {
         }
     }
     if (lastVal && !s_traceFile) ensureTraceFile();
+    if (s_vlogOverride) return true;
     return lastVal;
 }
+
 
 #define ISP_VLOG(...) do { if (ispVlog()) { \
         char _vbuf[512]; snprintf(_vbuf, sizeof(_vbuf), __VA_ARGS__); \
