@@ -105,12 +105,16 @@ public:
             if (extra->type() && extra->type()->str().rfind("isp.", 0) == 0) {
                 auto spvData = lookupIspSpv(extra->type()->str());
                 if (spvData.data != nullptr && spvData.size > 0) {
+                    { FILE* tf = fopen("/sdcard/Download/isp_vlog_trace", "a");
+                      if (tf) { fprintf(tf, "[VulkanFuseCreator] ACCEPT '%s' (embedded SPIR-V, %d bytes)\n", extra->type()->str().c_str(), spvData.size); fflush(tf); fclose(tf); } }
                     fprintf(stderr, "[VulkanFuse] ACCEPT '%s' (embedded SPIR-V, %d bytes) — %d inputs, %d outputs\n",
                               extra->type()->str().c_str(), spvData.size, (int)inputs.size(), (int)outputs.size());
                     fflush(stderr);
                     return new VulkanFuse(extra, backend, (int)inputs.size(), (int)outputs.size()); // embedded SPIR-V lookup happens in constructor
                 }
             }
+            { FILE* tf = fopen("/sdcard/Download/isp_vlog_trace", "a");
+              if (tf) { fprintf(tf, "[VulkanFuseCreator] REJECT '%s' (no SPIR-V)\n", extra->type() ? extra->type()->str().c_str() : "?"); fflush(tf); fclose(tf); } }
             fprintf(stderr, "[VulkanFuse] REJECT '%s' (no SPIR-V) — %d inputs, %d outputs\n",
                       extra->type()->str().c_str(), (int)inputs.size(), (int)outputs.size());
             fflush(stderr);
