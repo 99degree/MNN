@@ -94,6 +94,8 @@ inline const char* const kIspOpsetNames[] = {
     "isp.pyramid",
     "isp.raw_blc",
     "isp.raw_blc_min",
+    "isp.blc_min",
+    "isp.demosaic_malvar",
     "isp.saturation",
     "isp.stats",
     "isp.temporal_denoise",

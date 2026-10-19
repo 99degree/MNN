@@ -7,6 +7,7 @@
 //
 
 #include <stdio.h>
+#include <android/log.h>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -35,7 +36,10 @@ static inline bool ispVlog() {
                            strcmp(getenv("ISP_DEBUG_VLOG"), "0") != 0);
     return v;
 }
-#define ISP_VLOG(...) do { if (ispVlog()) { fprintf(stderr, __VA_ARGS__); fflush(stderr); } } while (0)
+#define ISP_VLOG(...) do { if (ispVlog()) { \
+        char _vbuf[512]; snprintf(_vbuf, sizeof(_vbuf), __VA_ARGS__); \
+        fprintf(stderr, "%s", _vbuf); fflush(stderr); \
+        __android_log_print(ANDROID_LOG_INFO, "VulkanFuse", "%s", _vbuf); } } while (0)
 
 // Helper to log stage elapsed time with stage label
 static void _logStage(const char* stage, const std::chrono::steady_clock::time_point& start) {
