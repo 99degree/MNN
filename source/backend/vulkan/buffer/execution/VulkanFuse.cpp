@@ -44,7 +44,7 @@ static void ensureTraceFile() {
 
 // Runtime override (JNI): setprop/file unnecessary — broadcast-toggleable.
 static std::atomic<bool> s_vlogOverride{false};
-extern "C" void ispSetVlog(bool on) {
+extern "C" __attribute__((visibility("default"))) void ispSetVlog(bool on) {
     s_vlogOverride.store(on);
     if (on) ensureTraceFile();
     __android_log_print(ANDROID_LOG_INFO, "VulkanFuse", "ispSetVlog: %d", on ? 1 : 0);
