@@ -33,6 +33,14 @@ namespace MNN {
 // perf run these fprintf(stderr) calls (~14 ops x ~10 lines per frame on a 30fps
 // camera stream) dominate host overhead; they are opt-in via ISP_DEBUG_VLOG so
 // the default build is silent + fast. Default OFF.
+// Trace sink: opened lazily when the gate is on; Termux reads the file.
+static FILE* s_traceFile = nullptr;
+static void ensureTraceFile() {
+    if (!s_traceFile) {
+        s_traceFile = fopen("/sdcard/Download/isp_vlog_trace", "w");
+    }
+}
+
 static inline bool ispVlog() {
     // Env OR system property (setprop debug.isp_vlog 1) — the property is
     // readable at runtime from Termux without an app restart.
@@ -56,12 +64,15 @@ static inline bool ispVlog() {
             fclose(f);
         }
     }
+    if (lastVal && !s_traceFile) ensureTraceFile();
     return lastVal;
 }
+
 #define ISP_VLOG(...) do { if (ispVlog()) { \
         char _vbuf[512]; snprintf(_vbuf, sizeof(_vbuf), __VA_ARGS__); \
         fprintf(stderr, "%s", _vbuf); fflush(stderr); \
-        __android_log_print(ANDROID_LOG_INFO, "VulkanFuse", "%s", _vbuf); } } while (0)
+        __android_log_print(ANDROID_LOG_INFO, "VulkanFuse", "%s", _vbuf); \
+        if (s_traceFile) { fprintf(s_traceFile, "%s", _vbuf); fflush(s_traceFile); } } } while (0)
 
 // Helper to log stage elapsed time with stage label
 static void _logStage(const char* stage, const std::chrono::steady_clock::time_point& start) {
