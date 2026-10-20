@@ -1,5 +1,5 @@
 #version 450
-// isp.downscale — 2x2 box downsample, 3-channel.
+// isp.downscale — ARBITRARY-ratio downsample, 3-channel planar NCHW.
 //
 // Uniforms (binding 0): {W, H, pad, pad} — W/H HOT-SWAPPED by the ELEMENTWISE
 //   patch from the input tensor dims at first encode.
@@ -7,7 +7,14 @@
 //   resolution rides in as a runtime per-frame input tensor, so the controller
 //   can resize per frame instead of baking it at build time.
 // In:  float[1,3,H,W] NCHW PLANAR image (R,G,B planes) — matches isp.ccm output.
-// Out: float[1,3,H/2,W/2], same planar layout.
+// Out: float[1,3,outH,outW], same planar layout.
+//
+// [FIX 2026-10-20] The previous shader was a 2x2 box downsample: it assumed
+// outW == W/2 EXACTLY and sampled sx = x*2. For the real case (input
+// 1296x972 quad-res RGB -> output 480x360, a ~2.7x scale) it read only the
+// left 74% of the source — i.e. it CROPPED instead of scaling. This version
+// maps each output pixel to its source footprint and area-averages the
+// covered source rect (proper box filter for any ratio, down or up).
 //
 // LAYOUT CONTRACT (2026-10-16): planar NCHW throughout the RGB chain.
 
@@ -25,28 +32,54 @@ layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
 layout(set = 0, binding = 3) readonly  buffer ParamBuf { float params[]; };
 
 void main() {
-    uint x = gl_GlobalInvocationID.x;
-    uint y = gl_GlobalInvocationID.y;
-    int w = int(u.width);
-    int h = int(u.height);
-    if (int(x) >= w || int(y) >= h) return;
+    uint xo = gl_GlobalInvocationID.x;
+    uint yo = gl_GlobalInvocationID.y;
+    int w = int(u.width);    // source W (full frame)
+    int h = int(u.height);   // source H
+    int ow = int(params[2]); // output W
+    int oh = int(params[3]); // output H
+    if (ow < 1 || oh < 1) return;
+    if (int(xo) >= ow || int(yo) >= oh) return;
 
-    int ow = int(params[2]);
-    int oh = int(params[3]);
-    if (ow < 1 || oh < 1) return;          // not yet configured this frame
-    if (int(x) >= ow || int(y) >= oh) return;
+    int x = int(xo);
+    int y = int(yo);
+
+    // Source footprint of this output pixel: [x0, x1) x [y0, y1)
+    // area-average with fractional edge weights (proper box filter).
+    float sx0 = float(x) * float(w) / float(ow);
+    float sy0 = float(y) * float(h) / float(oh);
+    float sx1 = float(x + 1) * float(w) / float(ow);
+    float sy1 = float(y + 1) * float(h) / float(oh);
+
+    int x0 = int(sx0);
+    int y0 = int(sy0);
+    int x1 = min(int(sx1 + 0.9999), w);  // ceil, clamped
+    int y1 = min(int(sy1 + 0.9999), h);
+    x1 = max(x1, x0 + 1);                // at least one source pixel
+    y1 = max(y1, y0 + 1);
 
     int iplane = w * h;
     int oplane = ow * oh;
-    int oidx = int(y) * ow + int(x);
-    int sx = int(x) * 2;
-    int sy = int(y) * 2;
-    int i00 = sy * w + sx;
-    int i01 = i00 + 1;
-    int i10 = i00 + w;
-    int i11 = i10 + 1;
+    int oidx = y * ow + x;
 
-    out_data[oidx]           = (in_data[i00] + in_data[i01] + in_data[i10] + in_data[i11]) * 0.25;
-    out_data[oplane + oidx]  = (in_data[iplane + i00] + in_data[iplane + i01] + in_data[iplane + i10] + in_data[iplane + i11]) * 0.25;
-    out_data[2 * oplane + oidx] = (in_data[2 * iplane + i00] + in_data[2 * iplane + i01] + in_data[2 * iplane + i10] + in_data[2 * iplane + i11]) * 0.25;
+    // Area-average each plane over the covered source rect.
+    for (int c = 0; c < 3; c++) {
+        float sum = 0.0;
+        float wsum = 0.0;
+        for (int sy = y0; sy < y1; sy++) {
+            float wy = 1.0;
+            if (sy == y0) wy = min(1.0, float(sy + 1) - sy0);          // top frac
+            if (sy == y1 - 1) wy = min(wy, sy1 - float(sy));           // bottom frac
+            if (wy <= 0.0) continue;
+            for (int sx = x0; sx < x1; sx++) {
+                float wx = 1.0;
+                if (sx == x0) wx = min(1.0, float(sx + 1) - sx0);
+                if (sx == x1 - 1) wx = min(wx, sx1 - float(sx));
+                if (wx <= 0.0) continue;
+                sum += in_data[c * iplane + sy * w + sx] * wx * wy;
+                wsum += wx * wy;
+            }
+        }
+        out_data[c * oplane + oidx] = (wsum > 0.0) ? (sum / wsum) : 0.0;
+    }
 }
