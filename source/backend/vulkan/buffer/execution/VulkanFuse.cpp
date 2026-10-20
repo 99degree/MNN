@@ -51,6 +51,8 @@ extern "C" __attribute__((visibility("default"))) void ispSetVlog(bool on) {
     s_vlogOverride.store(on);
     if (on) ensureTraceFile();
     if (s_traceFile) { fprintf(s_traceFile, "[VulkanFuse] ispSetVlog(%d) — trace armed\n", on ? 1 : 0); fflush(s_traceFile); }
+    // Also mirror into the property so Termux getprop sees the state.
+    __system_property_set("debug.isp_vlog", on ? "1" : "0");
     __android_log_print(ANDROID_LOG_INFO, "VulkanFuse", "ispSetVlog: %d", on ? 1 : 0);
 }
 
