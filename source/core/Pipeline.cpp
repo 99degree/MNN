@@ -1224,6 +1224,17 @@ ErrorCode Pipeline::execute() {
                 _exitExecute();
                 return code;
             }
+            // [ISP TRACE] per-command marker: op type + backend type
+            {
+                FILE* tf = fopen("/sdcard/Download/isp_vlog_trace", "a");
+                if (tf) {
+                    fprintf(tf, "[CMD] %s backend=%d exec=%p\n",
+                            EnumNameOpType(cmd.op->type()),
+                            (int)cmd.execution->backend()->type(),
+                            (void*)cmd.execution.get());
+                    fclose(tf);
+                }
+            }
         }
     }
     _exitExecute();
