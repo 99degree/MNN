@@ -401,6 +401,23 @@ Execution* VulkanBackend::onCreate(const std::vector<Tensor*>& inputs, const std
     }
 #endif
 
+    // [ISP TRACE] Log which wrapper is created for Extra (isp.*) ops.
+    if (op->type() == MNN::OpType_Extra) {
+        FILE* tf = fopen("/sdcard/Download/isp_vlog_trace", "a");
+        if (tf) {
+            const char* tname = (op->name() != nullptr) ? op->name()->c_str() : "?";
+            if (mDirect) {
+                VulkanBasicExecutionDirect* w = new VulkanBasicExecutionDirect(originExecution);
+                fprintf(tf, "[WRAPPER] Direct created for '%s' exec=%p\n", tname, (void*)w);
+                fflush(tf);
+                return w;
+            }
+            VulkanBasicExecutionInDirect* w = new VulkanBasicExecutionInDirect(originExecution);
+            fprintf(tf, "[WRAPPER] InDirect created for '%s' exec=%p\n", tname, (void*)w);
+            fflush(tf);
+            return w;
+        }
+    }
     if (mDirect) {
         return new VulkanBasicExecutionDirect(originExecution);
     }
