@@ -41,6 +41,13 @@ ErrorCode VulkanBasicExecutionDirect::onExecute(const std::vector<Tensor *> &inp
 
 
 ErrorCode VulkanBasicExecutionDirect::onResize(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) {
+    {
+        extern FILE* ispTraceSink();
+        if (FILE* tf = ispTraceSink()) {
+            fprintf(tf, "[EXEC] onResize op=%s\n", mEncoder->getName().c_str());
+            fflush(tf);
+        }
+    }
     mCmdBuffer->begin(0);
 
     auto vkBn = static_cast<VulkanBackend*>(backend());
