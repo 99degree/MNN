@@ -121,6 +121,38 @@ public:
             TensorUtils::setLinearLayout(output);
             return true;
         }
+        if (type == "isp.display_uint8_rgba") {
+            // [FIX 2026-10-20] The rgba variant's shader writes PLANAR FLOAT RGB
+            // [1,3,H,W] (0-255 display domain) — the runtime tensor is float
+            // regardless of the declared elemType, and the packed-uint8 shape
+            // ([1,1,4H,4W] uint8) mismatched the shader's float writes, which
+            // produced the 'blue snow' / '4 horizontal bars' garbage. Pass the
+            // input geometry through as float [1,3,H,W].
+            auto input  = inputs[0];
+            auto output = outputs[0];
+            int dims = input->buffer().dimensions;
+            if (dims < 2) return false;
+            int H, W;
+            if (dims >= 4) {
+                H = input->buffer().dim[2].extent;
+                W = input->buffer().dim[3].extent;
+            } else if (dims == 3) {
+                H = input->buffer().dim[1].extent;
+                W = input->buffer().dim[2].extent;
+            } else {
+                W = input->buffer().dim[1].extent;
+                H = input->buffer().dim[0].extent;
+            }
+            output->buffer().dimensions = 4;
+            output->buffer().dim[0].extent = 1;
+            output->buffer().dim[1].extent = 3;
+            output->buffer().dim[2].extent = H;
+            output->buffer().dim[3].extent = W;
+            TensorUtils::getDescribe(output)->dimensionFormat = MNN_DATA_FORMAT_NCHW;
+            output->buffer().type = halide_type_of<float>();
+            TensorUtils::setLinearLayout(output);
+            return true;
+        }
         if (type.rfind("isp.display_uint8_", 0) == 0 && type != "isp.display_uint8_argb") {
             // isp.display_uint8_{rgba,bgra}: RGB float planes [1,3,H,W] →
             // packed NCHW [1,1,H*4,W*4] uint8. The shader writes one uint32 per
