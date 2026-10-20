@@ -38,7 +38,7 @@ namespace MNN {
 static FILE* s_traceFile = nullptr;
 static void ensureTraceFile() {
     if (!s_traceFile) {
-        s_traceFile = fopen("/sdcard/Download/isp_vlog_trace", "w");
+        s_traceFile = fopen("/sdcard/Download/isp_vlog_trace", "a");
     }
 }
 
