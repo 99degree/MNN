@@ -85,6 +85,13 @@ VulkanBasicExecutionInDirect::VulkanBasicExecutionInDirect(std::shared_ptr<Vulka
     mEncoder = encoder;
 }
 ErrorCode VulkanBasicExecutionInDirect::onExecute(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) {
+    {
+        extern FILE* ispTraceSink();
+        if (FILE* tf = ispTraceSink()) {
+            fprintf(tf, "[EXEC] InDirect::onExecute op=%s\n", mEncoder->getName().c_str());
+            fflush(tf);
+        }
+    }
     auto code = mEncoder->onBeforeExecute(inputs, outputs);
     return code;
 }
