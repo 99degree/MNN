@@ -1172,6 +1172,26 @@ ErrorCode Pipeline::execute() {
     }
     auto& mBackend = mInfo.first.cache.first;
     auto& mBackupBackend = mInfo.first.cache.second;
+    // [ISP TRACE] Count commands by backend type per execute — shows whether
+    // the Extra (isp.*) ops are in the executed schedule at all.
+    {
+        int vkCmds = 0, cpuCmds = 0, total = 0;
+        for (auto& info : mInfo.second) {
+            if (info.type == Schedule::CONSTANT) continue;
+            auto& buffer = info.executeBuffer;
+            for (auto& cmdP : buffer.command) {
+                total++;
+                if (cmdP->execution && cmdP->execution->backend() &&
+                    cmdP->execution->backend()->type() == MNN_FORWARD_VULKAN) vkCmds++;
+                else cpuCmds++;
+            }
+        }
+        FILE* tf = fopen("/sdcard/Download/isp_vlog_trace", "a");
+        if (tf) {
+            fprintf(tf, "[PIPELINE] execute: total=%d vk=%d cpu=%d\n", total, vkCmds, cpuCmds);
+            fclose(tf);
+        }
+    }
     for (auto& info : mInfo.second) {
         if (info.type == Schedule::CONSTANT) {
             continue;
