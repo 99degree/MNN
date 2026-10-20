@@ -1,20 +1,20 @@
 #version 450
-// isp.downscale — ARBITRARY-ratio resize, 3-channel planar NCHW.
+// isp.downscale — LINEAR FIT + LETTERBOX, 3-channel planar NCHW.
+//
+// USER SPEC (2026-10-20): linearly scale the frame down so that BOTH
+// dimensions fit inside the output resolution (maintain the aspect ratio),
+// CENTER the scaled content, and pad the leftover margins to the edges
+// (pillarbox left/right, letterbox top/bottom) so the output is exactly
+// outW x outH.
 //
 // Uniforms (binding 0): {W, H, pad, pad} — W/H HOT-SWAPPED by the ELEMENTWISE
 //   patch from the input tensor dims at first encode.
-// Params (binding 3): DOWNSCALE_HW float[4] = {W, H, outW, outH} — the output
-//   resolution rides in as a runtime per-frame input tensor, so the controller
-//   can resize per frame instead of baking it at build time.
-// In:  float[1,3,H,W] NCHW PLANAR image (R,G,B planes) — matches isp.ccm output.
-// Out: float[1,3,outH,outW], same planar layout.
+// Params (binding 3): DOWNSCALE_HW float[4] = {W, H, outW, outH}.
+// In:  float[1,3,H,W] NCHW PLANAR image (R,G,B planes).
+// Out: float[1,3,outH,outW], same planar layout. Pad value = 0.0 (black).
 //
-// [MATCH 2026-10-20] Matches the block's PRIMITIVE opset (ONNX Resize):
-//   mode = LINEAR, coordinate_transformation_mode = ASYMMETRIC
-//   asymmetric mapping: src = dst_index * (in_size / out_size), no half-pixel
-//   shift. Bilinear between floor/ceil neighbors, edge-clamped.
-//
-// LAYOUT CONTRACT (2026-10-16): planar NCHW throughout the RGB chain.
+// Sampling: ONNX-Resize-LINEAR-ASYMMETRIC-compatible bilinear within the
+// fitted content rect (src = dst_content_index * (in / fitted_out)).
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
@@ -42,21 +42,41 @@ void main() {
     int x = int(xo);
     int y = int(yo);
 
-    // ONNX Resize ASYMMETRIC + LINEAR: src = dst * (in / out), no half-pixel.
-    float sx = float(x) * float(w) / float(ow);
-    float sy = float(y) * float(h) / float(oh);
+    // FIT: scale = min(ow/w, oh/h) — both dimensions inside the output.
+    float fitW = float(ow) / float(w);
+    float fitH = float(oh) / float(h);
+    float scale = min(fitW, fitH);
+    int cw = max(int(float(w) * scale + 0.5), 1);   // content W
+    int ch = max(int(float(h) * scale + 0.5), 1);   // content H
+    // CENTER: margins to the edges (pillarbox / letterbox).
+    int offX = (ow - cw) / 2;
+    int offY = (oh - ch) / 2;
 
-    // Bilinear neighbors (edge-clamped to [0, in-1]).
+    // Outside the content rect → pad (black).
+    int cx = x - offX;
+    int cy = y - offY;
+    if (cx < 0 || cy < 0 || cx >= cw || cy >= ch) {
+        int oplane = ow * oh;
+        int oidx = y * ow + x;
+        out_data[oidx] = 0.0;
+        out_data[oplane + oidx] = 0.0;
+        out_data[2 * oplane + oidx] = 0.0;
+        return;
+    }
+
+    // ONNX LINEAR+ASYMMETRY mapping within the content rect:
+    // src = content_index * (in / content_out), no half-pixel shift.
+    float sx = float(cx) * float(w) / float(cw);
+    float sy = float(cy) * float(h) / float(ch);
+
     int x0 = int(floor(sx));
     int y0 = int(floor(sy));
     int x1 = min(x0 + 1, w - 1);
     int y1 = min(y0 + 1, h - 1);
     x0 = min(max(x0, 0), w - 1);
     y0 = min(max(y0, 0), h - 1);
-    float fx = sx - float(x0);
-    float fy = sy - float(y0);
-    fx = clamp(fx, 0.0, 1.0);
-    fy = clamp(fy, 0.0, 1.0);
+    float fx = clamp(sx - float(x0), 0.0, 1.0);
+    float fy = clamp(sy - float(y0), 0.0, 1.0);
 
     int iplane = w * h;
     int oplane = ow * oh;
