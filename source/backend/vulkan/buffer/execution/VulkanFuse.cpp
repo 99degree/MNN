@@ -743,6 +743,15 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
     // device addresses alive after the first frame (black frames / rc=3).
     for (int i=0; i<(int)inputs.size(); ++i) {
         int binding = mInputBinding[i];
+        // [ISP TRACE] Log deviceId for each input tensor — deviceId==0 means
+        // CPU-allocated (dummy buffer) -> the GPU shader reads zeros.
+        if (inputs[i]->deviceId() == 0) {
+            if (s_traceFile) {
+                fprintf(s_traceFile, "[DESCRIPTOR] WARNING: input[%d] deviceId=0 (CPU) -> dummy buffer for binding %d\n",
+                    i, binding);
+                fflush(s_traceFile);
+            }
+        }
         auto tensorBuffer = vkBn->getBuffer(inputs[i]);
         mDescriptorSet->writeBuffer(tensorBuffer, binding);
     }
