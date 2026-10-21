@@ -820,6 +820,14 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
     }
     auto t_disp0 = std::chrono::high_resolution_clock::now();
     vkCmdDispatch(cmdBuffer->get(), dispatchX, dispatchY, dispatchZ);
+    // [ISP TRACE] Log the dispatch to the trace file for verification.
+    if (s_traceFile) {
+        fprintf(s_traceFile, "[DISPATCH] type=%s grid=[%d,%d,%d] wg=[%d,%d,%d] global=[%d,%d,%d]\n",
+            mType.c_str(), dispatchX, dispatchY, dispatchZ,
+            mPreferredLocalSize[0], mPreferredLocalSize[1], mPreferredLocalSize[2],
+            mGlobalSize[0], mGlobalSize[1], mGlobalSize[2]);
+        fflush(s_traceFile);
+    }
     auto t_disp1 = std::chrono::high_resolution_clock::now();
     auto disp_us = std::chrono::duration_cast<std::chrono::microseconds>(t_disp1 - t_disp0).count();
     _logStage("onEncode: DISPATCH", t_stage);
