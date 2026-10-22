@@ -41,10 +41,11 @@ ErrorCode VulkanBasicExecutionDirect::onExecute(const std::vector<Tensor *> &inp
         extern bool ispProbeFramesLeft(int);
         extern int ispProbeFrameTake();
         const std::string& nm = mEncoder->getName();
-        // ALL isp.* ops (per-block proof chain), skip the tiny aux/algo ops.
-        const bool wanted = (nm.rfind("isp.", 0) == 0) &&
-                            (nm.find("algo_") == std::string::npos);
-        if (ispTraceSink() != nullptr && wanted && ispProbeFramesLeft(16)) {
+        // Only the front-of-chain ops — the wider per-op set SIGSEGVs inside
+        // libMNN_Vulkan on this driver (probe staging across many op types).
+        const bool wanted = (nm.find("isp.crop") != std::string::npos) ||
+                            (nm.find("isp.normalize") != std::string::npos);
+        if (ispTraceSink() != nullptr && wanted && ispProbeFramesLeft(2)) {
             ispProbeFrameTake();
             extra->finish();
             mEncoder->afterExecute(inputs, outputs);
