@@ -747,8 +747,8 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
         // CPU-allocated (dummy buffer) -> the GPU shader reads zeros.
         auto tensorBuffer = vkBn->getBuffer(inputs[i]);
         if (s_traceFile && inputs.size() <= 3) {
-            fprintf(s_traceFile, "[DESCRIPTOR] %s input[%d] b%d devId=%p buf=%p\n",
-                mType.c_str(), i, binding, (void*)inputs[i]->deviceId(), (void*)std::get<0>(tensorBuffer));
+            fprintf(s_traceFile, "[DESCRIPTOR] %s input[%d] b%d devId=%p buf=%p backend=%p\n",
+                mType.c_str(), i, binding, (void*)inputs[i]->deviceId(), (void*)std::get<0>(tensorBuffer), (const void*)vkBn);
             fflush(s_traceFile);
         }
         if (inputs[i]->deviceId() == 0) {

@@ -633,8 +633,8 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
         }
         if (vfp) {
             const float* sv = srcTensor->host<float>();
-            fprintf(vfp, "[HOST2GPU] cpSize=%zu devOff=%zu devBuf=%p host[0..7]=%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f\n",
-                cpSize, (size_t)offset, (void*)(dstTensor->deviceId()),
+            fprintf(vfp, "[HOST2GPU] cpSize=%zu devOff=%zu devBuf=%p backend=%p host[0..7]=%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f\n",
+                cpSize, (size_t)offset, (void*)(dstTensor->deviceId()), (const void*)this,
                 sv[0],sv[1],sv[2],sv[3],sv[4],sv[5],sv[6],sv[7]);
             fflush(vfp);
         } }
