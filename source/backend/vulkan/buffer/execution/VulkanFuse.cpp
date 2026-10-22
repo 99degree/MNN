@@ -862,24 +862,6 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
     }
     auto t_disp0 = std::chrono::high_resolution_clock::now();
     vkCmdDispatch(cmdBuffer->get(), dispatchX, dispatchY, dispatchZ);
-    // [FRAMEFILL] write a marker from the FRAME command buffer itself —
-    // proves whether the recorded frame cmd buffer actually executes on the
-    // queue (independent of the shader's own writes).
-    if (s_traceFile && !outputs.empty() && mType.find("isp.crop_debug") == 0) {
-        auto fb = vkBn->getBuffer(outputs[0]);
-        VkBuffer ob = std::get<0>(fb);
-        if (ob != VK_NULL_HANDLE) {
-            // Fill at a HIGH offset (end of the buffer) so it does NOT touch
-            // the shader's first 64B — independent verification.
-            size_t hi = std::get<1>(fb) > 128 ? std::get<1>(fb) - 64 : 0;
-            if (hi > 0) {
-                vkCmdFillBuffer(cmdBuffer->get(), ob, std::get<2>(fb) + hi, 64, 0xCDCDCDCDu);
-                fprintf(s_traceFile, "[FRAMEFILL] %s vkBuf=%p filled 64B @%zu (hi) with 0xCDCDCDCD\n",
-                    mType.c_str(), (void*)ob, (size_t)(std::get<2>(fb) + hi));
-                fflush(s_traceFile);
-            }
-        }
-    }
     // [ISP TRACE] Log the dispatch to the trace file for verification.
     if (s_traceFile) {
         fprintf(s_traceFile, "[DISPATCH] type=%s grid=[%d,%d,%d] wg=[%d,%d,%d] global=[%d,%d,%d]\n",
