@@ -38,12 +38,13 @@ ErrorCode VulkanBasicExecutionDirect::onExecute(const std::vector<Tensor *> &inp
     // on some ops (SIGSEGV), so keep exposure minimal.
     {
         extern FILE* ispTraceSink();
-        static std::atomic<int> sProbeFrames{0};
+        extern bool ispProbeFramesLeft(int);
+        extern int ispProbeFrameTake();
         const std::string& nm = mEncoder->getName();
         const bool wanted = (nm.find("isp.crop") != std::string::npos) ||
                             (nm.find("isp.normalize") != std::string::npos);
-        if (ispTraceSink() != nullptr && wanted && sProbeFrames.load() < 2) {
-            sProbeFrames.fetch_add(1);
+        if (ispTraceSink() != nullptr && wanted && ispProbeFramesLeft(2)) {
+            ispProbeFrameTake();
             extra->finish();
             mEncoder->afterExecute();
         }

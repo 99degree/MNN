@@ -42,14 +42,23 @@ static void ensureTraceFile() {
     }
 }
 
+// [PROBE] shared frame counter for the one-shot selective probe; reset when
+// the trace re-arms (each pipeline rebuild) so post-rebuild frames get probed.
+static std::atomic<int> sProbeFrameCount{0};
+
 // Trace sink accessor for other TUs (VulkanBasicExecution per-frame trace).
 FILE* ispTraceSink() { return s_traceFile; }
+int ispProbeFrameTake() { return sProbeFrameCount.fetch_add(1); }
+bool ispProbeFramesLeft(int limit) { return sProbeFrameCount.load() < limit; }
 
 // Runtime override (JNI): setprop/file unnecessary — broadcast-toggleable.
 static std::atomic<bool> s_vlogOverride{false};
+void ispResetProbeCounter() { sProbeFrameCount.store(0); }
+
 extern "C" __attribute__((visibility("default"))) void ispSetVlog(bool on) {
     s_vlogOverride.store(on);
     if (on) ensureTraceFile();
+    if (on) { sProbeFrameCount.store(0); }
     if (s_traceFile) { fprintf(s_traceFile, "[VulkanFuse] ispSetVlog(%d) — trace armed\n", on ? 1 : 0); fflush(s_traceFile); }
     // Also mirror into the property so Termux getprop sees the state.
     __system_property_set("debug.isp_vlog", on ? "1" : "0");
