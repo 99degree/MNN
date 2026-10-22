@@ -785,7 +785,7 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
         // [ISP-OUT] staging alloc here; buffer captured at EXECUTE time
         // (dynamic buffers churn per frame — an encode-time handle is stale).
         if (i == 0 && mType.find("isp.") == 0 && !mProbeStage) {
-            mProbeStage = vkBn->createHostBuffer(64);
+            mProbeStage = vkBn->createHostBuffer(128);
         }
     }
     if (mType == "isp.demosaic_g2_ccm" && inputs.size() < 2) {
@@ -945,13 +945,23 @@ void VulkanFuse::afterExecute(const std::vector<Tensor*>& inputs, const std::vec
                 bc2.dstOffset = 0;
                 bc2.size = 64;
                 vkCmdCopyBuffer(mProbeCmd->get(), src, mProbeStage->buffer(), 1, &bc2);
+                // [CONSTVERIFY] also read binding-0 (params SSBO) as the device sees it
+                if (mConstStorageBuffer) {
+                    VkBufferCopy bc3{};
+                    bc3.srcOffset = 0;
+                    bc3.dstOffset = 64;
+                    bc3.size = 32;
+                    vkCmdCopyBuffer(mProbeCmd->get(), mConstStorageBuffer->buffer(), mProbeStage->buffer(), 1, &bc3);
+                }
                 mProbeCmd->end();
                 vbn->pushCommand(mProbeCmd->get());
                 vbn->finish();
-                const float* pv = (const float*)mProbeStage->map(0, 64);
+                const float* pv = (const float*)mProbeStage->map(0, 96);
                 if (pv) {
-                    fprintf(s_traceFile, "[FILLTEST] %s off=%zu readback[0..7]=%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f (expect -1.686e-19 = 0xABABABAB)\n",
-                        mType.c_str(), off, pv[0],pv[1],pv[2],pv[3],pv[4],pv[5],pv[6],pv[7]);
+                    fprintf(s_traceFile, "[FILLTEST] %s off=%zu out[0..7]=%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f consts=[%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f]\n",
+                        mType.c_str(), off,
+                        pv[0],pv[1],pv[2],pv[3],pv[4],pv[5],pv[6],pv[7],
+                        pv[16],pv[17],pv[18],pv[19],pv[20],pv[21],pv[22],pv[23]);
                     fflush(s_traceFile);
                     mProbeStage->unmap();
                 }
