@@ -745,6 +745,12 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
         int binding = mInputBinding[i];
         // [ISP TRACE] Log deviceId for each input tensor — deviceId==0 means
         // CPU-allocated (dummy buffer) -> the GPU shader reads zeros.
+        auto tensorBuffer = vkBn->getBuffer(inputs[i]);
+        if (s_traceFile && inputs.size() <= 3) {
+            fprintf(s_traceFile, "[DESCRIPTOR] %s input[%d] b%d devId=%p buf=%p\n",
+                mType.c_str(), i, binding, (void*)inputs[i]->deviceId(), (void*)std::get<0>(tensorBuffer));
+            fflush(s_traceFile);
+        }
         if (inputs[i]->deviceId() == 0) {
             if (s_traceFile) {
                 fprintf(s_traceFile, "[DESCRIPTOR] WARNING: input[%d] deviceId=0 (CPU) -> dummy buffer for binding %d\n",
@@ -752,7 +758,6 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
                 fflush(s_traceFile);
             }
         }
-        auto tensorBuffer = vkBn->getBuffer(inputs[i]);
         mDescriptorSet->writeBuffer(tensorBuffer, binding);
     }
     if (mType == "isp.demosaic_g2_ccm" && inputs.size() < 2) {
