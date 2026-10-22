@@ -659,6 +659,25 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
         cmdbuffer->end();
         pushCommand(cmdbuffer->get());
         _finish();
+        { extern FILE* ispTraceSink(); FILE* vfp2 = ispTraceSink();
+        if (vfp2 && cpSize >= 20155392) {
+            // [GPUVERIFY] copy 64 bytes device->host and log the landing values.
+            auto cmdb2 = mCmdBufferForCopy;
+            VkBufferCopy back{};
+            back.size = 64; back.srcOffset = offset; back.dstOffset = 0;
+            cmdb2->begin(0);
+            vkCmdCopyBuffer(cmdb2->get(), buffer->buffer(), mHostBuffer->buffer(), 1, &back);
+            cmdb2->end();
+            pushCommand(cmdb2->get());
+            _finish();
+            const float* hv2 = (const float*)mHostBuffer->map(0, 64);
+            if (hv2) {
+                fprintf(vfp2, "[GPUVERIFY] devOff=%zu readback[0..7]=%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f\n",
+                    (size_t)offset, hv2[0],hv2[1],hv2[2],hv2[3],hv2[4],hv2[5],hv2[6],hv2[7]);
+                fflush(vfp2);
+                mHostBuffer->unmap();
+            }
+        } }
     } else if (dstTensor->host<float>() != nullptr) {
         // gpu->host
         _finish();
