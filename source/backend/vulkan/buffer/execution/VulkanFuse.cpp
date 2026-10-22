@@ -760,6 +760,16 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
         }
         mDescriptorSet->writeBuffer(tensorBuffer, binding);
     }
+    for (int i=0; i<(int)outputs.size(); ++i) {
+        int binding = mOutputBinding[i];
+        auto tensorBuffer = vkBn->getBuffer(outputs[i]);
+        if (s_traceFile && outputs.size() <= 2 && mType.find("isp.") == 0) {
+            fprintf(s_traceFile, "[DESCRIPTOR-OUT] %s output[%d] b%d devId=%p buf=%p\n",
+                mType.c_str(), i, binding, (void*)outputs[i]->deviceId(), (void*)std::get<0>(tensorBuffer));
+            fflush(s_traceFile);
+        }
+        mDescriptorSet->writeBuffer(tensorBuffer, binding);
+    }
     if (mType == "isp.demosaic_g2_ccm" && inputs.size() < 2) {
         // Single-input form: no runtime CCM tensor. Bind a persistent
         // identity 3x3 matrix at binding 3 so the shader reads a valid
