@@ -1,9 +1,11 @@
 #version 450
 #extension GL_EXT_scalar_block_layout : require
-// DEBUG BISECT VARIANT of isp.crop: ignores the input and writes
-// out_data[idx] = float(idx). If the output tensor shows 0,1,2,... the WRITE
-// path works and the problem is the input binding; if it stays 0 the write
-// path (or the dispatch) is broken.
+// DEBUG BISECT v2: writes BOTH bindings.
+//   out_data[idx] = float(idx)       -> write path proof (expect 0,1,2,...)
+//   in_data[idx]  = -float(idx)      -> execution proof (probe [ISP-IN] on the
+//     NEXT frame's capture should show NEGATIVE values at [0..7]; note the
+//     upload overwrites in_data before the next dispatch, so a negative
+//     first-8 means our write landed and the feed did NOT overwrite it).
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) uniform Uniforms {
@@ -15,11 +17,11 @@ layout(set = 0, binding = 0, std430) uniform Uniforms {
     float startH;
 };
 
-layout(set = 0, binding = 1, std430) readonly buffer InBuf {
+layout(set = 0, binding = 1, std430) buffer InBuf {
     float in_data[];
 };
 
-layout(set = 0, binding = 2, std430) writeonly buffer OutBuf {
+layout(set = 0, binding = 2) writeonly buffer OutBuf {
     float out_data[];
 };
 
@@ -31,5 +33,9 @@ void main() {
     if (ow <= 0) ow = int(width);
     if (oh <= 0) oh = int(height);
     if (int(x) >= ow || int(y) >= oh) return;
-    out_data[int(y) * ow + int(x)] = float(int(y) * ow + int(x));
+    int idx = int(y) * ow + int(x);
+    out_data[idx] = float(idx);
+    if (idx < 8) {
+        in_data[idx] = -float(idx) - 1.0;  // -1,-2,...-8 markers
+    }
 }
