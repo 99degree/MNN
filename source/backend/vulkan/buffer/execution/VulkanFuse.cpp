@@ -785,7 +785,7 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
         // [ISP-OUT] staging alloc here; buffer captured at EXECUTE time
         // (dynamic buffers churn per frame — an encode-time handle is stale).
         if (i == 0 && mType.find("isp.") == 0 && !mProbeStage) {
-            mProbeStage = vkBn->createHostBuffer(128);
+            mProbeStage = vkBn->createHostBuffer(192);
         }
     }
     if (mType == "isp.demosaic_g2_ccm" && inputs.size() < 2) {
@@ -869,10 +869,15 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
         auto fb = vkBn->getBuffer(outputs[0]);
         VkBuffer ob = std::get<0>(fb);
         if (ob != VK_NULL_HANDLE) {
-            vkCmdFillBuffer(cmdBuffer->get(), ob, std::get<2>(fb), 64, 0xCDCDCDCDu);
-            fprintf(s_traceFile, "[FRAMEFILL] %s vkBuf=%p filled 64B @%zu with 0xCDCDCDCD\n",
-                mType.c_str(), (void*)ob, (size_t)std::get<2>(fb));
-            fflush(s_traceFile);
+            // Fill at a HIGH offset (end of the buffer) so it does NOT touch
+            // the shader's first 64B — independent verification.
+            size_t hi = std::get<1>(fb) > 128 ? std::get<1>(fb) - 64 : 0;
+            if (hi > 0) {
+                vkCmdFillBuffer(cmdBuffer->get(), ob, std::get<2>(fb) + hi, 64, 0xCDCDCDCDu);
+                fprintf(s_traceFile, "[FRAMEFILL] %s vkBuf=%p filled 64B @%zu (hi) with 0xCDCDCDCD\n",
+                    mType.c_str(), (void*)ob, (size_t)(std::get<2>(fb) + hi));
+                fflush(s_traceFile);
+            }
         }
     }
     // [ISP TRACE] Log the dispatch to the trace file for verification.
@@ -962,15 +967,30 @@ void VulkanFuse::afterExecute(const std::vector<Tensor*>& inputs, const std::vec
                     bc3.size = 32;
                     vkCmdCopyBuffer(mProbeCmd->get(), mConstStorageBuffer->buffer(), mProbeStage->buffer(), 1, &bc3);
                 }
+                // also read the high region (where FRAMEFILL wrote)
+                size_t outSize = 0;
+                {
+                    auto ob2 = vbn->getBuffer(outputs[0]);
+                    outSize = std::get<1>(ob2);
+                    size_t hi2 = outSize > 128 ? outSize - 64 : 0;
+                    if (hi2 > 0) {
+                        VkBufferCopy bc4{};
+                        bc4.srcOffset = std::get<2>(ob2) + hi2;
+                        bc4.dstOffset = 96;
+                        bc4.size = 64;
+                        vkCmdCopyBuffer(mProbeCmd->get(), src, mProbeStage->buffer(), 1, &bc4);
+                    }
+                }
                 mProbeCmd->end();
                 vbn->pushCommand(mProbeCmd->get());
                 vbn->finish();
-                const float* pv = (const float*)mProbeStage->map(0, 96);
+                const float* pv = (const float*)mProbeStage->map(0, 160);
                 if (pv) {
-                    fprintf(s_traceFile, "[OUTPROBE] %s off=%zu out[0..7]=%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f consts=[%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f]\n",
+                    fprintf(s_traceFile, "[OUTPROBE] %s off=%zu out[0..7]=%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f consts=[%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f] hi=[%.4f,%.4f,%.4f,%.4f]\n",
                         mType.c_str(), off,
                         pv[0],pv[1],pv[2],pv[3],pv[4],pv[5],pv[6],pv[7],
-                        pv[16],pv[17],pv[18],pv[19],pv[20],pv[21],pv[22],pv[23]);
+                        pv[16],pv[17],pv[18],pv[19],pv[20],pv[21],pv[22],pv[23],
+                        pv[24],pv[25],pv[26],pv[27]);
                     fflush(s_traceFile);
                     mProbeStage->unmap();
                 }
