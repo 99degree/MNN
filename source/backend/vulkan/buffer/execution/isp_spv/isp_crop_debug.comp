@@ -1,11 +1,8 @@
 #version 450
 #extension GL_EXT_scalar_block_layout : require
-// DEBUG BISECT v2: writes BOTH bindings.
-//   out_data[idx] = float(idx)       -> write path proof (expect 0,1,2,...)
-//   in_data[idx]  = -float(idx)      -> execution proof (probe [ISP-IN] on the
-//     NEXT frame's capture should show NEGATIVE values at [0..7]; note the
-//     upload overwrites in_data before the next dispatch, so a negative
-//     first-8 means our write landed and the feed did NOT overwrite it).
+// DEBUG BISECT v3: UNCONDITIONAL write at the very top of main(), BEFORE any
+// guard — distinguishes "shader never runs" (out[0] stays 0) from "shader runs
+// but the guard blocks" (out[0] == 12345 and/or in[0] == -999).
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) uniform Uniforms {
@@ -28,6 +25,11 @@ layout(set = 0, binding = 2) writeonly buffer OutBuf {
 void main() {
     uint x = gl_GlobalInvocationID.x;
     uint y = gl_GlobalInvocationID.y;
+    // Unconditional proof-of-execution writes (no guard, no uniformity).
+    if (x == 0u && y == 0u) {
+        out_data[0] = 12345.0;
+        in_data[0]  = -999.0;
+    }
     int ow = int(cropW);
     int oh = int(cropH);
     if (ow <= 0) ow = int(width);
@@ -35,7 +37,4 @@ void main() {
     if (int(x) >= ow || int(y) >= oh) return;
     int idx = int(y) * ow + int(x);
     out_data[idx] = float(idx);
-    if (idx < 8) {
-        in_data[idx] = -float(idx) - 1.0;  // -1,-2,...-8 markers
-    }
 }
