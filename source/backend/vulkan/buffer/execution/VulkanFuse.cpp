@@ -862,6 +862,19 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
     }
     auto t_disp0 = std::chrono::high_resolution_clock::now();
     vkCmdDispatch(cmdBuffer->get(), dispatchX, dispatchY, dispatchZ);
+    // [FRAMEFILL] write a marker from the FRAME command buffer itself —
+    // proves whether the recorded frame cmd buffer actually executes on the
+    // queue (independent of the shader's own writes).
+    if (s_traceFile && !outputs.empty() && mType.find("isp.crop_debug") == 0) {
+        auto fb = vkBn->getBuffer(outputs[0]);
+        VkBuffer ob = std::get<0>(fb);
+        if (ob != VK_NULL_HANDLE) {
+            vkCmdFillBuffer(cmdBuffer->get(), ob, std::get<2>(fb), 64, 0xCDCDCDCDu);
+            fprintf(s_traceFile, "[FRAMEFILL] %s vkBuf=%p filled 64B @%zu with 0xCDCDCDCD\n",
+                mType.c_str(), (void*)ob, (size_t)std::get<2>(fb));
+            fflush(s_traceFile);
+        }
+    }
     // [ISP TRACE] Log the dispatch to the trace file for verification.
     if (s_traceFile) {
         fprintf(s_traceFile, "[DISPATCH] type=%s grid=[%d,%d,%d] wg=[%d,%d,%d] global=[%d,%d,%d]\n",
@@ -932,14 +945,10 @@ void VulkanFuse::afterExecute(const std::vector<Tensor*>& inputs, const std::vec
         if (src != VK_NULL_HANDLE) {
             if (!mProbeCmd) mProbeCmd = vbn->getPool().allocBuffer();
             if (mProbeCmd) {
-                // [FILLTEST] fill the first 64B of the output buffer with a
-                // marker pattern via vkCmdFillBuffer — bypasses the shader
-                // entirely and tests the queue/submit/readback path alone.
                 VkCommandBufferBeginInfo bi{};
                 bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
                 bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
                 vkBeginCommandBuffer(mProbeCmd->get(), &bi);
-                vkCmdFillBuffer(mProbeCmd->get(), src, off, 64, 0xABABABABu);
                 VkBufferCopy bc2{};
                 bc2.srcOffset = off;
                 bc2.dstOffset = 0;
@@ -958,7 +967,7 @@ void VulkanFuse::afterExecute(const std::vector<Tensor*>& inputs, const std::vec
                 vbn->finish();
                 const float* pv = (const float*)mProbeStage->map(0, 96);
                 if (pv) {
-                    fprintf(s_traceFile, "[FILLTEST] %s off=%zu out[0..7]=%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f consts=[%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f]\n",
+                    fprintf(s_traceFile, "[OUTPROBE] %s off=%zu out[0..7]=%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f consts=[%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f]\n",
                         mType.c_str(), off,
                         pv[0],pv[1],pv[2],pv[3],pv[4],pv[5],pv[6],pv[7],
                         pv[16],pv[17],pv[18],pv[19],pv[20],pv[21],pv[22],pv[23]);
