@@ -9,6 +9,7 @@
 #include "VulkanBasicExecution.hpp"
 #include "VulkanBackend.hpp"
 #include "core/TensorUtils.hpp"
+#include <atomic>
 namespace MNN {
 VulkanBasicExecutionDirect::VulkanBasicExecutionDirect(std::shared_ptr<VulkanBasicExecution> encoder) : Execution(encoder->backend()) {
     mEncoder = encoder;
@@ -32,9 +33,17 @@ ErrorCode VulkanBasicExecutionDirect::onExecute(const std::vector<Tensor *> &inp
     extra->pushCommand(mCmdBuffer->get());
     // [PROBE] When the ISP trace is armed: flush the queue so the recorded
     // dispatch + probe copy complete, then dump via afterExecute().
+    // ONE-SHOT + selective: only the first 2 frames, and only for the ops
+    // involved in the crop bisect (crop/normalize) — the probe path crashes
+    // on some ops (SIGSEGV), so keep exposure minimal.
     {
         extern FILE* ispTraceSink();
-        if (ispTraceSink() != nullptr) {
+        static std::atomic<int> sProbeFrames{0};
+        const std::string& nm = mEncoder->getName();
+        const bool wanted = (nm.find("isp.crop") != std::string::npos) ||
+                            (nm.find("isp.normalize") != std::string::npos);
+        if (ispTraceSink() != nullptr && wanted && sProbeFrames.load() < 2) {
+            sProbeFrames.fetch_add(1);
             extra->finish();
             mEncoder->afterExecute();
         }
