@@ -893,16 +893,16 @@ void VulkanFuse::afterExecute() {
     // [ISP-IN] per-op INPUT dump: what the shader's binding-1 actually saw.
     if (s_traceFile && mInProbeStage && mInProbeSrc != VK_NULL_HANDLE) {
         auto* vbn = static_cast<VulkanBackend*>(backend());
-        auto* cmd = vbn->getPool().allocBuffer();
-        if (cmd) {
+        if (!mProbeCmd) mProbeCmd = vbn->getPool().allocBuffer();
+        if (mProbeCmd) {
             VkBufferCopy bc{};
             bc.srcOffset = mInProbeOff;
             bc.dstOffset = 0;
             bc.size = 64;
-            cmd->begin(0);
-            vkCmdCopyBuffer(cmd->get(), mInProbeSrc, mInProbeStage->buffer(), 1, &bc);
-            cmd->end();
-            vbn->pushCommand(cmd->get());
+            mProbeCmd->begin(0);
+            vkCmdCopyBuffer(mProbeCmd->get(), mInProbeSrc, mInProbeStage->buffer(), 1, &bc);
+            mProbeCmd->end();
+            vbn->pushCommand(mProbeCmd->get());
             vbn->finish();
             const float* pv = (const float*)mInProbeStage->map(0, 64);
             if (pv) {
@@ -911,7 +911,6 @@ void VulkanFuse::afterExecute() {
                 fflush(s_traceFile);
                 mInProbeStage->unmap();
             }
-            delete cmd;
         }
     }
     // [ISP-OUT] per-op output dump: read the FIRST output's first 16 floats
@@ -919,16 +918,16 @@ void VulkanFuse::afterExecute() {
     // session's orphaned readback tensor).
     if (s_traceFile && mProbeStage && mProbeSrc != VK_NULL_HANDLE) {
         auto* vbn = static_cast<VulkanBackend*>(backend());
-        auto* cmd = vbn->getPool().allocBuffer();
-        if (cmd) {
+        if (!mProbeCmd) mProbeCmd = vbn->getPool().allocBuffer();
+        if (mProbeCmd) {
             VkBufferCopy bc{};
             bc.srcOffset = mProbeOff;
             bc.dstOffset = 0;
             bc.size = 64;
-            cmd->begin(0);
-            vkCmdCopyBuffer(cmd->get(), mProbeSrc, mProbeStage->buffer(), 1, &bc);
-            cmd->end();
-            vbn->pushCommand(cmd->get());
+            mProbeCmd->begin(0);
+            vkCmdCopyBuffer(mProbeCmd->get(), mProbeSrc, mProbeStage->buffer(), 1, &bc);
+            mProbeCmd->end();
+            vbn->pushCommand(mProbeCmd->get());
             vbn->finish();
             const float* pv = (const float*)mProbeStage->map(0, 64);
             if (pv) {
@@ -937,7 +936,6 @@ void VulkanFuse::afterExecute() {
                 fflush(s_traceFile);
                 mProbeStage->unmap();
             }
-            delete cmd;  // VulkanCommandPool::Buffer has no returnBuffer; free directly
         }
     }
     if (mInProbeStage) {

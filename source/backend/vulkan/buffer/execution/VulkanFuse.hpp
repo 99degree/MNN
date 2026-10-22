@@ -32,6 +32,7 @@ public:
 private:
     // [PROBE] staging buffer + source offset captured during onEncode.
     std::shared_ptr<VulkanBuffer> mProbeStage;
+    VulkanCommandPool::Buffer* mProbeCmd = nullptr;
     VkBuffer mProbeSrc = VK_NULL_HANDLE;
     size_t mProbeOff = 0;
     std::shared_ptr<VulkanBuffer> mInProbeStage;
