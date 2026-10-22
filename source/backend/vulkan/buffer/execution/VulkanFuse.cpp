@@ -769,6 +769,14 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
             fflush(s_traceFile);
         }
         mDescriptorSet->writeBuffer(tensorBuffer, binding);
+        // [ISP-OUT] capture the FIRST output's device buffer for afterExecute dump
+        if (i == 0 && mType.find("isp.") == 0) {
+            mProbeSrc = std::get<0>(tensorBuffer);
+            mProbeOff = std::get<2>(tensorBuffer);
+            if (!mProbeStage) {
+                mProbeStage = vkBn->createHostBuffer(64);
+            }
+        }
     }
     if (mType == "isp.demosaic_g2_ccm" && inputs.size() < 2) {
         // Single-input form: no runtime CCM tensor. Bind a persistent
@@ -874,6 +882,32 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
 // [PROBE] Runs from VulkanBasicExecutionDirect::onExecute after the queue has
 // been flushed: the dispatch and the probe copy are guaranteed complete.
 void VulkanFuse::afterExecute() {
+    // [ISP-OUT] per-op output dump: read the FIRST output's first 16 floats
+    // straight from the work buffer the shader actually wrote (not the
+    // session's orphaned readback tensor).
+    if (s_traceFile && mProbeStage && mProbeSrc != VK_NULL_HANDLE) {
+        auto* vbn = static_cast<VulkanBackend*>(backend());
+        auto* cmd = vbn->getPool().allocBuffer();
+        if (cmd) {
+            VkBufferCopy bc{};
+            bc.srcOffset = mProbeOff;
+            bc.dstOffset = 0;
+            bc.size = 64;
+            cmd->begin(0);
+            vkCmdCopyBuffer(cmd->get(), mProbeSrc, mProbeStage->buffer(), 1, &bc);
+            cmd->end();
+            vbn->pushCommand(cmd->get());
+            vbn->finish();
+            const float* pv = (const float*)mProbeStage->map(0, 64);
+            if (pv) {
+                fprintf(s_traceFile, "[ISP-OUT] %s off=%zu f[0..7]=%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n",
+                    mType.c_str(), mProbeOff, pv[0],pv[1],pv[2],pv[3],pv[4],pv[5],pv[6],pv[7]);
+                fflush(s_traceFile);
+                mProbeStage->unmap();
+            }
+            delete cmd;  // VulkanCommandPool::Buffer has no returnBuffer; free directly
+        }
+    }
     if (mInProbeStage) {
         const float* ip = (const float*)mInProbeStage->map(0, 196608);
         if (ip) {
