@@ -618,7 +618,8 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
         }
         size_t cpSize = calculateCpSize(srcTensor);
         _requireHostBuffer(cpSize);
-        if (getenv("ISP_DEBUG_VLOG") && srcTensor->host<float>() != nullptr && cpSize >= 48) {
+        { extern FILE* ispTraceSink(); FILE* vfp = ispTraceSink();
+        if (vfp && srcTensor->host<float>() != nullptr && cpSize >= 48) {
             const float* sv = srcTensor->host<float>();
             std::string dstr;
             for (int i = 0; i < srcTensor->dimensions(); ++i) {
@@ -628,8 +629,14 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
                 dstr.c_str(), (int)TensorUtils::getDescribe(srcTensor)->dimensionFormat,
                 srcTensor->usize(), (size_t)offset,
                 sv[0],sv[1],sv[2],sv[3],sv[4],sv[5],sv[6],sv[7],sv[8],sv[9],sv[10],sv[11]);
-            fflush(stderr);
+            fflush(vfp);
         }
+        if (vfp) {
+            const float* sv = srcTensor->host<float>();
+            fprintf(vfp, "[HOST2GPU] cpSize=%zu devOff=%zu host[0..7]=%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f\n",
+                cpSize, (size_t)offset, sv[0],sv[1],sv[2],sv[3],sv[4],sv[5],sv[6],sv[7]);
+            fflush(vfp);
+        } }
         _copyTensorToBuffer(srcTensor, mHostBuffer.get(), 0, srcTensor->getType().code == halide_type_float && mUseFP16);
         if (getenv("ISP_DEBUG_VLOG") && cpSize >= 96) {
             const float* hv = (const float*)mHostBuffer->map(0, 96);
