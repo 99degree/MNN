@@ -751,6 +751,14 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
                 mType.c_str(), i, binding, (void*)inputs[i]->deviceId(), (void*)std::get<0>(tensorBuffer), (const void*)vkBn);
             fflush(s_traceFile);
         }
+        // [ISP-IN] capture the FIRST input's device buffer for afterExecute dump
+        if (i == 0 && mType.find("isp.") == 0) {
+            mInProbeSrc = std::get<0>(tensorBuffer);
+            mInProbeOff = std::get<2>(tensorBuffer);
+            if (!mInProbeStage) {
+                mInProbeStage = vkBn->createHostBuffer(64);
+            }
+        }
         if (inputs[i]->deviceId() == 0) {
             if (s_traceFile) {
                 fprintf(s_traceFile, "[DESCRIPTOR] WARNING: input[%d] deviceId=0 (CPU) -> dummy buffer for binding %d\n",
@@ -882,6 +890,30 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
 // [PROBE] Runs from VulkanBasicExecutionDirect::onExecute after the queue has
 // been flushed: the dispatch and the probe copy are guaranteed complete.
 void VulkanFuse::afterExecute() {
+    // [ISP-IN] per-op INPUT dump: what the shader's binding-1 actually saw.
+    if (s_traceFile && mInProbeStage && mInProbeSrc != VK_NULL_HANDLE) {
+        auto* vbn = static_cast<VulkanBackend*>(backend());
+        auto* cmd = vbn->getPool().allocBuffer();
+        if (cmd) {
+            VkBufferCopy bc{};
+            bc.srcOffset = mInProbeOff;
+            bc.dstOffset = 0;
+            bc.size = 64;
+            cmd->begin(0);
+            vkCmdCopyBuffer(cmd->get(), mInProbeSrc, mInProbeStage->buffer(), 1, &bc);
+            cmd->end();
+            vbn->pushCommand(cmd->get());
+            vbn->finish();
+            const float* pv = (const float*)mInProbeStage->map(0, 64);
+            if (pv) {
+                fprintf(s_traceFile, "[ISP-IN] %s off=%zu f[0..7]=%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n",
+                    mType.c_str(), mInProbeOff, pv[0],pv[1],pv[2],pv[3],pv[4],pv[5],pv[6],pv[7]);
+                fflush(s_traceFile);
+                mInProbeStage->unmap();
+            }
+            delete cmd;
+        }
+    }
     // [ISP-OUT] per-op output dump: read the FIRST output's first 16 floats
     // straight from the work buffer the shader actually wrote (not the
     // session's orphaned readback tensor).
