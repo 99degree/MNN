@@ -172,6 +172,9 @@ VulkanPipeline::~VulkanPipeline() {
 }
 
 void VulkanPipeline::bind(VkCommandBuffer cmd, VkDescriptorSet des) const {
+    { extern FILE* ispTraceSink(); FILE* tf = ispTraceSink();
+      if (tf) { fprintf(tf, "[DESCBIND] cmd=%p pipeline=%p set=%p\n",
+          (void*)cmd, (void*)mPipeline, (void*)des); fflush(tf); } }
     // Bind the compute pipeline.
     vkCmdBindPipeline(cmd, mType, mPipeline);
     // Bind descriptor set.
@@ -232,6 +235,9 @@ void VulkanLayout::DescriptorSet::writeBuffer(std::tuple<VkBuffer, VkDeviceSize,
 }
 
 void VulkanLayout::DescriptorSet::writeBuffer(VkBuffer buffer, int bindIndex, size_t size, VkDeviceSize offset) {
+    { extern FILE* ispTraceSink(); FILE* tf = ispTraceSink();
+      if (tf) { fprintf(tf, "[DESCWRITE] set=%p bind=%d buf=%p size=%zu off=%zu\n",
+          (void*)mSet, bindIndex, (void*)buffer, size, (size_t)offset); fflush(tf); } }
     VkWriteDescriptorSet writeSet;
     ::memset(&writeSet, 0, sizeof(writeSet));
     VkDescriptorBufferInfo sourceInfo;
