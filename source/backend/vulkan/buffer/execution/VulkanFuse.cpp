@@ -932,18 +932,20 @@ void VulkanFuse::afterExecute(const std::vector<Tensor*>& inputs, const std::vec
         if (src != VK_NULL_HANDLE) {
             if (!mProbeCmd) mProbeCmd = vbn->getPool().allocBuffer();
             if (mProbeCmd) {
-                VkBufferCopy bc{};
-                bc.srcOffset = off;
-                bc.dstOffset = 0;
-                bc.size = 64;
-                mProbeCmd->begin(0);
-                vkCmdCopyBuffer(mProbeCmd->get(), src, mProbeStage->buffer(), 1, &bc);
+                // [FILLTEST] fill the first 64B of the output buffer with a
+                // marker pattern via vkCmdFillBuffer — bypasses the shader
+                // entirely and tests the queue/submit/readback path alone.
+                VkCommandBufferBeginInfo bi{};
+                bi.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+                bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+                vkBeginCommandBuffer(mProbeCmd->get(), &bi);
+                vkCmdFillBuffer(mProbeCmd->get(), src, off, 64, 0xABABABABu);
                 mProbeCmd->end();
                 vbn->pushCommand(mProbeCmd->get());
                 vbn->finish();
                 const float* pv = (const float*)mProbeStage->map(0, 64);
                 if (pv) {
-                    fprintf(s_traceFile, "[ISP-OUT] %s off=%zu f[0..7]=%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n",
+                    fprintf(s_traceFile, "[FILLTEST] %s off=%zu readback[0..7]=%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f (expect -1.686e-19 = 0xABABABAB)\n",
                         mType.c_str(), off, pv[0],pv[1],pv[2],pv[3],pv[4],pv[5],pv[6],pv[7]);
                     fflush(s_traceFile);
                     mProbeStage->unmap();
