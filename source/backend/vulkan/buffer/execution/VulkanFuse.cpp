@@ -940,6 +940,11 @@ void VulkanFuse::afterExecute(const std::vector<Tensor*>& inputs, const std::vec
                 bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
                 vkBeginCommandBuffer(mProbeCmd->get(), &bi);
                 vkCmdFillBuffer(mProbeCmd->get(), src, off, 64, 0xABABABABu);
+                VkBufferCopy bc2{};
+                bc2.srcOffset = off;
+                bc2.dstOffset = 0;
+                bc2.size = 64;
+                vkCmdCopyBuffer(mProbeCmd->get(), src, mProbeStage->buffer(), 1, &bc2);
                 mProbeCmd->end();
                 vbn->pushCommand(mProbeCmd->get());
                 vbn->finish();
