@@ -27,7 +27,7 @@ public:
 
     // [PROBE] Deferred output dump: called by VulkanBasicExecutionDirect::
     // onExecute after pushCommand + finish() when ISP_DEBUG_VLOG is set.
-    virtual void afterExecute() override;
+    virtual void afterExecute(const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs) override;
 
 private:
     // [PROBE] staging buffer + source offset captured during onEncode.

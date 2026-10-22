@@ -760,13 +760,9 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
                 mType.c_str(), i, binding, (void*)inputs[i]->deviceId(), (void*)std::get<0>(tensorBuffer), (const void*)vkBn);
             fflush(s_traceFile);
         }
-        // [ISP-IN] capture the FIRST input's device buffer for afterExecute dump
-        if (i == 0 && mType.find("isp.") == 0) {
-            mInProbeSrc = std::get<0>(tensorBuffer);
-            mInProbeOff = std::get<2>(tensorBuffer);
-            if (!mInProbeStage) {
-                mInProbeStage = vkBn->createHostBuffer(64);
-            }
+        // [ISP-IN] staging alloc here; buffer captured at EXECUTE time.
+        if (i == 0 && mType.find("isp.") == 0 && !mInProbeStage) {
+            mInProbeStage = vkBn->createHostBuffer(64);
         }
         if (inputs[i]->deviceId() == 0) {
             if (s_traceFile) {
@@ -786,13 +782,10 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
             fflush(s_traceFile);
         }
         mDescriptorSet->writeBuffer(tensorBuffer, binding);
-        // [ISP-OUT] capture the FIRST output's device buffer for afterExecute dump
-        if (i == 0 && mType.find("isp.") == 0) {
-            mProbeSrc = std::get<0>(tensorBuffer);
-            mProbeOff = std::get<2>(tensorBuffer);
-            if (!mProbeStage) {
-                mProbeStage = vkBn->createHostBuffer(64);
-            }
+        // [ISP-OUT] staging alloc here; buffer captured at EXECUTE time
+        // (dynamic buffers churn per frame — an encode-time handle is stale).
+        if (i == 0 && mType.find("isp.") == 0 && !mProbeStage) {
+            mProbeStage = vkBn->createHostBuffer(64);
         }
     }
     if (mType == "isp.demosaic_g2_ccm" && inputs.size() < 2) {
@@ -898,52 +891,63 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
 
 // [PROBE] Runs from VulkanBasicExecutionDirect::onExecute after the queue has
 // been flushed: the dispatch and the probe copy are guaranteed complete.
-void VulkanFuse::afterExecute() {
+void VulkanFuse::afterExecute(const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs) {
     // [ISP-IN] per-op INPUT dump: what the shader's binding-1 actually saw.
-    if (s_traceFile && mInProbeStage && mInProbeSrc != VK_NULL_HANDLE) {
+    // Buffer captured NOW (execute time) — dynamic buffers churn per frame.
+    if (s_traceFile && mInProbeStage && !inputs.empty() && inputs[0] && inputs[0]->deviceId() != 0) {
         auto* vbn = static_cast<VulkanBackend*>(backend());
-        if (!mProbeCmd) mProbeCmd = vbn->getPool().allocBuffer();
-        if (mProbeCmd) {
-            VkBufferCopy bc{};
-            bc.srcOffset = mInProbeOff;
-            bc.dstOffset = 0;
-            bc.size = 64;
-            mProbeCmd->begin(0);
-            vkCmdCopyBuffer(mProbeCmd->get(), mInProbeSrc, mInProbeStage->buffer(), 1, &bc);
-            mProbeCmd->end();
-            vbn->pushCommand(mProbeCmd->get());
-            vbn->finish();
-            const float* pv = (const float*)mInProbeStage->map(0, 64);
-            if (pv) {
-                fprintf(s_traceFile, "[ISP-IN] %s off=%zu f[0..7]=%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n",
-                    mType.c_str(), mInProbeOff, pv[0],pv[1],pv[2],pv[3],pv[4],pv[5],pv[6],pv[7]);
-                fflush(s_traceFile);
-                mInProbeStage->unmap();
+        auto tb = vbn->getBuffer(inputs[0]);
+        VkBuffer src = std::get<0>(tb);
+        size_t off = std::get<2>(tb);
+        if (src != VK_NULL_HANDLE) {
+            if (!mProbeCmd) mProbeCmd = vbn->getPool().allocBuffer();
+            if (mProbeCmd) {
+                VkBufferCopy bc{};
+                bc.srcOffset = off;
+                bc.dstOffset = 0;
+                bc.size = 64;
+                mProbeCmd->begin(0);
+                vkCmdCopyBuffer(mProbeCmd->get(), src, mInProbeStage->buffer(), 1, &bc);
+                mProbeCmd->end();
+                vbn->pushCommand(mProbeCmd->get());
+                vbn->finish();
+                const float* pv = (const float*)mInProbeStage->map(0, 64);
+                if (pv) {
+                    fprintf(s_traceFile, "[ISP-IN] %s off=%zu f[0..7]=%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n",
+                        mType.c_str(), off, pv[0],pv[1],pv[2],pv[3],pv[4],pv[5],pv[6],pv[7]);
+                    fflush(s_traceFile);
+                    mInProbeStage->unmap();
+                }
             }
         }
     }
     // [ISP-OUT] per-op output dump: read the FIRST output's first 16 floats
     // straight from the work buffer the shader actually wrote (not the
-    // session's orphaned readback tensor).
-    if (s_traceFile && mProbeStage && mProbeSrc != VK_NULL_HANDLE) {
+    // session's orphaned readback tensor). Buffer captured NOW (execute time).
+    if (s_traceFile && mProbeStage && !outputs.empty() && outputs[0] && outputs[0]->deviceId() != 0) {
         auto* vbn = static_cast<VulkanBackend*>(backend());
-        if (!mProbeCmd) mProbeCmd = vbn->getPool().allocBuffer();
-        if (mProbeCmd) {
-            VkBufferCopy bc{};
-            bc.srcOffset = mProbeOff;
-            bc.dstOffset = 0;
-            bc.size = 64;
-            mProbeCmd->begin(0);
-            vkCmdCopyBuffer(mProbeCmd->get(), mProbeSrc, mProbeStage->buffer(), 1, &bc);
-            mProbeCmd->end();
-            vbn->pushCommand(mProbeCmd->get());
-            vbn->finish();
-            const float* pv = (const float*)mProbeStage->map(0, 64);
-            if (pv) {
-                fprintf(s_traceFile, "[ISP-OUT] %s off=%zu f[0..7]=%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n",
-                    mType.c_str(), mProbeOff, pv[0],pv[1],pv[2],pv[3],pv[4],pv[5],pv[6],pv[7]);
-                fflush(s_traceFile);
-                mProbeStage->unmap();
+        auto tb = vbn->getBuffer(outputs[0]);
+        VkBuffer src = std::get<0>(tb);
+        size_t off = std::get<2>(tb);
+        if (src != VK_NULL_HANDLE) {
+            if (!mProbeCmd) mProbeCmd = vbn->getPool().allocBuffer();
+            if (mProbeCmd) {
+                VkBufferCopy bc{};
+                bc.srcOffset = off;
+                bc.dstOffset = 0;
+                bc.size = 64;
+                mProbeCmd->begin(0);
+                vkCmdCopyBuffer(mProbeCmd->get(), src, mProbeStage->buffer(), 1, &bc);
+                mProbeCmd->end();
+                vbn->pushCommand(mProbeCmd->get());
+                vbn->finish();
+                const float* pv = (const float*)mProbeStage->map(0, 64);
+                if (pv) {
+                    fprintf(s_traceFile, "[ISP-OUT] %s off=%zu f[0..7]=%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f\n",
+                        mType.c_str(), off, pv[0],pv[1],pv[2],pv[3],pv[4],pv[5],pv[6],pv[7]);
+                    fflush(s_traceFile);
+                    mProbeStage->unmap();
+                }
             }
         }
     }

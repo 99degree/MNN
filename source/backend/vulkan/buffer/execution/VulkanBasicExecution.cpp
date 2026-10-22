@@ -46,7 +46,7 @@ ErrorCode VulkanBasicExecutionDirect::onExecute(const std::vector<Tensor *> &inp
         if (ispTraceSink() != nullptr && wanted && ispProbeFramesLeft(2)) {
             ispProbeFrameTake();
             extra->finish();
-            mEncoder->afterExecute();
+            mEncoder->afterExecute(inputs, outputs);
         }
     }
     return NO_ERROR;
