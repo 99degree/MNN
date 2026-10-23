@@ -36,21 +36,12 @@ ErrorCode VulkanBasicExecutionDirect::onExecute(const std::vector<Tensor *> &inp
     // ONE-SHOT + selective: only the first 2 frames, and only for the ops
     // involved in the crop bisect (crop/normalize) — the probe path crashes
     // on some ops (SIGSEGV), so keep exposure minimal.
-    {
-        extern FILE* ispTraceSink();
-        extern bool ispProbeFramesLeft(int);
-        extern int ispProbeFrameTake();
-        const std::string& nm = mEncoder->getName();
-        // Only the front-of-chain ops — the wider per-op set SIGSEGVs inside
-        // libMNN_Vulkan on this driver (probe staging across many op types).
-        const bool wanted = (nm.find("isp.crop") != std::string::npos) ||
-                            (nm.find("isp.normalize") != std::string::npos);
-        if (ispTraceSink() != nullptr && wanted && ispProbeFramesLeft(2)) {
-            ispProbeFrameTake();
-            extra->finish();
-            mEncoder->afterExecute(inputs, outputs);
-        }
-    }
+    // [PROBE DISABLED 2026-10-23] The per-op afterExecute probe (extra
+    // finish + map/unmap staging cycles in the Vulkan command stream) is a
+    // SIGSEGV source in libMNN_Vulkan on this driver. It already served its
+    // diagnostic purpose (proved the frame cmd buffer executes and the
+    // descriptor bindings/const values are correct), so it stays off.
+    (void)inputs; (void)outputs;
     return NO_ERROR;
 }
 
