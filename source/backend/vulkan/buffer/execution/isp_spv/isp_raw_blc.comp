@@ -29,9 +29,18 @@ void main() {
 
     if (int(x) >= w || int(y) >= h) return;
 
-    int idx = (int(y) * w + int(x)) * 3;
+    int idx = int(y) * w + int(x);
 
-    out_data[idx + 0] = (in_data[idx + 0] - black_r) * gain;
-    out_data[idx + 1] = (in_data[idx + 1] - black_g) * gain;
-    out_data[idx + 2] = (in_data[idx + 2] - black_b) * gain;
+    // 1-CHANNEL RAW PLANE. The input is a Bayer mosaic [1,1,H,W] (one sample
+    // per pixel), so every raw-domain op addresses it linearly. The previous
+    // '[...] * 3' + three per-channel writes assumed a 3-channel packed plane
+    // that this pipeline never produces: with grid=[W/16,H/16] over a
+    // [1,1,H,W] buffer it wrote 3*H*W floats, i.e. THREE TIMES past the end
+    // of the output allocation — an out-of-bounds GPU write (garbage output
+    // and the libMNN_Vulkan SIGSEGV).
+    //
+    // The per-position Bayer black level is applied after CFA (isp.blc_min,
+    // one coefficient per quad channel), so a scalar here is correct: the
+    // baseline const is {W,H,0,0,0,gain=1} (pure passthrough).
+    out_data[idx] = (in_data[idx] - black_r) * gain;
 }

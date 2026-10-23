@@ -32,8 +32,11 @@ void main() {
     int h = int(height);
     if (int(x) >= w || int(y) >= h) return;
 
-    int idx = (int(y) * w + int(x)) * 3;
-    out_data[idx + 0] = (in_data[idx + 0] - black_r) * gain;
-    out_data[idx + 1] = (in_data[idx + 1] - black_g) * gain;
-    out_data[idx + 2] = (in_data[idx + 2] - black_b) * gain;
+    int idx = int(y) * w + int(x);
+    // 1-CHANNEL RAW PLANE (see isp_raw_blc.comp for the full rationale):
+    // the input is a Bayer mosaic [1,1,H,W]; addressing it as a
+    // 3-channel packed plane wrote 3*H*W floats, three times past the
+    // output allocation (OOB GPU write → garbage + libMNN_Vulkan SIGSEGV).
+    // Per-position Bayer coefficients are applied post-CFA in isp.blc_min.
+    out_data[idx] = (in_data[idx] - black_r) * gain;
 }
