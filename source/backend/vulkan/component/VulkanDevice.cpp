@@ -122,6 +122,32 @@ VulkanDevice::VulkanDevice(std::shared_ptr<VulkanInstance> instance)
         CALL_VK(vkEnumerateDeviceExtensionProperties(mPhysicalDevice, nullptr, &extCount, availableDeviceExtensions.data()));
     }
 
+    // [AHB IMPORT PROBE] Report whether the device can import an
+    // AHardwareBuffer into Vulkan. That is the prerequisite for a true
+    // zero-copy display: the GPU writes the gralloc buffer directly and the
+    // UI wraps it as a hardware Bitmap (no GPU->CPU copy, no CPU pixel pass).
+    {
+        extern FILE* ispTraceSink();
+        if (FILE* tf = ispTraceSink()) {
+            const char* want[] = {
+                "VK_KHR_external_memory",
+                "VK_KHR_external_memory_android_hardware_buffer",
+                "VK_KHR_dedicated_allocation",
+                "VK_ANDROID_external_memory_android_hardware_buffer",
+                "VK_KHR_get_memory_requirements2",
+                "VK_KHR_bind_memory2",
+            };
+            for (const char* w : want) {
+                bool has = false;
+                for (auto& e : availableDeviceExtensions) {
+                    if (std::strcmp(e.extensionName, w) == 0) { has = true; break; }
+                }
+                fprintf(tf, "[AHB-PROBE] %s available=%d\n", w, has ? 1 : 0);
+            }
+            fflush(tf);
+        }
+    }
+
     // Configure VK_KHR_portability_subset
     const char * portabilityExtName = "VK_KHR_portability_subset";
     if (_hasExtension(availableDeviceExtensions, portabilityExtName)) {
