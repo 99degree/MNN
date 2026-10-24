@@ -7,6 +7,7 @@
 //
 
 #include "VulkanPipeline.hpp"
+#include "component/MNNIspTrace.hpp"
 #include <string.h>
 #include <map>
 #include <atomic>
@@ -172,7 +173,7 @@ VulkanPipeline::~VulkanPipeline() {
 }
 
 void VulkanPipeline::bind(VkCommandBuffer cmd, VkDescriptorSet des) const {
-    { extern FILE* ispTraceSink(); FILE* tf = ispTraceSink();
+    { FILE* tf = mnnIspTraceSink();
       if (tf) { fprintf(tf, "[DESCBIND] cmd=%p pipeline=%p set=%p\n",
           (void*)cmd, (void*)mPipeline, (void*)des); fflush(tf); } }
     // Bind the compute pipeline.
@@ -235,7 +236,7 @@ void VulkanLayout::DescriptorSet::writeBuffer(std::tuple<VkBuffer, VkDeviceSize,
 }
 
 void VulkanLayout::DescriptorSet::writeBuffer(VkBuffer buffer, int bindIndex, size_t size, VkDeviceSize offset) {
-    { extern FILE* ispTraceSink(); FILE* tf = ispTraceSink();
+    { FILE* tf = mnnIspTraceSink();
       if (tf) { fprintf(tf, "[DESCWRITE] set=%p bind=%d buf=%p size=%zu off=%zu\n",
           (void*)mSet, bindIndex, (void*)buffer, size, (size_t)offset); fflush(tf); } }
     VkWriteDescriptorSet writeSet;

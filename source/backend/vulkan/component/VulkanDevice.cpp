@@ -7,6 +7,7 @@
 //
 
 #include "backend/vulkan/component/VulkanDevice.hpp"
+#include "component/MNNIspTrace.hpp"
 #include <string.h>
 #include <algorithm>
 //#define MNN_VULKAN_PRINT_EXT
@@ -127,8 +128,7 @@ VulkanDevice::VulkanDevice(std::shared_ptr<VulkanInstance> instance)
     // zero-copy display: the GPU writes the gralloc buffer directly and the
     // UI wraps it as a hardware Bitmap (no GPU->CPU copy, no CPU pixel pass).
     {
-        extern FILE* ispTraceSink();
-        if (FILE* tf = ispTraceSink()) {
+        if (FILE* tf = mnnIspTraceSink()) {
             const char* want[] = {
                 "VK_KHR_external_memory",
                 "VK_KHR_external_memory_android_hardware_buffer",

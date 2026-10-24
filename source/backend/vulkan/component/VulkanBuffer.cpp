@@ -7,7 +7,29 @@
 //
 
 #include "backend/vulkan/component/VulkanBuffer.hpp"
+#include "component/MNNIspTrace.hpp"
 #include <string.h>
+#include <cstdarg>
+#include <cstdio>
+
+// [ZERO-COPY] Trace helper. Self-contained so this translation unit never
+// imports `ispTraceSink` (internal to libMNN_Vulkan); an undefined reference
+// there made the whole .so fail to dlopen:
+//   "cannot locate symbol ispTraceSink referenced by libmnnhelper.so"
+extern "C" __attribute__((visibility("default")))
+void mnnIspZeroCopyLog(const char* fmt, ...) {
+    FILE* tf = fopen("/sdcard/Download/isp_vlog_trace", "a");
+    if (tf == nullptr) {
+        return;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(tf, fmt, ap);
+    va_end(ap);
+    fflush(tf);
+    fclose(tf);
+}
+
 namespace MNN {
 
 VulkanBuffer::VulkanBuffer(const VulkanMemoryPool& pool, bool separate, size_t size, const void* hostData,
@@ -117,10 +139,8 @@ VulkanBufferFromAHB* VulkanBufferFromAHB::create(const VulkanDevice& device,
         "VK_KHR_get_memory_requirements2",
         "VK_KHR_bind_memory2",
     };
-    extern FILE* ispTraceSink();
-    FILE* tf = ispTraceSink();
     for (const char* w : want) {
-        if (tf) { fprintf(tf, "[ZERO-COPY] need %s\n", w); fflush(tf); }
+        ::mnnIspZeroCopyLog("[ZERO-COPY] need %s\n", w);
     }
 
     auto* res = new VulkanBufferFromAHB(device);
@@ -187,7 +207,7 @@ VulkanBufferFromAHB* VulkanBufferFromAHB::create(const VulkanDevice& device,
         delete res;
         return nullptr;
     }
-    if (tf) { fprintf(tf, "[ZERO-COPY] AHB imported ok size=%zu memType=%u\n", size, memTypeIndex); fflush(tf); }
+    mnnIspZeroCopyLog("[ZERO-COPY] AHB imported ok size=%zu memType=%u\n", size, memTypeIndex);
     return res;
 }
 

@@ -7,6 +7,7 @@
 //
 
 #include "VulkanBasicExecution.hpp"
+#include "component/MNNIspTrace.hpp"
 #include "VulkanBackend.hpp"
 #include "core/TensorUtils.hpp"
 #include <atomic>
@@ -25,8 +26,7 @@ ErrorCode VulkanBasicExecutionDirect::onExecute(const std::vector<Tensor *> &inp
     }
     // [TRACE] Per-frame execution marker: proves each Vulkan op's dispatch
     // actually runs. Output goes to the VulkanFuse trace file when armed.
-    extern FILE* ispTraceSink();
-    if (FILE* tf = ispTraceSink()) {
+    if (FILE* tf = mnnIspTraceSink()) {
         fprintf(tf, "[EXEC] onExecute op=%s\n", mEncoder->getName().c_str());
         fflush(tf);
     }
@@ -48,8 +48,7 @@ ErrorCode VulkanBasicExecutionDirect::onExecute(const std::vector<Tensor *> &inp
 
 ErrorCode VulkanBasicExecutionDirect::onResize(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) {
     {
-        extern FILE* ispTraceSink();
-        if (FILE* tf = ispTraceSink()) {
+        if (FILE* tf = mnnIspTraceSink()) {
             fprintf(tf, "[EXEC] onResize op=%s\n", mEncoder->getName().c_str());
             fflush(tf);
         }
@@ -92,8 +91,7 @@ VulkanBasicExecutionInDirect::VulkanBasicExecutionInDirect(std::shared_ptr<Vulka
 }
 ErrorCode VulkanBasicExecutionInDirect::onExecute(const std::vector<Tensor *> &inputs, const std::vector<Tensor *> &outputs) {
     {
-        extern FILE* ispTraceSink();
-        if (FILE* tf = ispTraceSink()) {
+        if (FILE* tf = mnnIspTraceSink()) {
             fprintf(tf, "[EXEC] InDirect::onExecute op=%s\n", mEncoder->getName().c_str());
             fflush(tf);
         }

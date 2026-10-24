@@ -7,6 +7,7 @@
 //
 
 #include <stdio.h>
+#include "component/MNNIspTrace.hpp"
 #include <android/log.h>
 #include <atomic>
 #include <sys/system_properties.h>
@@ -47,7 +48,7 @@ static void ensureTraceFile() {
 static std::atomic<int> sProbeFrameCount{0};
 
 // Trace sink accessor for other TUs (VulkanBasicExecution per-frame trace).
-FILE* ispTraceSink() { return s_traceFile; }
+extern "C" __attribute__((visibility("default"))) FILE* mnnIspTraceSink() { return s_traceFile; }
 int ispProbeFrameTake() { return sProbeFrameCount.fetch_add(1); }
 bool ispProbeFramesLeft(int limit) { return sProbeFrameCount.load() < limit; }
 

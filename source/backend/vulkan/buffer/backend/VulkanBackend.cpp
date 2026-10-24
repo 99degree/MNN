@@ -7,6 +7,7 @@
 //
 
 #include "VulkanBackend.hpp"
+#include "component/MNNIspTrace.hpp"
 #include <algorithm>
 #include "core/Execution.hpp"
 #include "core/Macro.h"
@@ -297,8 +298,7 @@ extern "C" __attribute__((visibility("default")))
 void mnnSetDisplayAhb(void* hardwareBuffer, size_t bytes) {
     g_publishedDisplayAhb = hardwareBuffer;
     g_publishedDisplayAhbBytes = (hardwareBuffer != nullptr) ? bytes : 0;
-    extern FILE* ispTraceSink();
-    if (FILE* tf = ispTraceSink()) {
+    if (FILE* tf = mnnIspTraceSink()) {
         fprintf(tf, "[ZERO-COPY] mnnSetDisplayAhb ahb=%p bytes=%zu\n",
             hardwareBuffer, g_publishedDisplayAhbBytes);
         fflush(tf);
@@ -315,8 +315,7 @@ bool VulkanBackend::setSharedAhb(void* hardwareBuffer, size_t bytes) {
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
             VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
     }
-    extern FILE* ispTraceSink();
-    if (FILE* tf = ispTraceSink()) {
+    if (FILE* tf = mnnIspTraceSink()) {
         fprintf(tf, "[ZERO-COPY] setSharedAhb ahb=%p bytes=%zu imported=%p\n",
             hardwareBuffer, bytes, mSharedAhb ? (void*)mSharedAhb->buffer() : nullptr);
         fflush(tf);
@@ -676,7 +675,7 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
         }
         size_t cpSize = calculateCpSize(srcTensor);
         _requireHostBuffer(cpSize);
-        { extern FILE* ispTraceSink(); FILE* vfp = ispTraceSink();
+        { FILE* vfp = mnnIspTraceSink();
         if (vfp && srcTensor->host<float>() != nullptr && cpSize >= 48) {
             const float* sv = srcTensor->host<float>();
             std::string dstr;
@@ -717,7 +716,7 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
         cmdbuffer->end();
         pushCommand(cmdbuffer->get());
         _finish();
-        { extern FILE* ispTraceSink(); FILE* vfp2 = ispTraceSink();
+        { FILE* vfp2 = mnnIspTraceSink();
         if (vfp2 && cpSize >= 20155392) {
             // [GPUVERIFY] copy 64 bytes device->host and log the landing values.
             auto cmdb2 = mCmdBufferForCopy;
