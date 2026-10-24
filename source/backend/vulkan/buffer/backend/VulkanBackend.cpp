@@ -285,7 +285,65 @@ private:
     MemChunk mPoint;
     int mSize;
 };
+// ── [ZERO-COPY DISPLAY] process-wide published display AHardwareBuffer ──────
+// nativeBindDisplayAHB (JNI) publishes the gralloc buffer here; the Vulkan
+// backend imports it lazily the first time getBuffer() is asked for a
+// deviceId()==0 display-sized tensor, then every isp.display_* dispatch writes
+// the UI's buffer directly (no GPU->CPU readback, no CPU pixel pass).
+static void* g_publishedDisplayAhb = nullptr;
+static size_t g_publishedDisplayAhbBytes = 0;
+
+extern "C" __attribute__((visibility("default")))
+void mnnSetDisplayAhb(void* hardwareBuffer, size_t bytes) {
+    g_publishedDisplayAhb = hardwareBuffer;
+    g_publishedDisplayAhbBytes = (hardwareBuffer != nullptr) ? bytes : 0;
+    extern FILE* ispTraceSink();
+    if (FILE* tf = ispTraceSink()) {
+        fprintf(tf, "[ZERO-COPY] mnnSetDisplayAhb ahb=%p bytes=%zu\n",
+            hardwareBuffer, g_publishedDisplayAhbBytes);
+        fflush(tf);
+    }
+}
+
+bool VulkanBackend::setSharedAhb(void* hardwareBuffer, size_t bytes) {
+    if (hardwareBuffer == nullptr || bytes == 0) {
+        mSharedAhb = nullptr;
+        return false;
+    }
+    if (mSharedAhb == nullptr) {
+        mSharedAhb.reset(VulkanBufferFromAHB::create(device(), hardwareBuffer, bytes,
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+    }
+    extern FILE* ispTraceSink();
+    if (FILE* tf = ispTraceSink()) {
+        fprintf(tf, "[ZERO-COPY] setSharedAhb ahb=%p bytes=%zu imported=%p\n",
+            hardwareBuffer, bytes, mSharedAhb ? (void*)mSharedAhb->buffer() : nullptr);
+        fflush(tf);
+    }
+    return mSharedAhb != nullptr;
+}
+
 VULKAN_TENSOR VulkanBackend::getBuffer(const Tensor* tensor) const {
+    // [ZERO-COPY DISPLAY] Serve the display output tensor from the imported
+    // AHardwareBuffer while one is published, so the shader writes the UI's
+    // gralloc buffer in place. Tensors with a real deviceId() are unaffected.
+    if (mSharedAhb == nullptr && g_publishedDisplayAhb != nullptr && tensor != nullptr &&
+        tensor->deviceId() == 0) {
+        size_t want = getTensorSize(tensor);
+        // Only the frame-sized display output is imported; small scalar
+        // parameter tensors keep the dummy-buffer path.
+        if (want > 0 && want <= g_publishedDisplayAhbBytes) {
+            const_cast<VulkanBackend*>(this)->setSharedAhb(
+                g_publishedDisplayAhb, g_publishedDisplayAhbBytes);
+        }
+    }
+    if (mSharedAhb != nullptr && tensor != nullptr && tensor->deviceId() == 0) {
+        size_t sz = getTensorSize(tensor);
+        if (sz > 0 && sz <= mSharedAhb->size()) {
+            return std::make_tuple(mSharedAhb->buffer(), sz, 0);
+        }
+    }
     // A tensor that is not resident on this Vulkan device (e.g. a Host/const
     // tensor reaching a VulkanFuse op, or a tensor whose deviceId was never
     // allocated on the GPU) must NOT yield a null VkBuffer: binding

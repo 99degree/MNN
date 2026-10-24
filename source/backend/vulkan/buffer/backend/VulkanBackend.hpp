@@ -16,6 +16,7 @@
 #include <MNN/ErrorCode.hpp>
 #include "MNN_generated.h"
 #include "VulkanRuntime.hpp"
+#include "component/VulkanBuffer.hpp"
 
 #ifdef ENABLE_VULKAN_TIME_PROFILE
 #include "VulkanTimeProfiler.hpp"
@@ -125,6 +126,12 @@ public:
             ? mVulkanDummyBuffer->buffer() : VK_NULL_HANDLE;
     }
     std::shared_ptr<VulkanBuffer> allocUniform(const void* src = nullptr, int size = 0);
+
+    // [ZERO-COPY DISPLAY] Publish (or clear with nullptr) the AHardwareBuffer to
+    // import for the display output. [bytes] is the tensor size to bind.
+    // Returns true when the import succeeded.
+    bool setSharedAhb(void* hardwareBuffer, size_t bytes);
+    bool hasSharedAhb() const { return mSharedAhb != nullptr; }
     void recycleUniform(std::shared_ptr<VulkanBuffer> buffer);
     void copyGPUToGPUBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size, VkDeviceSize srcOffset, VkDeviceSize dstOffset) const;
     void copyGPUToGPUBufferRegions(VkBuffer srcBuffer, VkBuffer dstBuffer, const VkBufferCopy* regions, uint32_t regionCount) const;
@@ -160,6 +167,12 @@ private:
     // so the op executes and records GPU timestamps instead of crashing the
     // host. Never triggers on real hardware (tensors are GPU-backed there).
     std::shared_ptr<VulkanBuffer> mVulkanDummyBuffer;
+
+    // [ZERO-COPY DISPLAY] Imported AHardwareBuffer-backed buffer for the display
+    // output tensor. While set, getBuffer() returns THIS VkBuffer for tensors
+    // whose deviceId() is 0 (the display output), so isp.display_* writes the
+    // UI's gralloc buffer in place — no GPU->CPU readback, no CPU pixel pass.
+    std::shared_ptr<VulkanBufferFromAHB> mSharedAhb;
 
     std::shared_ptr<VulkanCommandPool::Buffer> mCmdBufferForCopy;
     BufferAllocator* mCurrentDynamicBufferPool = nullptr;
