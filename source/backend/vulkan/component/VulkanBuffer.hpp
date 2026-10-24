@@ -46,6 +46,31 @@ private:
     bool mReleased = false;
     VkSharingMode mShared;
 };
+
+// ── [ZERO-COPY DISPLAY] VulkanBuffer variant backed by an imported
+// AHardwareBuffer. The GPU writes the gralloc buffer directly, so the display
+// tensor needs NO GPU->CPU readback and the UI can wrap it as a hardware
+// Bitmap. Modelled on the OpenCL backend's shared-mem path; the shared
+// AHardwareBuffer pointer is the same object passed to
+// TensorUtils::setSharedMem/getSharedMem by the JNI display binding.
+class VulkanBufferFromAHB : public NonCopyable {
+public:
+    /** Returns nullptr when the device lacks the import extensions or the
+     *  allocation/import fails; callers must fall back to a normal buffer. */
+    static VulkanBufferFromAHB* create(const VulkanDevice& device,
+                                       void* hardwareBuffer,
+                                       size_t size,
+                                       VkBufferUsageFlags usage);
+    virtual ~VulkanBufferFromAHB();
+    VkBuffer buffer() const { return mBuffer; }
+    size_t size() const { return mSize; }
+private:
+    VulkanBufferFromAHB(const VulkanDevice& dev) : mDevice(dev) {}
+    const VulkanDevice& mDevice;
+    VkBuffer mBuffer = VK_NULL_HANDLE;
+    VkDeviceMemory mMemory = VK_NULL_HANDLE;
+    size_t mSize = 0;
+};
 } // namespace MNN
 
 #endif /* VulkanBuffer_hpp */
