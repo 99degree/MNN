@@ -25,6 +25,11 @@ layout(set = 0, binding = 0, std430) buffer Uniforms {
 layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
 layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
 layout(set = 0, binding = 3) readonly  buffer ParamBuf { float params[]; };
+// binding 4 = TONE_SHADOW_LIFT (fed when the block enables lift). Same S-curve
+// term ToneBlock applies in ONNX: lifted = v + lift * (1 - v)^2. Declared here
+// because GammaBlock's `useLift` path binds it and the shader previously
+// ignored it.
+layout(set = 0, binding = 4) readonly  buffer LiftBuf { float liftv[]; };
 
 void main() {
     uint x = gl_GlobalInvocationID.x;
@@ -40,6 +45,18 @@ void main() {
     float r = in_data[idx];
     float g = in_data[plane + idx];
     float b = in_data[2 * plane + idx];
+
+    // Shadow lift (S-curve): lifted = v + lift * (1 - v)^2, v clamped to [0,1].
+    // lift == 0 is exactly the previous behaviour, so an unfed binding 4
+    // (the default tensor value) leaves the gamma encode unchanged.
+    float lift = clamp(liftv[0], 0.0, 0.25);
+    if (lift > 0.0) {
+        r = clamp(r, 0.0, 1.0); g = clamp(g, 0.0, 1.0); b = clamp(b, 0.0, 1.0);
+        float dr = 1.0 - r, dg = 1.0 - g, db = 1.0 - b;
+        r += lift * dr * dr;
+        g += lift * dg * dg;
+        b += lift * db * db;
+    }
 
     out_data[idx]            = exp(log(clamp(r, 0.0, 1e10) + 1e-9) * inv);
     out_data[plane + idx]    = exp(log(clamp(g, 0.0, 1e10) + 1e-9) * inv);
