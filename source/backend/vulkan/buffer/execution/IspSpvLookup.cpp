@@ -74,6 +74,7 @@
 #include "isp_spv/isp_zone_stats_spv.h"
 // MINIMAL opset shaders
 #include "isp_spv/isp_lsc_min_spv.h"
+#include "isp_spv/isp_pipeline_spv.h"
 #include "isp_spv/isp_vignetting_min_spv.h"
 #include "isp_spv/isp_chromatic_aberration_min_spv.h"
 #include "isp_spv/isp_raw_blc_min_spv.h"

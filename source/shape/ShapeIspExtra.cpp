@@ -281,6 +281,56 @@ public:
             TensorUtils::setLinearLayout(output);
             return true;
         }
+        if (type == "isp.pipeline") {
+            // isp.pipeline - the WHOLE ISP chain fused into ONE dispatch.
+            // Input:  raw planar [1,1,H_src,W_src] float.
+            // Output: display   [1,3,outH,outW] float (0-255 display domain).
+            // outW/outH come from the `downscale_out` int32[2] attr the emitter
+            // bakes (the same contract isp.downscale uses), so the graph boundary
+            // stays IDENTICAL to the broken-down opset: swapping modes does not
+            // change any downstream shape.
+            auto input  = inputs[0];
+            auto output = outputs[0];
+            int dims = input->buffer().dimensions;
+            if (dims < 4) return false;
+            int inW = input->buffer().dim[dims - 1].extent;
+            int inH = input->buffer().dim[dims - 2].extent;
+            int outW = 0, outH = 0;
+            if (extra != nullptr && extra->attr() != nullptr) {
+                for (int i = 0; i < extra->attr()->size(); ++i) {
+                    auto* a = extra->attr()->GetAs<Attribute>(i);
+                    if (a == nullptr || a->key() == nullptr) continue;
+                    if (a->key()->str() == "downscale_out") {
+                        if (a->list() && a->list()->i() && a->list()->i()->size() >= 2) {
+                            auto d = a->list()->i();
+                            outW = d->data()[0]; outH = d->data()[1];
+                        } else if (a->tensor() && a->tensor()->int32s() && a->tensor()->int32s()->size() >= 2) {
+                            auto d = a->tensor()->int32s();
+                            outW = d->data()[0]; outH = d->data()[1];
+                        }
+                    }
+                }
+            }
+            if (outW <= 0 || outH <= 0) { outW = inW > 0 ? inW / 2 : 0; outH = inH > 0 ? inH / 2 : 0; }
+            if (outW <= 0 || outH <= 0) {
+                TensorUtils::copyShape(input, output, true);
+                output->buffer().type = halide_type_of<float>();
+                return true;
+            }
+            output->buffer().dimensions = 4;
+            output->buffer().dim[0].extent = 1;
+            output->buffer().dim[1].extent = 3;
+            output->buffer().dim[2].extent = outH;
+            output->buffer().dim[3].extent = outW;
+            TensorUtils::getDescribe(output)->dimensionFormat = MNN_DATA_FORMAT_NCHW;
+            output->buffer().type = halide_type_of<float>();
+            TensorUtils::setLinearLayout(output);
+            if (getenv("ISP_SHAPE_DEBUG") != nullptr) {
+                MNN_PRINT("[ShapeIspExtra] isp.pipeline in=[1,1,%d,%d] attr(outW,outH)=(%d,%d) -> out=[1,3,%d,%d]\n",
+                    inH, inW, outW, outH, outH, outW);
+            }
+            return true;
+        }
         if (type == "isp.downscale") {
             // isp.downscale: NCHW RGB [1,3,H,W] -> [1,3,outH,outW].
             // The ONLY shape-changing isp op that had no computer, so the generic

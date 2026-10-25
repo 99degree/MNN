@@ -165,6 +165,13 @@ extern const int g_isp_chromatic_aberration_min_spv_len;
 extern const unsigned char g_isp_raw_blc_min_spv[];
 extern const int g_isp_raw_blc_min_spv_len;
 
+// isp.pipeline: the WHOLE ISP chain fused into ONE compute dispatch. Replaces
+// the 12-op broken-down chain so a failure is binary (inference vs
+// post-inference). All coefficients ride on binding 3 (PIPELINE_PARAMS); the
+// binding-0 const is declared only to keep the descriptor layout valid.
+extern const unsigned char g_isp_pipeline_spv[];
+extern const int g_isp_pipeline_spv_len;
+
 namespace MNN {
 
 struct SpvData {
@@ -240,6 +247,7 @@ static const std::unordered_map<std::string, SpvData> g_ispSpvMap = {
     {"isp.vignetting_min",    {g_isp_vignetting_min_spv,    g_isp_vignetting_min_spv_len}},
     {"isp.chromatic_aberration_min", {g_isp_chromatic_aberration_min_spv, g_isp_chromatic_aberration_min_spv_len}},
     {"isp.raw_blc_min",       {g_isp_raw_blc_min_spv,       g_isp_raw_blc_min_spv_len}},
+    {"isp.pipeline",          {g_isp_pipeline_spv,          g_isp_pipeline_spv_len}},
     {"isp.nlm",         {g_isp_nlm_spv,          g_isp_nlm_spv_len}},
     {"isp.pyramid",     {g_isp_pyramid_spv,      g_isp_pyramid_spv_len}},
     {"isp.stats",       {g_isp_stats_spv,        g_isp_stats_spv_len}},

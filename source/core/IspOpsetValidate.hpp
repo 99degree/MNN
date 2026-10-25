@@ -91,6 +91,7 @@ inline const char* const kIspOpsetNames[] = {
     "isp.lsc_min",
     "isp.nlm",
     "isp.normalize",
+    "isp.pipeline",
     "isp.pyramid",
     "isp.raw_blc",
     "isp.raw_blc_min",
