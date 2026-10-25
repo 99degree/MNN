@@ -43,8 +43,11 @@ void main() {
     }
     // Optional extra encode: gamma <= 0 is identity, which is what the main
     // chain passes because isp.gamma already encodes.
+    // gamma == 1.0 is an identity encode, so skip the pow entirely (the main
+    // chain already encoded in isp.gamma and feeds gamma = 1.0 here). This
+    // saves 3 pow() calls per pixel, ~518k per 480x360 frame.
     float g = u.gamma;
-    if (g > 0.0001f) {
+    if (g > 0.0001f && abs(g - 1.0f) > 0.0001f) {
         float invg = 1.0 / g;
         c0 = 255.0 * pow(clamp(c0 / 255.0, 0.0, 1.0), invg);
         c1 = 255.0 * pow(clamp(c1 / 255.0, 0.0, 1.0), invg);
