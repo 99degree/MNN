@@ -12,148 +12,130 @@
 //   back to its footprint in the raw plane and AREA-AVERAGES every CFA sample
 //   inside it. That single step does what crop + normalize + cfa + demosaic +
 //   downscale did together, and it is strictly better than the old chain: the
-//   old isp.downscale used a 2-tap bilinear kernel over a 5.4x reduction, which
+//   old isp.downscale used a 2-tap bilinear kernel over a large reduction, which
 //   folded chroma back into the image (the "diffused colour"). An area filter
 //   integrates the real footprint instead.
 //
-//   Per raw sample:  v = raw/sensorMax ; v = (v - blc[plane]) * blcGain
+//   Per raw sample:  v = raw ; v = (v - blc[plane]) * blcGain
 //                    v *= lscGain ; v *= wb[plane]
 //   Per RGB channel: acc[ch] += v * areaWeight        (ch: R=0 G=1 B=2)
 //   Then:            rgb = acc / areasum ; rgb = ccm * rgb
 //                    rgb = rgb + lift*(1-rgb)^2 ; rgb = pow(rgb, 1/gamma)
 //                    out = 255 * rgb
 //
-// BINDINGS (the verified isp.* positional convention)
-//   binding 0 = const SSBO, DECLARED but never read. It exists only so
-//               VulkanFuse's descriptor layout types the slot as
-//               STORAGE_BUFFER — with no `const` attr that slot keeps
-//               descriptor type 0 (SAMPLER) and the layout is invalid.
-//               ALL geometry and coefficients therefore arrive on binding 3,
-//               so this op needs NO const hot-swap patch at all.
-//   binding 1 = raw input plane [1,1,H_src,W_src] (RO)
-//   binding 2 = display output [1,3,outH,outW] planar float, 0-255 domain (WO)
-//   binding 3 = PIPELINE_PARAMS float[N] — ONE per-frame tensor carrying every
-//               coefficient. See the index block below (and TensorNames.java,
-//               which is the single source of truth for the layout).
+// INPUTS — NAMED PER-COEFFICIENT TENSORS, one per coefficient, at bindings that
+// mirror the broken-down opset's own blocks. Nothing is packed into a blob and
+// nothing is duplicated: every coefficient below is the SAME named tensor
+// (same TensorNames constant, same ParameterRegistry entry, same per-frame feed)
+// that its standalone block already declares, so IspController's existing
+// name-keyed 3A path drives this op exactly as it drives the per-op chain.
+//
+//   binding 0 = const SSBO float[8]. NOT read by this shader. It exists only so
+//               VulkanFuse types the slot STORAGE_BUFFER and the descriptor
+//               layout is complete (with no `const` attr, slot 0 keeps
+//               descriptor type 0 = SAMPLER).
+//   binding 1 = raw input plane        (frame in, RO)
+//   binding 2 = display output         (frame out, WO)
+//   binding 3 = DOWNSCALE_BLOCK/HW          float[4] {srcW, srcH, outW, outH}
+//   binding 4 = BLC_PATTERN                 float[4] {R, Gr, Gb, B}  graph space
+//   binding 5 = BAYERWBBLOCK/BAYER_GAINS    float[4] {R, Gr, Gb, B}
+//   binding 6 = CCMBLOCK/CCM_MATRIX         float[9] row-major 3x3
+//   binding 7 = TONE_CURVE/GAMMA_RECIP      float[1] 1/display_gamma
+//   binding 8 = TONE_CURVE/SHADOW_LIFT      float[1] S-curve lift
+//   binding 9 = DEMOSAIC_BLOCK/BAYER_PATTERN float[1] 0=RGGB 1=GRBG 2=GBRG 3=BGGR
+//
+// NOTE ON SENSOR MAX: the raw plane is NOT divided here because BLC_PATTERN
+// arrives ALREADY in graph space (ParameterRegistry divides the raw black level
+// by sensorMax). This shader therefore performs no normalization at all — the
+// normalization is what the *black-level* feed already encodes.
+//
+// CROP: the reference chain crops to min(16-aligned stride, stride) at start 0
+// (PipelineConfigurator). That rule is fixed, so it is computed here instead of
+// costing another input tensor.
 //
 // LAYOUT CONTRACT (2026-10-16): planar NCHW throughout. Matches isp.ccm,
 // isp.gamma and the JNI float->RGBA8 readback path.
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-layout(set = 0, binding = 0, std430) buffer Uniforms {
-    float pad0; float pad1; float pad2; float pad3;
-    float pad4; float pad5; float pad6; float pad7;
-} u;
+layout(set = 0, binding = 0, std430) buffer Uniforms { float unused[8]; } u;
+layout(set = 0, binding = 1) readonly  buffer InBuf   { float in_data[]; };
+layout(set = 0, binding = 2) writeonly buffer OutBuf  { float out_data[]; };
+layout(set = 0, binding = 3) readonly  buffer HwBuf   { float hw[]; };        // float[4]
+layout(set = 0, binding = 4) readonly  buffer BlcBuf  { float blc[]; };       // float[4]
+layout(set = 0, binding = 5) readonly  buffer WbBuf   { float wbGains[]; };   // float[4]
+layout(set = 0, binding = 6) readonly  buffer CcmBuf  { float ccmMatrix[]; };  // float[9]
+layout(set = 0, binding = 7) readonly  buffer GamBuf  { float gammaRecip[]; };// float[1]
+layout(set = 0, binding = 8) readonly  buffer LiftBuf { float shadowLift[]; };// float[1]
+layout(set = 0, binding = 9) readonly  buffer BayerBuf { float bayerPattern[]; };// float[1]
 
-layout(set = 0, binding = 1) readonly  buffer InBuf    { float in_data[]; };
-layout(set = 0, binding = 2) writeonly buffer OutBuf   { float out_data[]; };
-layout(set = 0, binding = 3) readonly  buffer ParamBuf { float params[]; };
+// ── DOWNSCALE_BLOCK/HW index layout: {W, H, outW, outH} ──
+#define H_SRC_W 0
+#define H_SRC_H 1
+#define H_OUT_W 2
+#define H_OUT_H 3
 
-// ── PIPELINE_PARAMS index layout (mirrors TensorNames.java) ──
-#define P_SRC_W        0
-#define P_SRC_H        1
-#define P_OUT_W        2
-#define P_OUT_H        3
-#define P_CROP_W       4
-#define P_CROP_H       5
-#define P_START_W      6
-#define P_START_H      7
-#define P_SENSOR_MAX   8
-#define P_BLC_R        9
-#define P_BLC_GR      10
-#define P_BLC_GB      11
-#define P_BLC_B       12
-#define P_LSC_K1      13
-#define P_LSC_K2      14
-#define P_LSC_VCM     15
-#define P_LSC_STRENGTH 16
-#define P_WB_R        17
-#define P_WB_G1       18
-#define P_WB_G2       19
-#define P_WB_B        20
-#define P_BAYER       21
-#define P_CCM         22   // 22..30, row-major 3x3
-#define P_GAMMA       31
-#define P_LIFT        32
-#define P_BLC_GAIN    33
+// The crop rule mirrors PipelineConfigurator: 16-align DOWN, then clamp.
+#define ALIGN16(v) (((v) / 16) * 16)
 
-// CFA site (par = (y&1)<<1 | x&1) -> CFA plane index [0=R, 1=Gr, 2=Gb, 3=B].
-// The plane ORDER is what the Bayer pattern defines (isp.cfa writes plane p =
-// channel p of the quad), so this table is what makes the pattern matter.
-int planeOf(int par, int pat) {
-    if (pat == 0) {                       // RGGB: TL=R TR=Gr BL=Gb BR=B
-        return par;                       // 0,1,2,3
-    } else if (pat == 1) {                // GRBG: TL=Gr TR=R BL=B BR=Gb
-        return (par == 0) ? 1 : (par == 1) ? 0 : (par == 2) ? 3 : 2;
-    } else if (pat == 2) {                // GBRG: TL=Gb TR=B BL=R BR=Gr
-        return (par == 0) ? 2 : (par == 1) ? 3 : (par == 2) ? 0 : 1;
-    }                                     // BGGR: TL=B TR=Gb BL=Gr BR=R
-    return (par == 0) ? 3 : (par == 1) ? 2 : (par == 2) ? 1 : 0;
+// Bayer parity (par = (y&1)<<1 | x&1, i.e. the quad site TL,TR,BL,BR) -> the
+// CFA plane index whose BLC/WB entry applies to that site.
+//
+// isp.cfa packs plane p = site p, and BLC_PATTERN / BAYER_GAINS are indexed in
+// that SAME plane order, so the site->plane step is an identity; what the Bayer
+// pattern decides is which PLANE carries which COLOUR. This table is therefore
+// the single place the pattern matters, and it is what removed the red/magenta
+// cast on a GRBG sensor.
+//
+//   RGGB: TL=R   TR=Gr  BL=Gb  BR=B   -> colour per plane {R, Gr, Gb, B}
+//   GRBG: TL=Gr  TR=R   BL=B   BR=Gb  -> plane 1 is R, plane 2 is B
+//   GBRG: TL=Gb  TR=B   BL=R   BR=Gr  -> plane 2 is R, plane 1 is B
+//   BGGR: TL=B   TR=Gb  BL=Gr  BR=R   -> plane 3 is R, plane 0 is B
+int planeForColor(int par, int pat) {
+    if (pat == 0) return par;                                     // 0,1,2,3
+    if (pat == 1) return (par == 0) ? 1 : (par == 1) ? 0 : (par == 2) ? 3 : 2;
+    if (pat == 2) return (par == 0) ? 2 : (par == 1) ? 3 : (par == 2) ? 0 : 1;
+    return               (par == 0) ? 3 : (par == 1) ? 2 : (par == 2) ? 1 : 0;
 }
 
-// CFA plane -> RGB channel. Gr and Gb both land on green.
+// Colour of a CFA plane: 0=R, 1=G, 2=B. Gr and Gb both land on green.
 int chanOfPlane(int plane) {
-    return (plane == 0) ? 0 : (plane == 1) ? 1 : (plane == 2) ? 1 : 2;
+    return (plane == 1 || plane == 2) ? 1 : (plane == 0) ? 0 : 2;
 }
 
 float blcOf(int plane) {
-    return (plane == 0) ? params[P_BLC_R]
-         : (plane == 1) ? params[P_BLC_GR]
-         : (plane == 2) ? params[P_BLC_GB]
-         : params[P_BLC_B];
+    return (plane == 0) ? blc[0]
+         : (plane == 1) ? blc[1]
+         : (plane == 2) ? blc[2]
+         : blc[3];
 }
 
 float wbOf(int plane) {
-    return (plane == 0) ? params[P_WB_R]
-         : (plane == 1) ? params[P_WB_G1]
-         : (plane == 2) ? params[P_WB_G2]
-         : params[P_WB_B];
-}
-
-// Procedural radial lens-shading gain, evaluated continuously at the raw pixel.
-// Same model as isp_lsc_min (k1*r^2 + k2*r^4 + vcm, squared, clamped, then
-// blended by `strength`), so strength == 0 is an exact passthrough.
-float lscGain(int ix, int iy, int cropW, int cropH) {
-    float strength = params[P_LSC_STRENGTH];
-    if (strength <= 0.0) return 1.0;
-    // crop-local normalized coords in [-1, 1]
-    float nx = (float(ix) / float(max(cropW - 1, 1))) * 2.0 - 1.0;
-    float ny = (float(iy) / float(max(cropH - 1, 1))) * 2.0 - 1.0;
-    float r2 = nx * nx + ny * ny;
-    float r4 = r2 * r2;
-    float fr = params[P_LSC_K1] * r2 + params[P_LSC_K2] * r4 + params[P_LSC_VCM];
-    float g = fr * fr;
-    if (g < 0.8) g = 0.8;
-    if (g > 2.5) g = 2.5;
-    return 1.0 + (g - 1.0) * strength;
+    return (plane == 0) ? wbGains[0]
+         : (plane == 1) ? wbGains[1]
+         : (plane == 2) ? wbGains[2]
+         : wbGains[3];
 }
 
 void main() {
     uint xo = gl_GlobalInvocationID.x;
     uint yo = gl_GlobalInvocationID.y;
 
-    int ow = int(params[P_OUT_W]);
-    int oh = int(params[P_OUT_H]);
+    int ow = int(hw[H_OUT_W]);
+    int oh = int(hw[H_OUT_H]);
     if (ow < 1 || oh < 1) return;
     if (int(xo) >= ow || int(yo) >= oh) return;
 
-    int sw = int(params[P_SRC_W]);       // raw plane stride width
-    int sh = int(params[P_SRC_H]);
+    int sw = int(hw[H_SRC_W]);       // raw plane stride width
+    int sh = int(hw[H_SRC_H]);
     if (sw < 2 || sh < 2) return;
 
-    // Crop window inside the raw plane (what isp.crop used to do).
-    // <=0 means "no crop" and is resolved to the full plane.
-    int cropW = int(params[P_CROP_W]);
-    int cropH = int(params[P_CROP_H]);
-    int startW = int(params[P_START_W]);
-    int startH = int(params[P_START_H]);
-    if (cropW <= 0) { cropW = sw; startW = 0; }
-    if (cropH <= 0) { cropH = sh; startH = 0; }
-    if (startW < 0) startW = 0;
-    if (startH < 0) startH = 0;
-    if (startW + cropW > sw) cropW = sw - startW;
-    if (startH + cropH > sh) cropH = sh - startH;
+    // Crop window (mirrors PipelineConfigurator's resolvedCrop); start 0.
+    int cropW = ALIGN16(sw);
+    if (cropW <= 0 || cropW > sw) cropW = sw;
+    int cropH = sh;
+    int startW = 0;
+    int startH = 0;
     if (cropW < 2 || cropH < 2) return;
 
     int x = int(xo);
@@ -196,9 +178,7 @@ void main() {
     int iy0 = int(floor(sy0));
     int iy1 = int(ceil(sy1));
 
-    float invSensorMax = 1.0 / max(params[P_SENSOR_MAX], 1e-6);
-    float blcGain = params[P_BLC_GAIN];
-    int pat = int(params[P_BAYER]);
+    int pat = int(bayerPattern[0]);
     if (pat < 0) pat = 0;
     if (pat > 3) pat = 3;
 
@@ -218,13 +198,12 @@ void main() {
             if (rx < 0 || rx >= sw) continue;
 
             float w = wx * wy;
-            int plane = planeOf(((ry & 1) << 1) | (rx & 1), pat);
+            int par   = ((ry & 1) << 1) | (rx & 1);
+            int plane = planeForColor(par, pat);
             int chn   = chanOfPlane(plane);
 
-            float v = in_data[ry * sw + rx] * invSensorMax;
-            v = (v - blcOf(plane)) * blcGain;
-            v *= lscGain(ix, iy, cropW, cropH);
-            v *= wbOf(plane);
+            float v = in_data[ry * sw + rx];
+            v = (v - blcOf(plane)) * wbOf(plane);
 
             if (chn == 0)      accR += v * w;
             else if (chn == 1) accG += v * w;
@@ -243,23 +222,26 @@ void main() {
     float g = accG / wsum;
     float b = accB / wsum;
 
-    // ── CCM (row-major 3x3) ──
-    float cr = params[P_CCM + 0] * r + params[P_CCM + 1] * g + params[P_CCM + 2] * b;
-    float cg = params[P_CCM + 3] * r + params[P_CCM + 4] * g + params[P_CCM + 5] * b;
-    float cb = params[P_CCM + 6] * r + params[P_CCM + 7] * g + params[P_CCM + 8] * b;
+    // ── CCM (row-major 3x3, the SAME CCMBLOCK/CCM_MATRIX CcmBlock reads) ──
+    float cr = ccmMatrix[0] * r + ccmMatrix[1] * g + ccmMatrix[2] * b;
+    float cg = ccmMatrix[3] * r + ccmMatrix[4] * g + ccmMatrix[5] * b;
+    float cb = ccmMatrix[6] * r + ccmMatrix[7] * g + ccmMatrix[8] * b;
 
     // ── S-curve shadow lift (same form as isp_gamma's binding 4) ──
-    float lift = params[P_LIFT];
+    float lift = shadowLift[0];
     if (lift != 0.0) {
         cr = cr + lift * (1.0 - cr) * (1.0 - cr);
         cg = cg + lift * (1.0 - cg) * (1.0 - cg);
         cb = cb + lift * (1.0 - cb) * (1.0 - cb);
     }
 
-    // ── Gamma encode: out = pow(clamp(v,0,1), 1/gamma) ──
-    float gam = params[P_GAMMA];
+    // ── Gamma encode ──
+    // TONE_CURVE/GAMMA_RECIP is 1/display_gamma (the encoded exponent is its
+    // reciprocal), exactly as isp.gamma consumes the same tensor.
+    float recip = max(gammaRecip[0], 1e-4);
+    float gam = 1.0 / recip;
+    float invg = recip;                       // pow(v, 1/gam) == pow(v, recip)
     if (gam > 0.0001) {
-        float invg = 1.0 / gam;
         cr = pow(clamp(cr, 0.0, 1.0), invg);
         cg = pow(clamp(cg, 0.0, 1.0), invg);
         cb = pow(clamp(cb, 0.0, 1.0), invg);

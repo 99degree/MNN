@@ -248,6 +248,20 @@ VulkanDevice::VulkanDevice(std::shared_ptr<VulkanInstance> instance)
     vkGetPhysicalDeviceMemoryProperties(mPhysicalDevice, &mMemoryProty);
     mLocalMemorySize = _getLocalMemorySize(mMemoryProty);
     mSubgroupInfo = _querySubgroupInfo(mPhysicalDevice);
+    // Descriptor-limits probe: isp.pipeline needs 10 STORAGE buffers in one set.
+    // Android only GUARANTEES 4 (maxPerStageDescriptorStorageBuffers); Adreno and
+    // Mali typically report 16. Unconditional and one-time (device init), so an
+    // over-limit device is diagnosable from the log instead of failing opaquely in
+    // createComputePipeline. MNN_VULKAN_PRINT_EXT is OFF in this build, so a
+    // FUNC_PRINT inside that guard would have been dead code.
+    MNN_PRINT("[VulkanLimits] maxPerStageDescriptorStorageBuffers=%d "
+              "maxDescriptorSetStorageBuffers=%d maxPerStageDescriptorUniformBuffers=%d "
+              "maxPerStageDescriptorSamplers=%d gpu=%s\n",
+              (int)mDeviceProty.limits.maxPerStageDescriptorStorageBuffers,
+              (int)mDeviceProty.limits.maxDescriptorSetStorageBuffers,
+              (int)mDeviceProty.limits.maxPerStageDescriptorUniformBuffers,
+              (int)mDeviceProty.limits.maxPerStageDescriptorSamplers,
+              mDeviceProty.deviceName);
 #ifdef MNN_VULKAN_PRINT_EXT
     uint32_t pPropertyCount;
     vkEnumerateInstanceExtensionProperties(nullptr, &pPropertyCount, nullptr);
@@ -261,6 +275,14 @@ VulkanDevice::VulkanDevice(std::shared_ptr<VulkanInstance> instance)
     FUNC_PRINT(mDeviceProty.limits.maxComputeWorkGroupCount[0]);
     FUNC_PRINT(mDeviceProty.limits.maxComputeWorkGroupInvocations);
     FUNC_PRINT(mDeviceProty.limits.maxComputeSharedMemorySize);
+    // Descriptor-limits probe for isp.pipeline, which needs 10 storage buffers
+    // in ONE set. Android only GUARANTEES 4; Adreno/Mali usually report 16. If
+    // a device reports fewer than the op needs, createComputePipeline fails
+    // LOUDLY and this line says why, instead of the op silently misbehaving.
+    FUNC_PRINT((int)mDeviceProty.limits.maxPerStageDescriptorStorageBuffers);
+    FUNC_PRINT((int)mDeviceProty.limits.maxDescriptorSetStorageBuffers);
+    FUNC_PRINT(mDeviceProty.limits.maxPerStageDescriptorUniformBuffers);
+    FUNC_PRINT((int)mDeviceProty.limits.maxDescriptorSetSampledImages);
     FUNC_PRINT(mLocalMemorySize);
 #endif
 
