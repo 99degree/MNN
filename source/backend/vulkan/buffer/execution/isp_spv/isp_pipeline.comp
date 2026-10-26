@@ -16,7 +16,11 @@
 //   folded chroma back into the image (the "diffused colour"). An area filter
 //   integrates the real footprint instead.
 //
-//   Per raw sample:  v = raw ; v = (v - blc[plane]) * blcGain
+//   Per raw sample:  v = raw / sensorMax       <-- YES, the divide is required:
+//                        the plane holds RAW SENSOR UNITS (measured 73..100 for
+//                        a 10-bit sensor) while blc/wb/ccm arrive normalized.
+//                        The 12-op chain does this in its `normalize` stage.
+//                    v = (v - blc[plane])
 //                    v *= lscGain ; v *= wb[plane]
 //   Per RGB channel: acc[ch] += v * areaWeight        (ch: R=0 G=1 B=2)
 //   Then:            rgb = acc / areasum ; rgb = ccm * rgb
@@ -43,6 +47,13 @@
 //   binding 7 = TONE_CURVE/GAMMA_RECIP      float[1] 1/display_gamma
 //   binding 8 = TONE_CURVE/SHADOW_LIFT      float[1] S-curve lift
 //   binding 9 = DEMOSAIC_BLOCK/BAYER_PATTERN float[1] 0=RGGB 1=GRBG 2=GBRG 3=BGGR
+//   binding 10 = NORMALIZE_BLOCK/SENSOR_MAX  float[1] raw-domain divisor
+//
+// KNOWN GAP (recorded, not hidden): the fused op does NOT apply lens-shading
+// correction. isp.lsc_min exists and its coefficients are now reachable via
+// LSC_MIN_BLOCK/STRENGTH, so adding it here is a small, well-defined follow-up —
+// it is deferred only because it would cost a 12th storage buffer for a stage
+// whose strength currently defaults to 0, i.e. a no-op.
 //
 // NOTE ON SENSOR MAX: the raw plane is NOT divided here because BLC_PATTERN
 // arrives ALREADY in graph space (ParameterRegistry divides the raw black level
@@ -68,6 +79,7 @@ layout(set = 0, binding = 6) readonly  buffer CcmBuf  { float ccmMatrix[]; };  /
 layout(set = 0, binding = 7) readonly  buffer GamBuf  { float gammaRecip[]; };// float[1]
 layout(set = 0, binding = 8) readonly  buffer LiftBuf { float shadowLift[]; };// float[1]
 layout(set = 0, binding = 9) readonly  buffer BayerBuf { float bayerPattern[]; };// float[1]
+layout(set = 0, binding = 10) readonly buffer SensorMaxBuf { float sensorMax[]; };// float[1]
 
 // ── DOWNSCALE_BLOCK/HW index layout: {W, H, outW, outH} ──
 #define H_SRC_W 0
@@ -182,6 +194,11 @@ void main() {
     if (pat < 0) pat = 0;
     if (pat > 3) pat = 3;
 
+    // Raw-domain divisor. The uploaded plane is raw sensor units; every
+    // coefficient below is normalized, so this is the stage that makes them
+    // commensurate. 1.0 fallback keeps a legacy caller working.
+    float invSensorMax = 1.0 / max(sensorMax[0], 1e-6);
+
     float accR = 0.0, accG = 0.0, accB = 0.0, wsum = 0.0;
 
     for (int iy = iy0; iy < iy1; iy++) {
@@ -202,7 +219,7 @@ void main() {
             int plane = planeForColor(par, pat);
             int chn   = chanOfPlane(plane);
 
-            float v = in_data[ry * sw + rx];
+            float v = in_data[ry * sw + rx] * invSensorMax;
             v = (v - blcOf(plane)) * wbOf(plane);
 
             if (chn == 0)      accR += v * w;
