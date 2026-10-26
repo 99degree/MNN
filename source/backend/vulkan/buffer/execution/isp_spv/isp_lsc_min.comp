@@ -35,6 +35,12 @@ layout(set = 0, binding = 0, std430) buffer LscParams {
 
 layout(set = 0, binding = 1, std430) readonly buffer FrameIn { float in_data[]; };
 layout(set = 0, binding = 2, std430) writeonly buffer FrameOut { float out_data[]; };
+// binding 3 = LSC_STRENGTH float[4] {k1, k2, vcmNorm, strength}, the SAME named
+// tensor the controller drives. Kept OFF binding 0 on purpose: the ELEMENTWISE
+// patch writes W/H into binding 0's first two floats every frame, so per-frame
+// coefficients must not live there. When the tensor is unfed the values are 0
+// and the gain collapses to exactly 1.0 (a documented passthrough).
+layout(set = 0, binding = 3, std430) readonly buffer LscCoef { float coef[]; };
 
 #define GRID_COLS 17
 #define GRID_ROWS 13
@@ -51,16 +57,20 @@ float computeGain(int row, int col, int c) {
     float dx = (float(col) - 8.0) / 10.0;  // normalized [-0.8, 0.8]
     float r2 = dx * dx + dy * dy;
     float r4 = r2 * r2;
-    float vcmNorm = p.vcmNorm;
-    
+    // Coefficients come from binding 3 (LSC_STRENGTH); 0 = passthrough.
+    float k1 = coef[0];
+    float k2 = coef[1];
+    float vcmNorm = coef[2];
+    float strength = coef[3];
+
     // Radial polynomial: f(r) = k1 * r^2 + k2 * r^4 + vcmNorm
     // Gain = f(r)^2 * strength (centered at 1.0)
-    float f_r = p.k1 * r2 + p.k2 * r4 + vcmNorm;
+    float f_r = k1 * r2 + k2 * r4 + vcmNorm;
     float gain = f_r * f_r;
     // Clamp to [0.8, 2.5] using conditional (GLSL 450 core doesn't have clamp)
     if (gain < 0.8) gain = 0.8;
     if (gain > 2.5) gain = 2.5;
-    return 1.0 + (gain - 1.0) * p.strength;
+    return 1.0 + (gain - 1.0) * strength;
 }
 
 void main() {
@@ -69,6 +79,17 @@ void main() {
     uint w = uint(p.width);
     uint h = uint(p.height);
     if (x >= w || y >= h) return;
+
+    // Unfed coefficients are all zero, so the whole stage is a no-op. Return
+    // early rather than multiplying by 1.0 for every pixel of every frame.
+    if (coef[3] <= 0.0) {
+        uint n = w * h;
+        for (int c = 0; c < 4; ++c) {
+            uint base = uint(c) * n;
+            for (uint i = 0; i < n; ++i) out_data[base + i] = in_data[base + i];
+        }
+        return;
+    }
 
     // Bayer RGGB quadrant selector -> 4 channels (R, G1, G2, B)
     uint chan = ((y & 1u) << 1) | (x & 1u);
