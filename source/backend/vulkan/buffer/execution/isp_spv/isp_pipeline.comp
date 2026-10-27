@@ -64,6 +64,13 @@
 //   bit 5 LIFT        S-curve shadow lift
 //   bit 6 GAMMA       display encode pow(v, gamma_recip)
 //   bit 7 LETTERBOX   fit+centre (else fill the output grid edge to edge)
+//   bit 8 DOWNSCALE   1:1 CENTRE CROP instead of the scaled mapping.
+//                     This is the missing "downscale" stage: the op is ALWAYS
+//                     reducing (the source is 2592x1944 and the output 480x360,
+//                     a 5.4x reduction), and that reduction is the prime suspect
+//                     for "no longer looks like the source". With this bit OFF
+//                     the op takes the centre outW x outH pixels of the source
+//                     and maps them 1:1, so no resampling happens at all.
 //
 // KNOWN GAP (recorded, not hidden): the fused op does NOT apply lens-shading
 // correction. isp.lsc_min exists and its coefficients are now reachable via
@@ -106,6 +113,8 @@ layout(set = 0, binding = 11) readonly buffer StageBuf { float stages[]; };   //
 #define ST_LIFT      32
 #define ST_GAMMA     64
 #define ST_LETTERBOX 128
+// NOTE: bit 8 is INVERTED relative to the others — see ST_NOSCALE.
+#define ST_NOSCALE   256
 
 // Default when the tensor is unfed (all-zero would silently drop everything):
 // the FULL chain, so an un-updated caller behaves exactly as before.
@@ -188,11 +197,22 @@ void main() {
     int stages = int(stages[0]);
     if (stages == 0) stages = ST_ALL;
 
+    // ── 1:1 CENTRE CROP (the DOWNSCALE stage, inverted) ──
+    // With ST_NOSCALE set the op resamples NOTHING: it takes the centre
+    // outW x outH window of the source and maps it 1:1. Any remaining defect is
+    // then provably not the resampling. Falls through to the scaled mapping
+    // when the source is smaller than the output (nothing to crop).
+    bool oneToOne = ((stages & ST_NOSCALE) != 0) && cropW >= ow && cropH >= oh;
+    int cropX0 = oneToOne ? (cropW - ow) / 2 : 0;
+    int cropY0 = oneToOne ? (cropH - oh) / 2 : 0;
+
     // ── FIT + LETTERBOX (identical geometry to isp.downscale) ──
     // With LETTERBOX off the content fills the output grid: useful when the
     // black bars themselves are suspected of confusing the readback.
     int cw, ch, offX, offY;
-    if ((stages & ST_LETTERBOX) != 0) {
+    if (oneToOne) {
+        cw = ow; ch = oh; offX = 0; offY = 0;
+    } else if ((stages & ST_LETTERBOX) != 0) {
         float fitW = float(ow) / float(cropW);
         float fitH = float(oh) / float(cropH);
         float scale = min(fitW, fitH);
@@ -222,10 +242,16 @@ void main() {
     // the area filter weights every source sample by how much of it the output
     // pixel actually covers. The OLD 2-tap bilinear could not represent this
     // footprint, which is what aliased chroma back into the image.
-    float sx0 = float(cx)     * float(cropW) / float(cw);
-    float sx1 = float(cx + 1) * float(cropW) / float(cw);
-    float sy0 = float(cy)     * float(cropH) / float(ch);
-    float sy1 = float(cy + 1) * float(cropH) / float(ch);
+    float sx0, sx1, sy0, sy1;
+    if (oneToOne) {
+        sx0 = float(cropX0 + cx);     sx1 = sx0 + 1.0;
+        sy0 = float(cropY0 + cy);     sy1 = sy0 + 1.0;
+    } else {
+        sx0 = float(cx)     * float(cropW) / float(cw);
+        sx1 = float(cx + 1) * float(cropW) / float(cw);
+        sy0 = float(cy)     * float(cropH) / float(ch);
+        sy1 = float(cy + 1) * float(cropH) / float(ch);
+    }
 
     int ix0 = int(floor(sx0));
     int ix1 = int(ceil(sx1));
@@ -264,6 +290,8 @@ void main() {
             // nearest source pixel, which isolates whether the AREA AVERAGING
             // is what spreads colour. With it on, every sample in the footprint
             // contributes its area weight.
+            // 1:1 has a 1x1 footprint, so the mask cannot change the result; the
+            // DEMOSAIC bit then only decides whether the area weight is used.
             if ((stages & ST_DEMOSAIC) == 0 && !(ix == ix0 && iy == iy0)) continue;
 
             float v = in_data[ry * sw + rx];
