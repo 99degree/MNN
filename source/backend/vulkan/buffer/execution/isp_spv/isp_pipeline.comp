@@ -48,6 +48,22 @@
 //   binding 8 = TONE_CURVE/SHADOW_LIFT      float[1] S-curve lift
 //   binding 9 = DEMOSAIC_BLOCK/BAYER_PATTERN float[1] 0=RGGB 1=GRBG 2=GBRG 3=BGGR
 //   binding 10 = NORMALIZE_BLOCK/SENSOR_MAX  float[1] raw-domain divisor
+//   binding 11 = PIPELINEBLOCK/STAGES         float[1] STAGE MASK (bitfield)
+//
+// STAGE MASK — the "slim it down until the frame is recognizable" control.
+// The op is a chain of independent stages; each is gated by one bit so a stage
+// can be REMOVED one at a time and the point where the picture becomes
+// recognizable identifies the stage that was destroying it. Bit set = stage
+// RUNS. An all-zero mask is a bare area-averaged demosaic.
+//
+//   bit 0 DEMOSAIC    area-average the CFA footprint (else point-sample)
+//   bit 1 NORMALIZE   divide the raw plane by sensorMax
+//   bit 2 BLC         subtract the per-plane black level
+//   bit 3 WB          apply the per-plane white balance
+//   bit 4 CCM         apply the 3x3 colour matrix
+//   bit 5 LIFT        S-curve shadow lift
+//   bit 6 GAMMA       display encode pow(v, gamma_recip)
+//   bit 7 LETTERBOX   fit+centre (else fill the output grid edge to edge)
 //
 // KNOWN GAP (recorded, not hidden): the fused op does NOT apply lens-shading
 // correction. isp.lsc_min exists and its coefficients are now reachable via
@@ -80,6 +96,20 @@ layout(set = 0, binding = 7) readonly  buffer GamBuf  { float gammaRecip[]; };//
 layout(set = 0, binding = 8) readonly  buffer LiftBuf { float shadowLift[]; };// float[1]
 layout(set = 0, binding = 9) readonly  buffer BayerBuf { float bayerPattern[]; };// float[1]
 layout(set = 0, binding = 10) readonly buffer SensorMaxBuf { float sensorMax[]; };// float[1]
+layout(set = 0, binding = 11) readonly buffer StageBuf { float stages[]; };   // float[1] bitfield
+
+#define ST_DEMOSAIC  1
+#define ST_NORMALIZE 2
+#define ST_BLC       4
+#define ST_WB        8
+#define ST_CCM       16
+#define ST_LIFT      32
+#define ST_GAMMA     64
+#define ST_LETTERBOX 128
+
+// Default when the tensor is unfed (all-zero would silently drop everything):
+// the FULL chain, so an un-updated caller behaves exactly as before.
+#define ST_ALL       (ST_DEMOSAIC|ST_NORMALIZE|ST_BLC|ST_WB|ST_CCM|ST_LIFT|ST_GAMMA|ST_LETTERBOX)
 
 // ── DOWNSCALE_BLOCK/HW index layout: {W, H, outW, outH} ──
 #define H_SRC_W 0
@@ -153,14 +183,26 @@ void main() {
     int x = int(xo);
     int y = int(yo);
 
+    // Stage mask. Unfed (0) means FULL — see ST_ALL. Read BEFORE the geometry
+    // because LETTERBOX decides whether the fit/centre step runs at all.
+    int stages = int(stages[0]);
+    if (stages == 0) stages = ST_ALL;
+
     // ── FIT + LETTERBOX (identical geometry to isp.downscale) ──
-    float fitW = float(ow) / float(cropW);
-    float fitH = float(oh) / float(cropH);
-    float scale = min(fitW, fitH);
-    int cw = max(int(float(cropW) * scale + 0.5), 1);   // content W
-    int ch = max(int(float(cropH) * scale + 0.5), 1);   // content H
-    int offX = (ow - cw) / 2;
-    int offY = (oh - ch) / 2;
+    // With LETTERBOX off the content fills the output grid: useful when the
+    // black bars themselves are suspected of confusing the readback.
+    int cw, ch, offX, offY;
+    if ((stages & ST_LETTERBOX) != 0) {
+        float fitW = float(ow) / float(cropW);
+        float fitH = float(oh) / float(cropH);
+        float scale = min(fitW, fitH);
+        cw = max(int(float(cropW) * scale + 0.5), 1);   // content W
+        ch = max(int(float(cropH) * scale + 0.5), 1);   // content H
+        offX = (ow - cw) / 2;
+        offY = (oh - ch) / 2;
+    } else {
+        cw = ow; ch = oh; offX = 0; offY = 0;
+    }
 
     int cx = x - offX;
     int cy = y - offY;
@@ -218,9 +260,16 @@ void main() {
             int par   = ((ry & 1) << 1) | (rx & 1);
             int plane = planeForColor(par, pat);
             int chn   = chanOfPlane(plane);
+            // DEMOSAIC off -> the footprint becomes a point sample of the
+            // nearest source pixel, which isolates whether the AREA AVERAGING
+            // is what spreads colour. With it on, every sample in the footprint
+            // contributes its area weight.
+            if ((stages & ST_DEMOSAIC) == 0 && !(ix == ix0 && iy == iy0)) continue;
 
-            float v = in_data[ry * sw + rx] * invSensorMax;
-            v = (v - blcOf(plane)) * wbOf(plane);
+            float v = in_data[ry * sw + rx];
+            if ((stages & ST_NORMALIZE) != 0) v *= invSensorMax;
+            if ((stages & ST_BLC) != 0)       v -= blcOf(plane);
+            if ((stages & ST_WB) != 0)        v *= wbOf(plane);
 
             if (chn == 0)      accR += v * w;
             else if (chn == 1) accG += v * w;
@@ -240,12 +289,15 @@ void main() {
     float b = accB / wsum;
 
     // ── CCM (row-major 3x3, the SAME CCMBLOCK/CCM_MATRIX CcmBlock reads) ──
-    float cr = ccmMatrix[0] * r + ccmMatrix[1] * g + ccmMatrix[2] * b;
-    float cg = ccmMatrix[3] * r + ccmMatrix[4] * g + ccmMatrix[5] * b;
-    float cb = ccmMatrix[6] * r + ccmMatrix[7] * g + ccmMatrix[8] * b;
+    float cr = r, cg = g, cb = b;
+    if ((stages & ST_CCM) != 0) {
+        cr = ccmMatrix[0] * r + ccmMatrix[1] * g + ccmMatrix[2] * b;
+        cg = ccmMatrix[3] * r + ccmMatrix[4] * g + ccmMatrix[5] * b;
+        cb = ccmMatrix[6] * r + ccmMatrix[7] * g + ccmMatrix[8] * b;
+    }
 
     // ── S-curve shadow lift (same form as isp_gamma's binding 4) ──
-    float lift = shadowLift[0];
+    float lift = ((stages & ST_LIFT) != 0) ? shadowLift[0] : 0.0;
     if (lift != 0.0) {
         cr = cr + lift * (1.0 - cr) * (1.0 - cr);
         cg = cg + lift * (1.0 - cg) * (1.0 - cg);
@@ -258,7 +310,7 @@ void main() {
     float recip = max(gammaRecip[0], 1e-4);
     float gam = 1.0 / recip;
     float invg = recip;                       // pow(v, 1/gam) == pow(v, recip)
-    if (gam > 0.0001) {
+    if ((stages & ST_GAMMA) != 0 && gam > 0.0001) {
         cr = pow(clamp(cr, 0.0, 1.0), invg);
         cg = pow(clamp(cg, 0.0, 1.0), invg);
         cb = pow(clamp(cb, 0.0, 1.0), invg);
