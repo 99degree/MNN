@@ -80,13 +80,18 @@ void main() {
     uint h = uint(p.height);
     if (x >= w || y >= h) return;
 
-    // Unfed coefficients are all zero, so the whole stage is a no-op. Return
-    // early rather than multiplying by 1.0 for every pixel of every frame.
+    // Unfed coefficients are all zero, so the stage is a no-op: copy this
+    // pixel's four planes and leave. PER PIXEL — this invocation owns (x,y)
+    // and writes ONLY that index. (An earlier revision looped over the whole
+    // image here, so every one of the w*h invocations copied all 4 planes:
+    // ~6.3e12 operations, which never completes and gets the process killed by
+    // the GPU watchdog. That was the "3 frames then the app is gone" stall.)
     if (coef[3] <= 0.0) {
         uint n = w * h;
+        uint idx = y * w + x;
         for (int c = 0; c < 4; ++c) {
-            uint base = uint(c) * n;
-            for (uint i = 0; i < n; ++i) out_data[base + i] = in_data[base + i];
+            uint o = uint(c) * n + idx;
+            out_data[o] = in_data[o];
         }
         return;
     }
