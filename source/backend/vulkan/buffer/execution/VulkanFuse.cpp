@@ -378,6 +378,11 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
     size_t offset = 0;
     std::shared_ptr<VulkanCommandPool::Buffer> cmdbuffer( vkBn->getPool().allocBuffer());
     cmdbuffer->begin(0);
+    // DEBUG TAP (binding 1) and CONFIG (binding 2) sizes, needed both inside the
+    // merge lambda (to reserve the bytes) and after it (to register the slots).
+    // Hoisted here because they are per-instance constants, not per-merge.
+    const size_t kTapBytes = (64u + 64u * 64u) * sizeof(float);   // header + 64x64 payload
+    const size_t kCfgBytes = 256u;
     auto merge = [&](const std::vector<std::tuple<int, void*, size_t>>& constPtrs, VkDescriptorType type) {
         if (constPtrs.empty()) {
             return std::make_tuple(std::vector<std::tuple<int, size_t, size_t>>{}, std::shared_ptr<VulkanBuffer>(nullptr), std::shared_ptr<VulkanBuffer>(nullptr));
@@ -389,6 +394,14 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
             size = std::max<size_t>(size, 256); // Minimum 256-byte alignment
             mConstOffset.emplace_back(std::make_tuple(std::get<0>(constAttr), size, offset));
             offset += size;
+        }
+        // Reserve the DEBUG TAP (binding 1) and CONFIG (binding 2) slots for
+        // isp.pipeline BEFORE the host buffer is sized: the tap is 64 header +
+        // 64*64 payload floats (16 KB), the config 256 B. Both are zeroed by the
+        // existing memset, so an unwritten tap reads as "op has not run" and an
+        // unwritten config reads as "normal behaviour" (cfg[0] >= 0.5 bypasses).
+        if (!mType.empty() && mType == "isp.pipeline") {
+            offset += kTapBytes + kCfgBytes;
         }
         std::shared_ptr<VulkanBuffer> hostBuffer(new VulkanBuffer(vkBn->getMemoryPool(), false, offset, nullptr, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VK_SHARING_MODE_EXCLUSIVE, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT));
         auto ptr = (uint8_t*)hostBuffer->map();
@@ -464,19 +477,38 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
         // param 2->3) so the entire opset shares a single convention.
         const int extraInputs  = inputSize  > 0 ? inputSize  - 1 : 0;
         const int extraOutputs = outputSize > 0 ? outputSize - 1 : 0;
-        const int maxBind = 2 + extraInputs + extraOutputs;
+        // BINDING MAP (revised): the frame moved up to make room for two
+        // dedicated, always-present slots.
+        //   0        params SSBO (W/H hot-swapped into floats 0/1)
+        //   1        DEBUG TAP: float[64+64*64], the op's own output snapshot,
+        //            exposed as a graph output so it is readable from Kotlin.
+        //            A binding cannot be read directly; an output can.
+        //   2        CONFIG: float[N], zero-filled unless the op declares a
+        //            runtime config tensor. cfg[0] >= 0.5 BYPASSES the op.
+        //   3        input[0]  (frame in)
+        //   4        output[0] (frame out)
+        //   5..      extras: inputs first, then outputs, one numbering space
+        const int kFrameInBinding = 3;
+        const int kFrameOutBinding = 4;
+        const int kFirstExtra = 5;
+        const int maxBind = kFirstExtra - 1 + extraInputs + extraOutputs;
         types.assign(maxBind + 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
         for (int i = 0; i < inputSize; ++i) {
-            // frame -> 1 ; extra metadata inputs -> 3, 4, ...
-            mInputBinding[i] = (i == 0) ? 1 : 3 + (i - 1);
+            // frame -> 3 ; extra metadata inputs -> 5, 6, ...
+            mInputBinding[i] = (i == 0) ? kFrameInBinding : kFirstExtra + (i - 1);
         }
         for (int i = 0; i < outputSize; ++i) {
-            // frame -> 2 ; extra metadata outputs -> 3 + extraInputs, ...
-            mOutputBinding[i] = (i == 0) ? 2 : 3 + extraInputs + (i - 1);
+            // frame -> 4 ; extra metadata outputs -> 5 + extraInputs, ...
+            mOutputBinding[i] = (i == 0) ? kFrameOutBinding : kFirstExtra + extraInputs + (i - 1);
         }
-        // binding 0 param SSBO: allocate a zero-filled, host-visible storage
-        // buffer so the shader reads valid (zero) params -> bounds-checks all
-        // work-items out -> no-op dispatch (no null-buffer GPU fault in Mesa).
+        // Binding 0 param SSBO, binding 1 DEBUG TAP, binding 2 CONFIG: all
+        // zero-filled, host-visible storage buffers, so every shader reads valid
+        // data (params zero -> early-return; tap starts empty; config zero ->
+        // normal behaviour, since cfg[0] >= 0.5 is what bypasses).
+        //
+        // The tap is 64 header + 64*64 payload floats = 16 KB. Allocated ONCE
+        // per op instance and reused every frame: the shader overwrites it, and
+        // a reader only needs the latest frame.
         const size_t cbsz = 256;
         mConstStorageBuffer = std::make_shared<VulkanBuffer>(
             vkBn->getMemoryPool(), false, cbsz, nullptr,
@@ -487,6 +519,13 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
         if (cbp) { ::memset(cbp, 0, cbsz); mConstStorageBuffer->unmap(); }
         mConstStorageOffset.clear();
         mConstStorageOffset.emplace_back(std::make_tuple(0, cbsz, size_t(0)));
+        if (mType == "isp.pipeline") {
+            // Appended AFTER the params entry, so their offsets follow it. The
+            // merge lambda reserved the bytes, so these fit.
+            size_t tapOff = UP_DIV(cbsz, alignSize) * alignSize;
+            mConstStorageOffset.emplace_back(std::make_tuple(1, kTapBytes, tapOff));
+            mConstStorageOffset.emplace_back(std::make_tuple(2, kCfgBytes, tapOff + kTapBytes));
+        }
         mPreferredLocalSize = {16, 16, 1};
         mOptimizedDispatch = true;
         mNeedAutoTuning = false;   // fixed LocalSize; no pipeline rebuild

@@ -93,17 +93,40 @@
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) buffer Uniforms { float unused[8]; } u;
-layout(set = 0, binding = 1) readonly  buffer InBuf   { float in_data[]; };
-layout(set = 0, binding = 2) writeonly buffer OutBuf  { float out_data[]; };
-layout(set = 0, binding = 3) readonly  buffer HwBuf   { float hw[]; };        // float[4]
-layout(set = 0, binding = 4) readonly  buffer BlcBuf  { float blc[]; };       // float[4]
-layout(set = 0, binding = 5) readonly  buffer WbBuf   { float wbGains[]; };   // float[4]
-layout(set = 0, binding = 6) readonly  buffer CcmBuf  { float ccmMatrix[]; };  // float[9]
-layout(set = 0, binding = 7) readonly  buffer GamBuf  { float gammaRecip[]; };// float[1]
-layout(set = 0, binding = 8) readonly  buffer LiftBuf { float shadowLift[]; };// float[1]
-layout(set = 0, binding = 9) readonly  buffer BayerBuf { float bayerPattern[]; };// float[1]
-layout(set = 0, binding = 10) readonly buffer SensorMaxBuf { float sensorMax[]; };// float[1]
-layout(set = 0, binding = 11) readonly buffer StageBuf { float stages[]; };   // float[1] bitfield
+layout(set = 0, binding = 3) readonly  buffer InBuf   { float in_data[]; };
+
+// ── binding 1: DEBUG TAP ────────────────────────────────────────────────────
+// float[64x64] snapshot of THIS op's OUTPUT, written once per dispatch by thread
+// (0,0). FIXED 64x64 whatever the frame size, header at offset 0 and payload at
+// DBG_OFF, so a reader needs no per-op layout knowledge:
+//   dbg[0]=DBG_SCHEMA dbg[1]=out element count dbg[2]=W dbg[3]=H dbg[4]=planes
+// All-zero means the op never ran.
+layout(set = 0, binding = 1) writeonly buffer DebugBuf { float dbg[]; };
+#define DBG_SCHEMA 2
+#define DBG_OFF    64
+#define DBG_W      64
+#define DBG_H      64
+
+// ── binding 2: CONFIG ───────────────────────────────────────────────────────
+//   cfg[0] >= 0.5   BYPASS: copy the input straight to the output, no math.
+//                   DEFAULT (unfed / 0) = normal behaviour, so a model built
+//                   before this binding existed is unaffected.
+//   cfg[1]          plane count of this op's output, used by the bypass copy
+//                   (a GLSL buffer has no length to derive it from).
+//   cfg[2..]        reserved for THIS op's own switches. This is the single
+//                   forward-looking field the design reserves per op.
+layout(set = 0, binding = 2) readonly buffer ConfigBuf { float cfg[]; };
+
+layout(set = 0, binding = 4) buffer OutBuf { float out_data[]; };
+layout(set = 0, binding = 5) readonly  buffer HwBuf   { float hw[]; };        // float[4]
+layout(set = 0, binding = 6) readonly  buffer BlcBuf  { float blc[]; };       // float[4]
+layout(set = 0, binding = 7) readonly  buffer WbBuf   { float wbGains[]; };   // float[4]
+layout(set = 0, binding = 8) readonly  buffer CcmBuf  { float ccmMatrix[]; };  // float[9]
+layout(set = 0, binding = 9) readonly  buffer GamBuf  { float gammaRecip[]; };// float[1]
+layout(set = 0, binding = 10) readonly  buffer LiftBuf { float shadowLift[]; };// float[1]
+layout(set = 0, binding = 11) readonly  buffer BayerBuf { float bayerPattern[]; };// float[1]
+layout(set = 0, binding = 12) readonly buffer SensorMaxBuf { float sensorMax[]; };// float[1]
+layout(set = 0, binding = 13) readonly buffer StageBuf { float stages[]; };   // float[1] bitfield
 
 #define ST_DEMOSAIC  1
 #define ST_NORMALIZE 2
@@ -168,189 +191,249 @@ float wbOf(int plane) {
          : wbGains[3];
 }
 
-void main() {
-    uint xo = gl_GlobalInvocationID.x;
-    uint yo = gl_GlobalInvocationID.y;
-
-    int ow = int(hw[H_OUT_W]);
-    int oh = int(hw[H_OUT_H]);
-    if (ow < 1 || oh < 1) return;
-    if (int(xo) >= ow || int(yo) >= oh) return;
-
-    int sw = int(hw[H_SRC_W]);       // raw plane stride width
-    int sh = int(hw[H_SRC_H]);
-    if (sw < 2 || sh < 2) return;
-
-    // Crop window (mirrors PipelineConfigurator's resolvedCrop); start 0.
-    int cropW = ALIGN16(sw);
-    if (cropW <= 0 || cropW > sw) cropW = sw;
-    int cropH = sh;
-    int startW = 0;
-    int startH = 0;
-    if (cropW < 2 || cropH < 2) return;
-
-    int x = int(xo);
-    int y = int(yo);
-
-    // Stage mask. Unfed (0) means FULL — see ST_ALL. Read BEFORE the geometry
-    // because LETTERBOX decides whether the fit/centre step runs at all.
-    int stages = int(stages[0]);
-    if (stages == 0) stages = ST_ALL;
-
-    // ── 1:1 CENTRE CROP (the DOWNSCALE stage, inverted) ──
-    // With ST_NOSCALE set the op resamples NOTHING: it takes the centre
-    // outW x outH window of the source and maps it 1:1. Any remaining defect is
-    // then provably not the resampling. Falls through to the scaled mapping
-    // when the source is smaller than the output (nothing to crop).
-    bool oneToOne = ((stages & ST_NOSCALE) != 0) && cropW >= ow && cropH >= oh;
-    int cropX0 = oneToOne ? (cropW - ow) / 2 : 0;
-    int cropY0 = oneToOne ? (cropH - oh) / 2 : 0;
-
-    // ── FIT + LETTERBOX (identical geometry to isp.downscale) ──
-    // With LETTERBOX off the content fills the output grid: useful when the
-    // black bars themselves are suspected of confusing the readback.
-    int cw, ch, offX, offY;
-    if (oneToOne) {
-        cw = ow; ch = oh; offX = 0; offY = 0;
-    } else if ((stages & ST_LETTERBOX) != 0) {
-        float fitW = float(ow) / float(cropW);
-        float fitH = float(oh) / float(cropH);
-        float scale = min(fitW, fitH);
-        cw = max(int(float(cropW) * scale + 0.5), 1);   // content W
-        ch = max(int(float(cropH) * scale + 0.5), 1);   // content H
-        offX = (ow - cw) / 2;
-        offY = (oh - ch) / 2;
-    } else {
-        cw = ow; ch = oh; offX = 0; offY = 0;
-    }
-
-    int cx = x - offX;
-    int cy = y - offY;
-    int oplane = ow * oh;
-    int oidx = y * ow + x;
-
-    // Outside the content rect -> black letterbox / pillarbox.
-    if (cx < 0 || cy < 0 || cx >= cw || cy >= ch) {
-        out_data[oidx] = 0.0;
-        out_data[oplane + oidx] = 0.0;
-        out_data[2 * oplane + oidx] = 0.0;
-        return;
-    }
-
-    // ── AREA FOOTPRINT in crop-local coordinates ──
-    // Output pixel [cx,cx+1) x [cy,cy+1) maps to this exact source rectangle:
-    // the area filter weights every source sample by how much of it the output
-    // pixel actually covers. The OLD 2-tap bilinear could not represent this
-    // footprint, which is what aliased chroma back into the image.
-    float sx0, sx1, sy0, sy1;
-    if (oneToOne) {
-        sx0 = float(cropX0 + cx);     sx1 = sx0 + 1.0;
-        sy0 = float(cropY0 + cy);     sy1 = sy0 + 1.0;
-    } else {
-        sx0 = float(cx)     * float(cropW) / float(cw);
-        sx1 = float(cx + 1) * float(cropW) / float(cw);
-        sy0 = float(cy)     * float(cropH) / float(ch);
-        sy1 = float(cy + 1) * float(cropH) / float(ch);
-    }
-
-    int ix0 = int(floor(sx0));
-    int ix1 = int(ceil(sx1));
-    int iy0 = int(floor(sy0));
-    int iy1 = int(ceil(sy1));
-
-    int pat = int(bayerPattern[0]);
-    if (pat < 0) pat = 0;
-    if (pat > 3) pat = 3;
-
-    // Raw-domain divisor. The uploaded plane is raw sensor units; every
-    // coefficient below is normalized, so this is the stage that makes them
-    // commensurate. 1.0 fallback keeps a legacy caller working.
-    float invSensorMax = 1.0 / max(sensorMax[0], 1e-6);
-
-    float accR = 0.0, accG = 0.0, accB = 0.0, wsum = 0.0;
-
-    for (int iy = iy0; iy < iy1; iy++) {
-        // Overlap of this source row with the footprint on the y axis.
-        float wy = min(sy1, float(iy + 1)) - max(sy0, float(iy));
-        if (wy <= 0.0) continue;
-        int ry = startH + iy;
-        if (ry < 0 || ry >= sh) continue;
-
-        for (int ix = ix0; ix < ix1; ix++) {
-            float wx = min(sx1, float(ix + 1)) - max(sx0, float(ix));
-            if (wx <= 0.0) continue;
-            int rx = startW + ix;
-            if (rx < 0 || rx >= sw) continue;
-
-            float w = wx * wy;
-            int par   = ((ry & 1) << 1) | (rx & 1);
-            int plane = planeForColor(par, pat);
-            int chn   = chanOfPlane(plane);
-            // DEMOSAIC off -> the footprint becomes a point sample of the
-            // nearest source pixel, which isolates whether the AREA AVERAGING
-            // is what spreads colour. With it on, every sample in the footprint
-            // contributes its area weight.
-            // 1:1 has a 1x1 footprint, so the mask cannot change the result; the
-            // DEMOSAIC bit then only decides whether the area weight is used.
-            if ((stages & ST_DEMOSAIC) == 0 && !(ix == ix0 && iy == iy0)) continue;
-
-            float v = in_data[ry * sw + rx];
-            if ((stages & ST_NORMALIZE) != 0) v *= invSensorMax;
-            if ((stages & ST_BLC) != 0)       v -= blcOf(plane);
-            if ((stages & ST_WB) != 0)        v *= wbOf(plane);
-
-            if (chn == 0)      accR += v * w;
-            else if (chn == 1) accG += v * w;
-            else               accB += v * w;
-            wsum += w;
+// Publishes the 64x64 output snapshot. Called on EVERY exit path, so an op that
+// ran and wrote nothing is distinguishable from one that never ran (all-zero).
+void debug_publish() {
+    if (gl_GlobalInvocationID.x != 0u || gl_GlobalInvocationID.y != 0u) return;
+    int dw = int(hw[H_OUT_W]);
+    int dh = int(hw[H_OUT_H]);
+    if (dw < 1) dw = 1;
+    if (dh < 1) dh = 1;
+    float planeF = (cfg.length() > 1u) ? cfg[1] : 3.0;
+    int planes = int(planeF);
+    if (planes < 1) planes = 1;
+    int outN = planes * dw * dh;
+    dbg[0] = float(DBG_SCHEMA);
+    dbg[1] = float(outN);
+    dbg[2] = float(dw);
+    dbg[3] = float(dh);
+    dbg[4] = float(planes);
+    for (int dy = 0; dy < DBG_H; ++dy) {
+        int sy = (dy * dh) / DBG_H;
+        for (int dx = 0; dx < DBG_W; ++dx) {
+            int sx = (dx * dw) / DBG_W;
+            int i = sy * dw + sx;
+            if (i < 0 || i >= outN) i = 0;
+            dbg[DBG_OFF + dy * DBG_W + dx] = out_data[i];
         }
     }
+}
 
-    if (wsum <= 0.0) {
-        out_data[oidx] = 0.0;
-        out_data[oplane + oidx] = 0.0;
-        out_data[2 * oplane + oidx] = 0.0;
+void main() {    // ── CONFIG: BYPASS (binding 2) ──────────────────────────────────────────
+    // cfg[0] >= 0.5 short-circuits the WHOLE fused chain: the raw source plane is
+    // mapped straight into the three display planes and no stage runs. This is
+    // the "essentially identity from input to output" case, and it is also the
+    // cheapest proof that the op is wired correctly at all.
+    if (cfg.length() > 0u && cfg[0] >= 0.5) {
+        int ow0 = int(hw[H_OUT_W]);
+        int oh0 = int(hw[H_OUT_H]);
+        int sw0 = int(hw[H_SRC_W]);
+        int sh0 = int(hw[H_SRC_H]);
+        uint bx = gl_GlobalInvocationID.x;
+        uint by = gl_GlobalInvocationID.y;
+        if (ow0 > 0 && oh0 > 0 && sw0 > 0 && sh0 > 0 && int(bx) < ow0 && int(by) < oh0) {
+            // Nearest-neighbour mapping of the source plane, so the output is a
+            // real image rather than a flat fill.
+            int sx = (int(bx) * sw0) / ow0;
+            int sy = (int(by) * sh0) / oh0;
+            int sidx = sy * sw0 + sx;
+            if (sidx < 0 || sidx >= sw0 * sh0) sidx = 0;
+            int oplane = ow0 * oh0;
+            int oidx = int(by) * ow0 + int(bx);
+            out_data[oidx]              = in_data[sidx];
+            out_data[oplane + oidx]     = in_data[sidx];
+            out_data[2 * oplane + oidx] = in_data[sidx];
+        }
+        debug_publish();
         return;
     }
-    float r = accR / wsum;
-    float g = accG / wsum;
-    float b = accB / wsum;
 
-    // ── CCM (row-major 3x3, the SAME CCMBLOCK/CCM_MATRIX CcmBlock reads) ──
-    float cr = r, cg = g, cb = b;
-    if ((stages & ST_CCM) != 0) {
-        cr = ccmMatrix[0] * r + ccmMatrix[1] * g + ccmMatrix[2] * b;
-        cg = ccmMatrix[3] * r + ccmMatrix[4] * g + ccmMatrix[5] * b;
-        cb = ccmMatrix[6] * r + ccmMatrix[7] * g + ccmMatrix[8] * b;
-    }
+    // ── NORMAL PATH ────────────────────────────────────────────────────
 
-    // ── S-curve shadow lift (same form as isp_gamma's binding 4) ──
-    float lift = ((stages & ST_LIFT) != 0) ? shadowLift[0] : 0.0;
-    if (lift != 0.0) {
-        cr = cr + lift * (1.0 - cr) * (1.0 - cr);
-        cg = cg + lift * (1.0 - cg) * (1.0 - cg);
-        cb = cb + lift * (1.0 - cb) * (1.0 - cb);
-    }
+        uint xo = gl_GlobalInvocationID.x;
+        uint yo = gl_GlobalInvocationID.y;
 
-    // ── Gamma encode ──
-    // TONE_CURVE/GAMMA_RECIP is 1/display_gamma (the encoded exponent is its
-    // reciprocal), exactly as isp.gamma consumes the same tensor.
-    float recip = max(gammaRecip[0], 1e-4);
-    float gam = 1.0 / recip;
-    float invg = recip;                       // pow(v, 1/gam) == pow(v, recip)
-    if ((stages & ST_GAMMA) != 0 && gam > 0.0001) {
-        cr = pow(clamp(cr, 0.0, 1.0), invg);
-        cg = pow(clamp(cg, 0.0, 1.0), invg);
-        cb = pow(clamp(cb, 0.0, 1.0), invg);
-    } else {
-        cr = clamp(cr, 0.0, 1.0);
-        cg = clamp(cg, 0.0, 1.0);
-        cb = clamp(cb, 0.0, 1.0);
-    }
+        int ow = int(hw[H_OUT_W]);
+        int oh = int(hw[H_OUT_H]);
+        if (ow < 1 || oh < 1) return;
+        if (int(xo) >= ow || int(yo) >= oh) return;
 
-    // The display tensor is the 0-255 float domain (DisplayBlock's contract;
-    // the JNI float path packs it into the RGBA_8888 AHB).
-    out_data[oidx]              = cr * 255.0;
-    out_data[oplane + oidx]     = cg * 255.0;
-    out_data[2 * oplane + oidx] = cb * 255.0;
+        int sw = int(hw[H_SRC_W]);       // raw plane stride width
+        int sh = int(hw[H_SRC_H]);
+        if (sw < 2 || sh < 2) return;
+
+        // Crop window (mirrors PipelineConfigurator's resolvedCrop); start 0.
+        int cropW = ALIGN16(sw);
+        if (cropW <= 0 || cropW > sw) cropW = sw;
+        int cropH = sh;
+        int startW = 0;
+        int startH = 0;
+        if (cropW < 2 || cropH < 2) return;
+
+        int x = int(xo);
+        int y = int(yo);
+
+        // Stage mask. Unfed (0) means FULL — see ST_ALL. Read BEFORE the geometry
+        // because LETTERBOX decides whether the fit/centre step runs at all.
+        int stages = int(stages[0]);
+        if (stages == 0) stages = ST_ALL;
+
+        // ── 1:1 CENTRE CROP (the DOWNSCALE stage, inverted) ──
+        // With ST_NOSCALE set the op resamples NOTHING: it takes the centre
+        // outW x outH window of the source and maps it 1:1. Any remaining defect is
+        // then provably not the resampling. Falls through to the scaled mapping
+        // when the source is smaller than the output (nothing to crop).
+        bool oneToOne = ((stages & ST_NOSCALE) != 0) && cropW >= ow && cropH >= oh;
+        int cropX0 = oneToOne ? (cropW - ow) / 2 : 0;
+        int cropY0 = oneToOne ? (cropH - oh) / 2 : 0;
+
+        // ── FIT + LETTERBOX (identical geometry to isp.downscale) ──
+        // With LETTERBOX off the content fills the output grid: useful when the
+        // black bars themselves are suspected of confusing the readback.
+        int cw, ch, offX, offY;
+        if (oneToOne) {
+            cw = ow; ch = oh; offX = 0; offY = 0;
+        } else if ((stages & ST_LETTERBOX) != 0) {
+            float fitW = float(ow) / float(cropW);
+            float fitH = float(oh) / float(cropH);
+            float scale = min(fitW, fitH);
+            cw = max(int(float(cropW) * scale + 0.5), 1);   // content W
+            ch = max(int(float(cropH) * scale + 0.5), 1);   // content H
+            offX = (ow - cw) / 2;
+            offY = (oh - ch) / 2;
+        } else {
+            cw = ow; ch = oh; offX = 0; offY = 0;
+        }
+
+        int cx = x - offX;
+        int cy = y - offY;
+        int oplane = ow * oh;
+        int oidx = y * ow + x;
+
+        // Outside the content rect -> black letterbox / pillarbox.
+        if (cx < 0 || cy < 0 || cx >= cw || cy >= ch) {
+            out_data[oidx] = 0.0;
+            out_data[oplane + oidx] = 0.0;
+            out_data[2 * oplane + oidx] = 0.0;
+            return;
+        }
+
+        // ── AREA FOOTPRINT in crop-local coordinates ──
+        // Output pixel [cx,cx+1) x [cy,cy+1) maps to this exact source rectangle:
+        // the area filter weights every source sample by how much of it the output
+        // pixel actually covers. The OLD 2-tap bilinear could not represent this
+        // footprint, which is what aliased chroma back into the image.
+        float sx0, sx1, sy0, sy1;
+        if (oneToOne) {
+            sx0 = float(cropX0 + cx);     sx1 = sx0 + 1.0;
+            sy0 = float(cropY0 + cy);     sy1 = sy0 + 1.0;
+        } else {
+            sx0 = float(cx)     * float(cropW) / float(cw);
+            sx1 = float(cx + 1) * float(cropW) / float(cw);
+            sy0 = float(cy)     * float(cropH) / float(ch);
+            sy1 = float(cy + 1) * float(cropH) / float(ch);
+        }
+
+        int ix0 = int(floor(sx0));
+        int ix1 = int(ceil(sx1));
+        int iy0 = int(floor(sy0));
+        int iy1 = int(ceil(sy1));
+
+        int pat = int(bayerPattern[0]);
+        if (pat < 0) pat = 0;
+        if (pat > 3) pat = 3;
+
+        // Raw-domain divisor. The uploaded plane is raw sensor units; every
+        // coefficient below is normalized, so this is the stage that makes them
+        // commensurate. 1.0 fallback keeps a legacy caller working.
+        float invSensorMax = 1.0 / max(sensorMax[0], 1e-6);
+
+        float accR = 0.0, accG = 0.0, accB = 0.0, wsum = 0.0;
+
+        for (int iy = iy0; iy < iy1; iy++) {
+            // Overlap of this source row with the footprint on the y axis.
+            float wy = min(sy1, float(iy + 1)) - max(sy0, float(iy));
+            if (wy <= 0.0) continue;
+            int ry = startH + iy;
+            if (ry < 0 || ry >= sh) continue;
+
+            for (int ix = ix0; ix < ix1; ix++) {
+                float wx = min(sx1, float(ix + 1)) - max(sx0, float(ix));
+                if (wx <= 0.0) continue;
+                int rx = startW + ix;
+                if (rx < 0 || rx >= sw) continue;
+
+                float w = wx * wy;
+                int par   = ((ry & 1) << 1) | (rx & 1);
+                int plane = planeForColor(par, pat);
+                int chn   = chanOfPlane(plane);
+                // DEMOSAIC off -> the footprint becomes a point sample of the
+                // nearest source pixel, which isolates whether the AREA AVERAGING
+                // is what spreads colour. With it on, every sample in the footprint
+                // contributes its area weight.
+                // 1:1 has a 1x1 footprint, so the mask cannot change the result; the
+                // DEMOSAIC bit then only decides whether the area weight is used.
+                if ((stages & ST_DEMOSAIC) == 0 && !(ix == ix0 && iy == iy0)) continue;
+
+                float v = in_data[ry * sw + rx];
+                if ((stages & ST_NORMALIZE) != 0) v *= invSensorMax;
+                if ((stages & ST_BLC) != 0)       v -= blcOf(plane);
+                if ((stages & ST_WB) != 0)        v *= wbOf(plane);
+
+                if (chn == 0)      accR += v * w;
+                else if (chn == 1) accG += v * w;
+                else               accB += v * w;
+                wsum += w;
+            }
+        }
+
+        if (wsum <= 0.0) {
+            out_data[oidx] = 0.0;
+            out_data[oplane + oidx] = 0.0;
+            out_data[2 * oplane + oidx] = 0.0;
+            return;
+        }
+        float r = accR / wsum;
+        float g = accG / wsum;
+        float b = accB / wsum;
+
+        // ── CCM (row-major 3x3, the SAME CCMBLOCK/CCM_MATRIX CcmBlock reads) ──
+        float cr = r, cg = g, cb = b;
+        if ((stages & ST_CCM) != 0) {
+            cr = ccmMatrix[0] * r + ccmMatrix[1] * g + ccmMatrix[2] * b;
+            cg = ccmMatrix[3] * r + ccmMatrix[4] * g + ccmMatrix[5] * b;
+            cb = ccmMatrix[6] * r + ccmMatrix[7] * g + ccmMatrix[8] * b;
+        }
+
+        // ── S-curve shadow lift (same form as isp_gamma's binding 4) ──
+        float lift = ((stages & ST_LIFT) != 0) ? shadowLift[0] : 0.0;
+        if (lift != 0.0) {
+            cr = cr + lift * (1.0 - cr) * (1.0 - cr);
+            cg = cg + lift * (1.0 - cg) * (1.0 - cg);
+            cb = cb + lift * (1.0 - cb) * (1.0 - cb);
+        }
+
+        // ── Gamma encode ──
+        // TONE_CURVE/GAMMA_RECIP is 1/display_gamma (the encoded exponent is its
+        // reciprocal), exactly as isp.gamma consumes the same tensor.
+        float recip = max(gammaRecip[0], 1e-4);
+        float gam = 1.0 / recip;
+        float invg = recip;                       // pow(v, 1/gam) == pow(v, recip)
+        if ((stages & ST_GAMMA) != 0 && gam > 0.0001) {
+            cr = pow(clamp(cr, 0.0, 1.0), invg);
+            cg = pow(clamp(cg, 0.0, 1.0), invg);
+            cb = pow(clamp(cb, 0.0, 1.0), invg);
+        } else {
+            cr = clamp(cr, 0.0, 1.0);
+            cg = clamp(cg, 0.0, 1.0);
+            cb = clamp(cb, 0.0, 1.0);
+        }
+
+        // The display tensor is the 0-255 float domain (DisplayBlock's contract;
+        // the JNI float path packs it into the RGBA_8888 AHB).
+        out_data[oidx]              = cr * 255.0;
+        out_data[oplane + oidx]     = cg * 255.0;
+        out_data[2 * oplane + oidx] = cb * 255.0;
+
+    debug_publish();
 }
