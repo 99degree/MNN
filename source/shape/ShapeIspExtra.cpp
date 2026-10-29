@@ -264,6 +264,32 @@ public:
             TensorUtils::setLinearLayout(output);
             return true;
         }
+        if (type == "isp.demosaic_malvar") {
+            // isp.demosaic_malvar: 4-channel CFA quad [N,4,H,W] -> 3-channel RGB
+            // [N,3,H,W], spatial dims preserved. IDENTICAL to demosaic_g2/edge.
+            //
+            // This rule was MISSING, so the generic fallback copied the INPUT's
+            // shape onto the output: a declared 4-plane tensor where the shader
+            // writes 3 planes. Every downstream consumer then inferred against a
+            // plane count that did not match reality, and Session::resize failed
+            // with COMPUTE_SIZE_ERROR — reported at UNIFIED_STATS_BLOCK/lum, i.e.
+            // the aux stats, which is why it looked like a stats bug rather than
+            // a missing shape rule. LITE (demosaic_g2) worked; TST (malvar) could
+            // not resize at all.
+            auto input  = inputs[0];
+            auto output = outputs[0];
+            int dims = input->buffer().dimensions;
+            if (dims != 4) return false;
+            output->buffer().dimensions = 4;
+            output->buffer().dim[0].extent = input->buffer().dim[0].extent;
+            output->buffer().dim[1].extent = 3;
+            output->buffer().dim[2].extent = input->buffer().dim[2].extent;
+            output->buffer().dim[3].extent = input->buffer().dim[3].extent;
+            TensorUtils::getDescribe(output)->dimensionFormat = MNN_DATA_FORMAT_NCHW;
+            output->buffer().type = inputs[0]->buffer().type;
+            TensorUtils::setLinearLayout(output);
+            return true;
+        }
         if (type == "isp.demosaic_ccm") {
             // isp.demosaic_ccm: fused demosaic + CCM, same shape as demosaic_edge
             // 4-channel CFA quad [N,4,H,W] -> 3-channel RGB [N,3,H,W]
