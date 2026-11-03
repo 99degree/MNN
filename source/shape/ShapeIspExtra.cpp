@@ -550,6 +550,18 @@ public:
             return true;
         }
 
+        if (type == "isp.pattern") {
+            // isp.pattern overwrites a top-left window of the frame with a known
+            // pattern and passes the rest through — output shape == input shape.
+            // The generic Extra fallback would also do that, but registering the
+            // case explicitly keeps the elementwise contract in one place.
+            auto input  = inputs[0];
+            auto output = outputs[0];
+            TensorUtils::copyShape(input, output, true);
+            output->buffer().type = input->buffer().type;
+            TensorUtils::setLinearLayout(output);
+            return true;
+        }
         if (type == "isp.crop" || type == "isp.crop_blc") {
             // isp.crop / isp.crop_blc cut a tile out of the frame. The emitter
             // bakes the shader's binding-0 params as the `const` attr

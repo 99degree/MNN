@@ -1,0 +1,58 @@
+#version 450
+#extension GL_EXT_scalar_block_layout : require
+// isp.pattern — overwrite a TOP-LEFT WINDOW of the raw frame with a KNOWN
+// pattern, pass the rest of the frame through unchanged.
+//
+// Purpose: end-to-end verification. With a known 64x64 pattern planted at a
+// known position, every downstream op's 64x64 debug window at that position has
+// a COMPUTABLE expected value, so a wrong demosaic pattern / channel swap /
+// geometry error shows up as a wrong number instead of "looks odd".
+//
+//   binding 0 = Uniforms {W, H, patW, patH} (W/H hot-swapped, ELEMENTWISE patch)
+//   binding 1 = input raw plane [1,1,H,W] (read-write: see note)
+//   binding 2 = output raw plane [1,1,H,W]
+//
+// Pattern (deterministic, safe against channel swaps and geometry flips):
+//   in-window value = float(seed + (x mod 8) * 32 + (y mod 8) * 4)
+//   with seed = 200.0 — values stay inside the sensor's [0,1023] raw range, are
+//   distinct per (x mod 8, y mod 8) cell so a transposed readback is visible,
+//   and unchanged between frames so AE/AWB see a stable input.
+// Outside the window the input is copied verbatim (live frame).
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer Uniforms {
+    float width;
+    float height;
+    float patW;
+    float patH;
+} u;
+
+layout(set = 0, binding = 1, std430) buffer InBuf {
+    float in_data[];
+};
+
+layout(set = 0, binding = 2, std430) writeonly buffer OutBuf {
+    float out_data[];
+};
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    int w = int(u.width);
+    int h = int(u.height);
+    if (int(x) >= w || int(y) >= h) return;
+
+    int idx = int(y) * w + int(x);
+    int pw = int(u.patW);
+    int ph = int(u.patH);
+    if (pw <= 0 || ph <= 0) pw = 0, ph = 0;
+
+    bool inWindow = (x < uint(pw)) && (y < uint(ph));
+    if (inWindow) {
+        float v = 200.0 + float((x % 8u) * 32u) + float((y % 8u) * 4u);
+        out_data[idx] = v;
+    } else {
+        out_data[idx] = in_data[idx];
+    }
+}
