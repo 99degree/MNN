@@ -50,7 +50,12 @@ void main() {
 
     bool inWindow = (x < uint(pw)) && (y < uint(ph));
     if (inWindow) {
-        float v = 200.0 + float((x % 8u) * 32u) + float((y % 8u) * 4u);
+        // GRADIENT PROBE: v = 200 + x (x in 0..159 -> 200..359, inside 10-bit).
+        // Every window position gets a UNIQUE value, so a dump of the window
+        // tensors IS a direct map of the real memory layout/stride at each op —
+        // no periodicity aliasing. (The 8px periodic pattern remains available
+        // in git history for colour-order checks once the layout is proven.)
+        float v = 200.0 + float(x) + float(y) * 0.001;
         out_data[idx] = v;
     } else {
         out_data[idx] = in_data[idx];
