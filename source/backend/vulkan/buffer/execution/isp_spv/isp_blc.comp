@@ -33,8 +33,9 @@ void main() {
     uint plane = uint(w) * uint(h);     // plane stride
 
     // BLC_PATTERN order {R, Gr, Gb, B} = CFA plane order {0,1,2,3}
-    out_data[idx]               = (in_data[idx]               - blc_data[0]) * u.gain; // R  plane 0
-    out_data[plane + idx]       = (in_data[plane + idx]       - blc_data[1]) * u.gain; // G1 plane 1
-    out_data[plane * 2u + idx]  = (in_data[plane * 2u + idx]  - blc_data[2]) * u.gain; // G2 plane 2
-    out_data[plane * 3u + idx]  = (in_data[plane * 3u + idx]  - blc_data[3]) * u.gain; // B  plane 3
+    // [FIX 2026-11-03] clamp at 0 (see isp_blc_min.comp).
+    out_data[idx]               = max(in_data[idx]               - blc_data[0], 0.0) * u.gain; // R  plane 0
+    out_data[plane + idx]       = max(in_data[plane + idx]       - blc_data[1], 0.0) * u.gain; // G1 plane 1
+    out_data[plane * 2u + idx]  = max(in_data[plane * 2u + idx]  - blc_data[2], 0.0) * u.gain; // G2 plane 2
+    out_data[plane * 3u + idx]  = max(in_data[plane * 3u + idx]  - blc_data[3], 0.0) * u.gain; // B  plane 3
 }
