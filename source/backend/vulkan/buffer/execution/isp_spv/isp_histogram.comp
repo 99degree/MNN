@@ -12,10 +12,12 @@ void main() {
     int w = int(u.width);
     int h = int(u.height);
     if (int(x) >= w || int(y) >= h) return;
-    int idx = (int(y) * w + int(x)) * 3;
-    float r = in_data[idx + 0];
-    float g = in_data[idx + 1];
-    float b = in_data[idx + 2];
+    // PLANAR [1,3,H,W]: channel k of pixel p at k*(w*h) + p.
+    int plane = w * h;
+    int p = int(y) * w + int(x);
+    float r = in_data[0 * plane + p];
+    float g = in_data[1 * plane + p];
+    float b = in_data[2 * plane + p];
     float luma = 0.299 * r + 0.587 * g + 0.114 * b;
     int bin = int(luma * float(u.nBins));
     if (bin >= 0 && bin < int(u.nBins)) {
