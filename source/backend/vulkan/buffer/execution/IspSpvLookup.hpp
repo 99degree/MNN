@@ -52,6 +52,8 @@ extern const int g_isp_bad_pixel_lsc_bayer_wb_spv_len;
 extern const unsigned char g_isp_crop_blc_norm_cfa_spv[];
 extern const int g_isp_crop_blc_norm_cfa_spv_len;
 extern const unsigned char g_isp_demosaic_g2_spv[];
+extern const unsigned char g_isp_demosaic_rgbg_spv[];
+extern const int g_isp_demosaic_rgbg_spv_len;
 extern const int g_isp_demosaic_g2_spv_len;
 extern const unsigned char g_isp_bayer_wb_spv[];
 extern const int g_isp_bayer_wb_spv_len;
@@ -204,6 +206,7 @@ static const std::unordered_map<std::string, SpvData> g_ispSpvMap = {
     {"isp.cfa",         {g_isp_cfa_spv,          g_isp_cfa_spv_len}},
     {"isp.bad_pixel_lsc_bayer_wb", {g_isp_bad_pixel_lsc_bayer_wb_spv, g_isp_bad_pixel_lsc_bayer_wb_spv_len}},
     {"isp.demosaic_g2",  {g_isp_demosaic_g2_spv,   g_isp_demosaic_g2_spv_len}},
+    {"isp.demosaic_rgbg", {g_isp_demosaic_rgbg_spv, g_isp_demosaic_rgbg_spv_len}},
     {"isp.bayer_wb",    {g_isp_bayer_wb_spv,     g_isp_bayer_wb_spv_len}},
     {"isp.demosaic_edge",{g_isp_demosaic_edge_spv, g_isp_demosaic_edge_spv_len}},
     {"isp.demosaic_edge_ccm",{g_isp_demosaic_edge_ccm_spv, g_isp_demosaic_edge_ccm_spv_len}},

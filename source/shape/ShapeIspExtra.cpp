@@ -231,6 +231,25 @@ public:
             TensorUtils::setLinearLayout(output);
             return true;
         }
+        if (type == "isp.demosaic_rgbg") {
+            // Same 4-plane -> 3-plane shape contract as isp.demosaic_g2/edge:
+            // the kernel SELECTS three of the four CFA sites (one green is
+            // discarded), so the spatial extent is preserved and the channel
+            // count drops from 4 to 3.
+            auto input  = inputs[0];
+            auto output = outputs[0];
+            int dims = input->buffer().dimensions;
+            if (dims != 4) return false;
+            output->buffer().dimensions = 4;
+            output->buffer().dim[0].extent = input->buffer().dim[0].extent;
+            output->buffer().dim[1].extent = 3;
+            output->buffer().dim[2].extent = input->buffer().dim[2].extent;
+            output->buffer().dim[3].extent = input->buffer().dim[3].extent;
+            TensorUtils::getDescribe(output)->dimensionFormat = MNN_DATA_FORMAT_NCHW;
+            output->buffer().type = inputs[0]->buffer().type;
+            TensorUtils::setLinearLayout(output);
+            return true;
+        }
         if (type == "isp.demosaic_g2") {
             // Same as debayer_g2 for shape inference
             auto input  = inputs[0];

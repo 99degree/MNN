@@ -1,0 +1,80 @@
+#version 450
+// isp.demosaic_rgbg — SIMPLEST possible demosaic: pure quad-site SELECTION.
+//
+// The Bayer quad arrives as float[1,4,H,W] PLANAR from CfaBlock with the four
+// sites ordered [TL, TR, BL, BR]. Two of those four sites are GREEN, so the
+// quad is an RGBG frame (R, G, B, G in whatever order the pattern dictates).
+//
+// This kernel DISCARDS ONE GREEN COMPONENT and copies the remaining three
+// sites straight to the R/G/B output planes. There is NO interpolation, NO
+// multi-tap kernel, NO weights tensor — one select per output channel:
+//
+//   RGGB (0):  TL=R      TR=Gr(kept) BL=Gb(discarded) BR=B
+//   GRBG (1):  TL=Gr(kept) TR=R      BL=B             BR=Gb(discarded)
+//   GBRG (2):  TL=Gb(kept) TR=B      BL=R             BR=Gr(discarded)
+//   BGGR (3):  TL=B      TR=Gb(kept) BL=Gr(discarded) BR=R
+//
+// Trade-off, stated plainly: resolution is halved (each output pixel keeps one
+// sensor site instead of an interpolated colour) and the discarded green's
+// noise is not averaged out. It is a deliberately cheap, exactly-verifiable
+// baseline — with the planted pattern every output pixel equals a known input
+// site, so a wrong Bayer order shows up as a wrong number, not a subtle tint.
+//
+// Bindings (same contract as isp.demosaic_g2):
+//   binding 0 = {W,H,pad,pad}   const, hot-swapped by the ELEMENTWISE patch
+//   binding 1 = input frame     float[1,4,H,W]  quad planes
+//   binding 2 = output frame    float[1,3,H,W]  RGB planes
+//   binding 3 = DEMOSAIC_BLOCK_HW float[4]      {W,H,pad,pad} runtime geometry
+//   binding 4 = DEMOSAIC_BAYER_PATTERN float[1] 0=RGGB,1=GRBG,2=GBRG,3=BGGR
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer Uniforms {
+    float width;
+    float height;
+    float pad0;
+    float pad1;
+} u;
+
+layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
+layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
+layout(set = 0, binding = 3) readonly  buffer DemosaicHwBuf { float demosaicHw[]; };
+layout(set = 0, binding = 4) readonly  buffer BayerPatternBuf { float bayerPattern[]; };
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    int w = int(u.width);
+    int h = int(u.height);
+    if (int(x) >= w || int(y) >= h) return;
+
+    // Runtime geometry is authoritative so the controller can resize per frame.
+    int rw = int(demosaicHw[0]);
+    int rh = int(demosaicHw[1]);
+    if (rw > 0) w = rw;
+    if (rh > 0) h = rh;
+    if (int(x) >= w || int(y) >= h) return;
+
+    int plane = w * h;
+    int idx = int(y) * w + int(x);
+
+    int pat = int(bayerPattern[0]);
+    if (pat < 0) pat = 0;
+    if (pat > 3) pat = 3;
+
+    // inCh 0=TL, 1=TR, 2=BL, 3=BR — select, never average.
+    int rCh, gCh, bCh;
+    if (pat == 0) {          // RGGB: TL=R, TR=Gr(keep), BL=Gb(drop), BR=B
+        rCh = 0; gCh = 1; bCh = 3;
+    } else if (pat == 1) {   // GRBG: TL=Gr(keep), TR=R, BL=B, BR=Gb(drop)
+        rCh = 1; gCh = 0; bCh = 2;
+    } else if (pat == 2) {   // GBRG: TL=Gb(keep), TR=B, BL=R, BR=Gr(drop)
+        rCh = 2; gCh = 0; bCh = 1;
+    } else {                 // BGGR: TL=B, TR=Gb(keep), BL=Gr(drop), BR=R
+        rCh = 3; gCh = 1; bCh = 0;
+    }
+
+    out_data[0 * plane + idx] = in_data[rCh * plane + idx];
+    out_data[1 * plane + idx] = in_data[gCh * plane + idx];
+    out_data[2 * plane + idx] = in_data[bCh * plane + idx];
+}

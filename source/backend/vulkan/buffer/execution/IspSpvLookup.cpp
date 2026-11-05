@@ -3,6 +3,7 @@
 #pragma GCC visibility push(default)
 #include "isp_spv/isp_pattern_spv.h"
 #include "isp_spv/isp_dpc_spv.h"
+#include "isp_spv/isp_demosaic_rgbg_spv.h"
 #include "isp_spv/isp_gamma_spv.h"
 #include "isp_spv/isp_ae_spv.h"
 #include "isp_spv/isp_af_focus_spv.h"
