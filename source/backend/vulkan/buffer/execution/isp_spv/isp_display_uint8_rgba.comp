@@ -1,23 +1,38 @@
 #version 450
-// isp.display (float RGB out) — the display tensor is FLOAT-typed at runtime
-// (MNN allocates Extra outputs as float regardless of the declared elemType),
-// so the shader writes PLANAR FLOAT RGB [1,3,oh,ow] in the 0-255 display
-// domain (gamma already applied upstream). The JNI float path (13.3c) packs
-// this into the RGBA_8888 AHB.
+// isp.display_uint8_rgba — format adapter: planar float RGB -> packed byte RGB.
 //
-// USER SPEC (downscale block): the actual fit+letterbox lives in
-// isp.downscale; this display op is a format adapter (pack check only).
+// The display tensor is FLOAT-typed at runtime (MNN allocates Extra outputs as
+// float regardless of the declared elemType), so this shader writes PLANAR
+// FLOAT RGB [1,3,oh,ow] holding BYTE values (0-255); the JNI float path packs
+// them into the RGBA_8888 AHB.
 //
-// Uniforms (binding 0): {W,H,gamma,pad} — W/H hot-swapped from the INPUT
-//   tensor dims (gamma output [1,3,h,w] → tw=w, th=h). gamma > 0 adds an
-//   encode; gamma <= 0 keeps the [0,1] pixel, then the 0-255 scale applies.
-// In:  float[1,3,h,w] NCHW planar RGB (0-255 display domain).
-// Out: float[1,3,h,w] NCHW planar RGB (same values; clamp for safety).
+// SCALE — DECLARED, never guessed. Uniform (binding 0): {W, H, gamma, fullScale}
+//   fullScale = the numeric full-scale of the INCOMING frame:
+//       1.0        — the chain normalized (NormalizeBlock ran)      -> *255
+//       1023 (etc) — normalization absent, native sensor/code units -> *255/1023
+//   Either way the conversion is `value / fullScale * 255`, so one expression
+//   covers both domains.
+//
+//   This replaces a per-pixel heuristic ("if max(r,g,b) <= 1.001 then *255")
+//   which was a DISCONTINUITY at that boundary rather than a scale decision:
+//   1.000 became 255 while 1.001 became ~1, so an un-normalized frame — whose
+//   pixels legitimately sit in the tens or hundreds — had almost everything
+//   divided down to black.
+//
+// gamma > 0 adds an extra encode (gamma == 1 is an identity encode and is
+// skipped; the main chain already encodes in isp.gamma). gamma <= 0 also
+// skips.
+//
+// In:  float[1,3,h,w] NCHW planar RGB, in `fullScale` units.
+// Out: float[1,3,h,w] NCHW planar RGB, in byte units (0-255).
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) buffer Uniforms {
-    float width; float height; float gamma; float pad;
+    float width;
+    float height;
+    float gamma;
+    float fullScale;
 } u;
 
 layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
@@ -35,17 +50,15 @@ void main() {
     float c1 = in_data[1 * sz + idx];
     float c2 = in_data[2 * sz + idx];
 
-    // Pixel-wise domain decision (same rule the JNI float→RGBA8 path used):
-    // a pixel already in the 0-255 domain is taken as-is, a [0,1] pixel is
-    // scaled once. Deciding per channel would tint pixels that straddle it.
-    if (max(c0, max(c1, c2)) <= 1.001) {
-        c0 *= 255.0; c1 *= 255.0; c2 *= 255.0;
-    }
-    // Optional extra encode: gamma <= 0 is identity, which is what the main
-    // chain passes because isp.gamma already encodes.
-    // gamma == 1.0 is an identity encode, so skip the pow entirely (the main
-    // chain already encoded in isp.gamma and feeds gamma = 1.0 here). This
-    // saves 3 pow() calls per pixel, ~518k per 480x360 frame.
+    // Declared full scale -> bytes. Guard against a zero/absent uniform (an
+    // unfed binding-0 leaves fullScale == 0, which would divide by zero): 1.0
+    // is the normalized default and the safe assumption.
+    float fs = u.fullScale;
+    if (!(fs > 1e-6)) fs = 1.0;
+    float toByte = 255.0 / fs;
+    c0 *= toByte; c1 *= toByte; c2 *= toByte;
+
+    // Optional extra encode over the byte-domain values.
     float g = u.gamma;
     if (g > 0.0001f && abs(g - 1.0f) > 0.0001f) {
         float invg = 1.0 / g;
