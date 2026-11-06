@@ -13,7 +13,7 @@
 //     - SESSION time : source/core/Interpreter.cpp
 //
 // SYNC
-//   kIspOpsetNames MUST stay in sync with the keys of g_ispSpvMap in
+//   kIspOpsetNames is GENERATED FROM (and must equal) the keys of g_ispSpvMap in
 //   source/backend/vulkan/buffer/execution/IspSpvLookup.hpp. When a shader is
 //   added/renamed there, update this list.
 //
@@ -37,17 +37,18 @@ inline const char* const kIspOpsetNames[] = {
     "isp.aaf",
     "isp.ae",
     "isp.af_focus",
+    "isp.algo_ae",
+    "isp.algo_awb",
+    "isp.algo_cct",
     "isp.algo_gamma",
     "isp.algo_gamma_scalar",
-    "isp.algo_ae",
-    "isp.algo_cct",
-    "isp.algo_awb",
     "isp.auto_contrast",
     "isp.awb",
     "isp.bad_pixel_lsc_bayer_wb",
     "isp.bayer_wb",
     "isp.bilateral",
     "isp.blc",
+    "isp.blc_min",
     "isp.bnf",
     "isp.calib_stats",
     "isp.ccm",
@@ -59,15 +60,16 @@ inline const char* const kIspOpsetNames[] = {
     "isp.cnf",
     "isp.colorspace",
     "isp.crop",
-    "isp.crop_debug",
     "isp.crop_blc",
     "isp.crop_blc_norm_cfa",
+    "isp.crop_debug",
     "isp.demosaic_ccm",
     "isp.demosaic_edge",
-    "isp.demosaic_rgbg",
     "isp.demosaic_edge_ccm",
     "isp.demosaic_g2",
     "isp.demosaic_g2_ccm",
+    "isp.demosaic_malvar",
+    "isp.demosaic_rgbg",
     "isp.denoise",
     "isp.display",
     "isp.display_rgb",
@@ -98,8 +100,6 @@ inline const char* const kIspOpsetNames[] = {
     "isp.pyramid",
     "isp.raw_blc",
     "isp.raw_blc_min",
-    "isp.blc_min",
-    "isp.demosaic_malvar",
     "isp.saturation",
     "isp.stats",
     "isp.temporal_denoise",
