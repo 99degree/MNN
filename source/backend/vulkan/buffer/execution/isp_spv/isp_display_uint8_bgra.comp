@@ -4,7 +4,7 @@
 // Output: [1,h,w,4] packed uint32 BGRA (little-endian wire: G,R,B,A).
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 layout(set = 0, binding = 0, std430) buffer Uniforms {
-    float width; float height; float gamma; float pad;
+    float width; float height; float gamma; float fullScale;
 } u;
 layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
 layout(set = 0, binding = 2) writeonly buffer OutBuf { uint out_data[]; };
@@ -17,10 +17,16 @@ void main() {
     if (int(x) >= w || int(y) >= h) return;
     int idx = int(y) * w + int(x);
     int sz = w * h;
+    // Declared full scale -> bytes (one expression for both domains):
+    // 1.0 when the chain normalized, sensor max (1023 etc) when it did not.
+    // Guard against an unfed binding-0 (fullScale 0) -> 1.0.
+    float fs = u.fullScale;
+    if (!(fs > 1e-6)) fs = 1.0;
+    float toByte = 255.0 / fs;
     float invGamma = 1.0 / max(u.gamma, 1e-6);
-    float r = clamp(pow(max(in_data[sz * 0 + idx], 0.0), invGamma) * 255.0, 0.0, 255.0);
-    float g = clamp(pow(max(in_data[sz * 1 + idx], 0.0), invGamma) * 255.0, 0.0, 255.0);
-    float b = clamp(pow(max(in_data[sz * 2 + idx], 0.0), invGamma) * 255.0, 0.0, 255.0);
+    float r = clamp(pow(max(in_data[sz * 0 + idx] * toByte, 0.0), invGamma), 0.0, 255.0);
+    float g = clamp(pow(max(in_data[sz * 1 + idx] * toByte, 0.0), invGamma), 0.0, 255.0);
+    float b = clamp(pow(max(in_data[sz * 2 + idx] * toByte, 0.0), invGamma), 0.0, 255.0);
     // Pack BGRA8888: LE memory order G,R,B,A with A=255.
     uint packed = (255u << 24) | (uint(g) << 16) | (uint(r) << 8) | uint(b);
     out_data[idx] = packed;
