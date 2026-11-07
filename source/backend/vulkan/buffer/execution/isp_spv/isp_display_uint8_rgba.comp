@@ -1,30 +1,34 @@
 #version 450
-// isp.display_uint8_rgba — format adapter: planar float RGB -> packed byte RGB.
+// isp.display_uint8_rgba — the direct-emit display adapter.
 //
-// The display tensor is FLOAT-typed at runtime (MNN allocates Extra outputs as
-// float regardless of the declared elemType), so this shader writes PLANAR
-// FLOAT RGB [1,3,oh,ow] holding BYTE values (0-255); the JNI float path packs
-// them into the RGBA_8888 AHB.
+// CONTRACT (STEP 13.3c, mnn_convert_jni.cpp): the display tensor is declared
+// UINT8 [1,4,oh,ow] and the JNI copies its BYTES VERBATIM into the RGBA_8888
+// AHB (and emits them verbatim to Kotlin). So this shader must write
+// INTERLEAVED PACKED BYTES: w*h*4 bytes = [R,G,B,A] per pixel.
+//
+// The previous version wrote PLANAR FLOAT ("MNN allocates Extra outputs as
+// float regardless of elemType" — a stale assumption: the device log shows
+// rawBytes=691200 = exactly w*h*4, isFloat=false). Three float planes =
+// 2073600 bytes written into a 691200-byte buffer; the readback then returned
+// the R plane's IEEE-754 bytes reinterpreted as RGBA — for v≈0.25
+// (0x3E800000) those bytes are 00 00 80 3E, i.e. mostly-black with a bright
+// byte every 4th pixel. That periodic 4-byte pattern IS the "Bayer mosaic
+// displayed directly" the user saw — the demosaic was never the problem.
 //
 // SCALE — DECLARED, never guessed. Uniform (binding 0): {W, H, gamma, fullScale}
 //   fullScale = the numeric full-scale of the INCOMING frame:
 //       1.0        — the chain normalized (NormalizeBlock ran)      -> *255
 //       1023 (etc) — normalization absent, native sensor/code units -> *255/1023
-//   Either way the conversion is `value / fullScale * 255`, so one expression
-//   covers both domains.
-//
-//   This replaces a per-pixel heuristic ("if max(r,g,b) <= 1.001 then *255")
-//   which was a DISCONTINUITY at that boundary rather than a scale decision:
-//   1.000 became 255 while 1.001 became ~1, so an un-normalized frame — whose
-//   pixels legitimately sit in the tens or hundreds — had almost everything
-//   divided down to black.
+//   Either way the conversion is `value / fullScale * 255`, one expression for
+//   both domains.
 //
 // gamma > 0 adds an extra encode (gamma == 1 is an identity encode and is
-// skipped; the main chain already encodes in isp.gamma). gamma <= 0 also
-// skips.
+// skipped; the main chain already encodes in isp.gamma). gamma <= 0 also skips.
 //
 // In:  float[1,3,h,w] NCHW planar RGB, in `fullScale` units.
-// Out: float[1,3,h,w] NCHW planar RGB, in byte units (0-255).
+// Out: one uint32 per pixel (LE wire bytes R,G,B,A) — the same packed contract
+// as the bgra/argb variants, sized exactly w*h*4 bytes as the declared
+// [1,4,oh,ow] UINT8 tensor expects.
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
@@ -36,7 +40,7 @@ layout(set = 0, binding = 0, std430) buffer Uniforms {
 } u;
 
 layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
-layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
+layout(set = 0, binding = 2) writeonly buffer OutBuf { uint out_data[]; };
 
 void main() {
     uint x = gl_GlobalInvocationID.x;
@@ -66,7 +70,11 @@ void main() {
         c1 = 255.0 * pow(clamp(c1 / 255.0, 0.0, 1.0), invg);
         c2 = 255.0 * pow(clamp(c2 / 255.0, 0.0, 1.0), invg);
     }
-    out_data[0 * sz + idx] = clamp(c0, 0.0, 255.0);
-    out_data[1 * sz + idx] = clamp(c1, 0.0, 255.0);
-    out_data[2 * sz + idx] = clamp(c2, 0.0, 255.0);
+    uint r = uint(clamp(c0, 0.0, 255.0));
+    uint gg = uint(clamp(c1, 0.0, 255.0));
+    uint b = uint(clamp(c2, 0.0, 255.0));
+
+    // Interleaved RGBA_8888: LE byte order R,G,B,A (byte0 = low byte = R).
+    uint packed = (255u << 24) | (b << 16) | (gg << 8) | r;
+    out_data[idx] = packed;
 }
