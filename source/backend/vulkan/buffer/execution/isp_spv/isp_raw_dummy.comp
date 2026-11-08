@@ -1,0 +1,101 @@
+#version 450
+#extension GL_EXT_scalar_block_layout : require
+// isp.raw_dummy — generate a synthetic BAYER frame from parameters instead of
+// reading the sensor. Two jobs, one kernel:
+//
+//   1. VERIFICATION. Every downstream window gets a value computable from
+//      (frameId, exposureUnits, x, y) alone, so the whole chain is checkable
+//      without a scene and without the planted-pattern block.
+//   2. SCENE SIMULATION. The level follows a rudimentary exposure model driven
+//      by the FRAME NUMBER, so successive frames brighten or darken the way a
+//      real camera's do. That is what lets the 3A loops be exercised end to end
+//      on a synthetic input: feed the AE a scene that changes with time and
+//      watch it track.
+//
+// Bindings (universal isp.* positional map):
+//   0 = Params {W, H, frameId, exposureUnits, sensorMax, bayerPattern, pad, pad}
+//       W/H are hot-swapped per encode (elementwise); frameId and exposureUnits
+//       ride the per-frame const, so changing the frame does not need a rebuilt
+//       model. The Kotlin block declares this block as consuming params only.
+//   1 = InBuf   (declared, UNUSED: nothing about the camera influences the frame)
+//   2 = OutBuf  [1,1,H,W] float, one sensor sample per pixel, in raw units
+//       (0..sensorMax) — the same domain RAW_INPUT carries after the host feed.
+//
+// VALUE MODEL (documented so the window numbers can be checked by hand):
+//
+//   base       = clamp(exposureUnits, 0, 1)      // scene level, per frame
+//   xr         = x / W                           // 0..1
+//   yr         = y / H                           // 0..1
+//   scene(x,y) = base * (0.25 + 0.75 * (0.5*xr + 0.5*yr))
+//   siteGain   = per-site gain for the Bayer site at (x,y):
+//                  Gr/Gb  1.00    R  0.62    B  0.45
+//                (green-heavy, i.e. a sensor BEFORE white balance, so the
+//                 downstream WB stage has something real to correct)
+//   out        = sensorMax * clamp(scene * siteGain + 0.5/255, 0, 1)
+//
+// The 0.5/255 offset keeps every value off exact zero, so "the op ran" is
+// distinguishable from "the buffer was never written" (out[0] would be 0).
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer Params {
+    float width;
+    float height;
+    float frameId;
+    float exposureUnits;
+    float sensorMax;
+    float bayerPattern;
+    float pad0;
+    float pad1;
+};
+
+layout(set = 0, binding = 1, std430) buffer InBuf {
+    float in_data[];
+};
+
+layout(set = 0, binding = 2, std430) writeonly buffer OutBuf {
+    float out_data[];
+};
+
+// Logical channel carried by each Bayer SITE, per pattern. SITE order is
+// [TL, TR, BL, BR] and the channel codes are 0=R 1=Gr 2=Gb 3=B — the same
+// table BayerWbBlock uses to permute its gains, so the two agree by
+// construction:
+//   RGGB(0): TL=R  TR=Gr BL=Gb BR=B
+//   GRBG(1): TL=Gr TR=R  BL=B  BR=Gb
+//   GBRG(2): TL=Gb TR=B  BL=R  BR=Gr
+//   BGGR(3): TL=B  TR=Gb BL=Gr BR=R
+const int kSiteChannel[16] = int[16](
+    0, 1, 2, 3,   // RGGB
+    1, 0, 3, 2,   // GRBG
+    2, 3, 0, 1,   // GBRG
+    3, 2, 1, 0    // BGGR
+);
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    int w = int(width);
+    int h = int(height);
+    if (w <= 0 || h <= 0) return;
+    if (int(x) >= w || int(y) >= h) return;
+
+    float smax = sensorMax;
+    if (!(smax > 0.0)) smax = 1023.0;
+
+    float base = clamp(exposureUnits, 0.0, 1.0);
+    float xr = float(x) / float(w);
+    float yr = float(y) / float(h);
+    float scene = base * (0.25 + 0.75 * (0.5 * xr + 0.5 * yr));
+
+    int pat = int(bayerPattern);
+    if (pat < 0) pat = 0;
+    if (pat > 3) pat = 3;
+    int site = ((int(y) & 1) << 1) | (int(x) & 1);
+    int ch = kSiteChannel[pat * 4 + site];
+
+    float gain = (ch == 0) ? 0.62 : (ch == 3) ? 0.45 : 1.00;
+
+    float v = clamp(scene * gain + 0.0019607843, 0.0, 1.0);   // 0.5 / 255
+    out_data[int(y) * w + int(x)] = smax * v;
+}

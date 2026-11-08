@@ -122,12 +122,27 @@ public:
             return true;
         }
         if (type == "isp.display_uint8_rgba") {
-            // [FIX 2026-10-20] The rgba variant's shader writes PLANAR FLOAT RGB
-            // [1,3,H,W] (0-255 display domain) — the runtime tensor is float
-            // regardless of the declared elemType, and the packed-uint8 shape
-            // ([1,1,4H,4W] uint8) mismatched the shader's float writes, which
-            // produced the 'blue snow' / '4 horizontal bars' garbage. Pass the
-            // input geometry through as float [1,3,H,W].
+            // isp.display_uint8_rgba packs ONE uint32 per pixel: LE bytes
+            // [R,G,B,A]. The declared shape must describe exactly that, because
+            // the CONSUMER's row stride is derived from it.
+            //
+            // What the declaration has been through, and why this is the right
+            // one: declaring the tensor float [1,3,H,W] made the device allocate
+            // float planes, so the shader's uint32 writes landed in a buffer the
+            // readback then reinterpreted — the "mosaic / no CFA" symptom. The
+            // sibling (bgra/argb) branch instead declares [1,1,4H,4W] uint8,
+            // BYTE-IDENTICAL to [1,H,W] uint32 (same w*h*4 count, same per-pixel
+            // byte order) but it forces 4*W as the row stride while the shader
+            // advances one uint32 per pixel, i.e. W lanes = 4W bytes. Those
+            // agree, so the bytes are right, but the shape claims FOUR
+            // byte-planes where there is one pixel-lane plane — exactly the
+            // ambiguity flagged: "technically 1,h,w,c with c=argb, byte-identical
+            // to 1,1,h,w uint32".
+            //
+            // Declare the UINT32 form: [1,1,H,W] with a 32-bit int element, one
+            // element per PIXEL. Byte count = H*W*4, identical to every other
+            // form, but the shape now says what the shader does — one packed
+            // uint32 lane per pixel — and W is the row stride in ELEMENTS.
             auto input  = inputs[0];
             auto output = outputs[0];
             int dims = input->buffer().dimensions;
@@ -145,12 +160,17 @@ public:
             }
             output->buffer().dimensions = 4;
             output->buffer().dim[0].extent = 1;
-            output->buffer().dim[1].extent = 3;
+            output->buffer().dim[1].extent = 1;   // ONE packed lane per pixel
             output->buffer().dim[2].extent = H;
             output->buffer().dim[3].extent = W;
             TensorUtils::getDescribe(output)->dimensionFormat = MNN_DATA_FORMAT_NCHW;
-            output->buffer().type = halide_type_of<float>();
+            output->buffer().type = halide_type_t(halide_type_int, 32);  // uint32 pack
             TensorUtils::setLinearLayout(output);
+            if (getenv("ISP_SHAPE_DEBUG") != nullptr) {
+                MNN_PRINT("[ShapeIspExtra] isp.display_uint8_rgba -> [1,1,%d,%d] uint32 "
+                          "(= %d bytes, byte-identical to [1,1,4H,4W] uint8)\n",
+                          H, W, H * W * 4);
+            }
             return true;
         }
         if (type.rfind("isp.display_uint8_", 0) == 0 && type != "isp.display_uint8_argb") {
@@ -569,6 +589,40 @@ public:
             return true;
         }
 
+        if (type == "isp.raw_dummy") {
+            // isp.raw_dummy GENERATES the raw plane from its binding-0 params; it
+            // reads nothing (the declared input frame is unused). Shape therefore
+            // comes from the const attr the Kotlin block bakes as
+            // {W, H, frameId, exposureUnits, sensorMax, bayerPattern, 0, 0}:
+            // [1,1,H,W] float, exactly the RAW_INPUT contract, so every
+            // downstream op sees an ordinary raw frame.
+            auto output = outputs[0];
+            float fW = 0.f, fH = 0.f;
+            ispConstFloat(extra, 0, &fW);
+            ispConstFloat(extra, 1, &fH);
+            int inH = 0, inW = 0;
+            if (!inputs.empty() && inputs[0] != nullptr &&
+                inputs[0]->buffer().dimensions >= 2) {
+                int d = inputs[0]->buffer().dimensions;
+                inH = inputs[0]->buffer().dim[d - 2].extent;
+                inW = inputs[0]->buffer().dim[d - 1].extent;
+            }
+            int outH = (fH > 0.f) ? (int)fH : inH;
+            int outW = (fW > 0.f) ? (int)fW : inW;
+            if (outW <= 0 || outH <= 0) return false;
+            output->buffer().dimensions = 4;
+            output->buffer().dim[0].extent = 1;
+            output->buffer().dim[1].extent = 1;
+            output->buffer().dim[2].extent = outH;
+            output->buffer().dim[3].extent = outW;
+            TensorUtils::getDescribe(output)->dimensionFormat = MNN_DATA_FORMAT_NCHW;
+            output->buffer().type = halide_type_of<float>();
+            TensorUtils::setLinearLayout(output);
+            if (getenv("ISP_SHAPE_DEBUG") != nullptr) {
+                MNN_PRINT("[ShapeIspExtra] isp.raw_dummy -> out=[1,1,%d,%d]\n", outH, outW);
+            }
+            return true;
+        }
         if (type == "isp.pattern") {
             // isp.pattern overwrites a top-left window of the frame with a known
             // pattern and passes the rest through — output shape == input shape.

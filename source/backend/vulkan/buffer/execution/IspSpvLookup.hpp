@@ -39,6 +39,8 @@ extern const unsigned char g_isp_crop_blc_spv[];
 extern const unsigned char g_isp_crop_spv[];
 extern const int g_isp_crop_debug_spv_len;
 extern const unsigned char g_isp_crop_debug_spv[];
+extern const int g_isp_raw_dummy_spv_len;
+extern const unsigned char g_isp_raw_dummy_spv[];
 extern const unsigned char g_isp_pattern_spv[];
 extern const int g_isp_pattern_spv_len;
 extern const int g_isp_crop_spv_len;
@@ -201,6 +203,7 @@ static const std::unordered_map<std::string, SpvData> g_ispSpvMap = {
     {"isp.crop_blc_norm_cfa", {g_isp_crop_blc_norm_cfa_spv, g_isp_crop_blc_norm_cfa_spv_len}},
     {"isp.crop",         {g_isp_crop_spv,          g_isp_crop_spv_len}},
     {"isp.crop_debug",   {g_isp_crop_debug_spv,   g_isp_crop_debug_spv_len}},
+    {"isp.raw_dummy",    {g_isp_raw_dummy_spv,    g_isp_raw_dummy_spv_len}},
     {"isp.pattern",      {g_isp_pattern_spv,      g_isp_pattern_spv_len}},
     {"isp.raw_blc",      {g_isp_raw_blc_spv,       g_isp_raw_blc_spv_len}},
     {"isp.cfa",         {g_isp_cfa_spv,          g_isp_cfa_spv_len}},

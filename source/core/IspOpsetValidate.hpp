@@ -63,6 +63,7 @@ inline const char* const kIspOpsetNames[] = {
     "isp.crop_blc",
     "isp.crop_blc_norm_cfa",
     "isp.crop_debug",
+    "isp.raw_dummy",
     "isp.demosaic_ccm",
     "isp.demosaic_edge",
     "isp.demosaic_edge_ccm",
