@@ -121,6 +121,42 @@ public:
             TensorUtils::setLinearLayout(output);
             return true;
         }
+        if (type == "isp.display_rgba_f16") {
+            // isp.display_rgba_f16: RGB float planes [1,3,H,W] -> packed RGBA
+            // float16 [1,1,H,W], 8 bytes per pixel, written straight into an
+            // AHARDWAREBUFFER_FORMAT_R16G16B16A16_FLOAT buffer. No uint8 packing
+            // and no normalization are required: the shader divides by fullScale
+            // and writes [0,1] float16, which maps linearly to full display
+            // brightness.
+            auto input  = inputs[0];
+            auto output = outputs[0];
+            int dims = input->buffer().dimensions;
+            if (dims < 2) return false;
+            int H, W;
+            if (dims >= 4) {
+                H = input->buffer().dim[2].extent;
+                W = input->buffer().dim[3].extent;
+            } else if (dims == 3) {
+                H = input->buffer().dim[1].extent;
+                W = input->buffer().dim[2].extent;
+            } else {
+                W = input->buffer().dim[1].extent;
+                H = input->buffer().dim[0].extent;
+            }
+            output->buffer().dimensions = 4;
+            output->buffer().dim[0].extent = 1;
+            output->buffer().dim[1].extent = 1;   // one packed RGBA lane per pixel
+            output->buffer().dim[2].extent = H;
+            output->buffer().dim[3].extent = W;
+            TensorUtils::getDescribe(output)->dimensionFormat = MNN_DATA_FORMAT_NCHW;
+            output->buffer().type = halide_type_t(halide_type_float, 16);
+            TensorUtils::setLinearLayout(output);
+            if (getenv("ISP_SHAPE_DEBUG") != nullptr) {
+                MNN_PRINT("[ShapeIspExtra] isp.display_rgba_f16 -> [1,1,%d,%d] float16 (%d bytes)\n",
+                          H, W, H * W * 8);
+            }
+            return true;
+        }
         if (type == "isp.display_uint8_rgba") {
             // isp.display_uint8_rgba packs ONE uint32 per pixel: LE bytes
             // [R,G,B,A]. The declared shape must describe exactly that, because

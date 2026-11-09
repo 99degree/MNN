@@ -39,6 +39,7 @@
 #include "isp_spv/isp_display_uint32_argb_spv.h"
 #include "isp_spv/isp_display_uint32_rgba_spv.h"
 #include "isp_spv/isp_display_uint32_bgra_spv.h"
+#include "isp_spv/isp.display_rgba_f16_spv.h"
 #include "isp_spv/isp_algo_gamma_spv.h"
 #include "isp_spv/isp_algo_gamma_scalar_spv.h"
 #include "isp_spv/isp_algo_ae_spv.h"

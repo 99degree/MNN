@@ -80,6 +80,7 @@ inline const char* const kIspOpsetNames[] = {
     "isp.display_uint8_argb",
     "isp.display_uint8_bgra",
     "isp.display_uint8_rgba",
+    "isp.display_rgba_f16",
     "isp.downscale",
     "isp.dpc",
     "isp.ee",

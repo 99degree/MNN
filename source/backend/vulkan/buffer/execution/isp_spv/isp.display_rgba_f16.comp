@@ -1,0 +1,75 @@
+#version 450
+#extension GL_EXT_shader_explicit_arithmetic_types : require
+// isp.display_rgba_f16 — write RGBA float16 directly into an
+// AHARDWAREBUFFER_FORMAT_R16G16B16A16_FLOAT display buffer.
+//
+// One half lane per component per pixel (RGBA float16), written straight from
+// the float ISP domain. No uint8 packing, no per-pixel *255, no byte-order
+// ambiguity: the shader output IS the AHB layout (8 bytes per pixel).
+//
+// Uniforms (binding 0): {W, H, fullScale, gamma, ...}
+//   fullScale = numeric full-scale of the incoming frame (1.0 if the chain
+//   normalized, sensorMax e.g. 1023 if not). value / fullScale -> [0,1] which
+//   is written straight to the float16 buffer. Writing [0,1] float16 maps
+//   linearly to full display brightness, so no per-pixel cast to uint8 is
+//   needed and the chain need not be normalized first.
+// gamma > 0 applies an extra encode (gamma==1 skips).
+//
+// In : float[1,3,H,W] NCHW planar RGB, in fullScale units.
+// Out: [1,1,H,W] float16, one RGBA pixel per 4 half lanes,
+//      LE bytes [R16,G16,B16,A16] per pixel (8 bytes/pixel).
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer Uniforms {
+    float width;
+    float height;
+    float fullScale;
+    float gamma;
+    float pad0;
+    float pad1;
+    float pad2;
+    float pad3;
+} u;
+
+layout(set = 0, binding = 1) readonly buffer InBuf {
+    float in_data[];
+};
+
+layout(set = 0, binding = 2, std430) writeonly buffer OutBuf {
+    float16_t out_data[];
+};
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;
+    uint y = gl_GlobalInvocationID.y;
+    int w = int(u.width);
+    int h = int(u.height);
+    if (int(x) >= w || int(y) >= h) return;
+    int idx = int(y) * w + int(x);
+    int sz = w * h;
+
+    float c0 = in_data[0 * sz + idx];
+    float c1 = in_data[1 * sz + idx];
+    float c2 = in_data[2 * sz + idx];
+
+    float fs = u.fullScale;
+    if (!(fs > 1e-6)) fs = 1.0;
+    c0 = clamp(c0 / fs, 0.0, 1.0);
+    c1 = clamp(c1 / fs, 0.0, 1.0);
+    c2 = clamp(c2 / fs, 0.0, 1.0);
+
+    float g = u.gamma;
+    if (g > 0.0001f && abs(g - 1.0f) > 0.0001f) {
+        float invg = 1.0 / g;
+        c0 = pow(clamp(c0, 0.0, 1.0), invg);
+        c1 = pow(clamp(c1, 0.0, 1.0), invg);
+        c2 = pow(clamp(c2, 0.0, 1.0), invg);
+    }
+
+    // Write RGBA float16: one lane per pixel, A=1.0.
+    out_data[idx * 4 + 0] = float16_t(c0);
+    out_data[idx * 4 + 1] = float16_t(c1);
+    out_data[idx * 4 + 2] = float16_t(c2);
+    out_data[idx * 4 + 3] = float16_t(1.0);
+}

@@ -85,6 +85,12 @@ extern const unsigned char g_isp_display_uint8_argb_spv[];
 extern const int g_isp_display_uint8_argb_spv_len;
 extern const unsigned char g_isp_display_uint8_rgba_spv[];
 extern const int g_isp_display_uint8_rgba_spv_len;
+extern const unsigned char g_isp_display_rgba_f16_spv[];
+extern const int g_isp_display_rgba_f16_spv_len;
+extern const unsigned char g_isp_display_rgba_f16_spv[];
+extern const int g_isp_display_rgba_f16_spv_len;
+extern const unsigned char g_isp_display_rgba_f16_spv[];
+extern const int g_isp_display_rgba_f16_spv_len;
 extern const unsigned char g_isp_display_uint8_bgra_spv[];
 extern const int g_isp_display_uint8_bgra_spv_len;
 extern const unsigned char g_isp_display_uint32_argb_spv[];
@@ -224,6 +230,9 @@ static const std::unordered_map<std::string, SpvData> g_ispSpvMap = {
     {"isp.display_rgb",   {g_isp_display_rgb_spv, g_isp_display_rgb_spv_len}},
     {"isp.display_uint8_argb", {g_isp_display_uint8_argb_spv, g_isp_display_uint8_argb_spv_len}},
     {"isp.display_uint8_rgba", {g_isp_display_uint8_rgba_spv, g_isp_display_uint8_rgba_spv_len}},
+    {"isp.display_rgba_f16",    {g_isp_display_rgba_f16_spv,    g_isp_display_rgba_f16_spv_len}},
+    {"isp.display_rgba_f16",    {g_isp_display_rgba_f16_spv,    g_isp_display_rgba_f16_spv_len}},
+    {"isp.display_rgba_f16",    {g_isp_display_rgba_f16_spv,    g_isp_display_rgba_f16_spv_len}},
     {"isp.display_uint8_bgra", {g_isp_display_uint8_bgra_spv, g_isp_display_uint8_bgra_spv_len}},
     {"isp.display_uint32_argb", {g_isp_display_uint32_argb_spv, g_isp_display_uint32_argb_spv_len}},
     {"isp.display_uint32_rgba", {g_isp_display_uint32_rgba_spv, g_isp_display_uint32_rgba_spv_len}},
