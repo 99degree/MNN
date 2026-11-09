@@ -7,7 +7,7 @@
 // the float ISP domain. No uint8 packing, no per-pixel *255, no byte-order
 // ambiguity: the shader output IS the AHB layout (8 bytes per pixel).
 //
-// Uniforms (binding 0): {W, H, fullScale, gamma, ...}
+// Uniforms (binding 0): {W, H, gamma, fullScale}
 //   fullScale = numeric full-scale of the incoming frame (1.0 if the chain
 //   normalized, sensorMax e.g. 1023 if not). value / fullScale -> [0,1] which
 //   is written straight to the float16 buffer. Writing [0,1] float16 maps
@@ -21,11 +21,13 @@
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
+// Order MUST match DisplayBlock's baked const: {W, H, gamma, fullScale}.
+// [0..1] are hot-swapped with the input dims at encode (elementwise).
 layout(set = 0, binding = 0, std430) buffer Uniforms {
     float width;
     float height;
-    float fullScale;
     float gamma;
+    float fullScale;
     float pad0;
     float pad1;
     float pad2;
