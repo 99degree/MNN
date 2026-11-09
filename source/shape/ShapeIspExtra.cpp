@@ -143,16 +143,28 @@ public:
                 W = input->buffer().dim[1].extent;
                 H = input->buffer().dim[0].extent;
             }
+            // NHWC [1, H, W, 4] float16. The AHB is INTERLEAVED — one pixel is
+            // four consecutive halfs (R,G,B,A) — and the shader writes
+            // out_data[(y*W+x)*4 + k], i.e. exactly that. The only shape whose
+            // LINEAR layout equals the interleaved buffer is NHWC with C=4:
+            // element (y,x,c) sits at ((y*W+x)*4)+c. Total = H*W*4*2 = H*W*8
+            // bytes, matching both the shader's writes and the AHB import size.
+            //
+            // NCHW [1,4,H,W] would claim PLANAR layout (channel c starting at
+            // c*H*W), which the interleaved writes do not produce; and
+            // [1,1,H,W] float16 is only 2 bytes/pixel, a QUARTER of the buffer —
+            // the same under-allocation that produced the "mosaic" on the uint8
+            // path.
             output->buffer().dimensions = 4;
             output->buffer().dim[0].extent = 1;
-            output->buffer().dim[1].extent = 1;   // one packed RGBA lane per pixel
-            output->buffer().dim[2].extent = H;
-            output->buffer().dim[3].extent = W;
-            TensorUtils::getDescribe(output)->dimensionFormat = MNN_DATA_FORMAT_NCHW;
+            output->buffer().dim[1].extent = H;
+            output->buffer().dim[2].extent = W;
+            output->buffer().dim[3].extent = 4;   // RGBA float16 lanes, interleaved
+            TensorUtils::getDescribe(output)->dimensionFormat = MNN_DATA_FORMAT_NHWC;
             output->buffer().type = halide_type_t(halide_type_float, 16);
             TensorUtils::setLinearLayout(output);
             if (getenv("ISP_SHAPE_DEBUG") != nullptr) {
-                MNN_PRINT("[ShapeIspExtra] isp.display_rgba_f16 -> [1,1,%d,%d] float16 (%d bytes)\n",
+                MNN_PRINT("[ShapeIspExtra] isp.display_rgba_f16 -> [1,%d,%d,4] NHWC float16 (%d bytes)\n",
                           H, W, H * W * 8);
             }
             return true;
