@@ -1,11 +1,19 @@
 #version 450
-#extension GL_EXT_shader_explicit_arithmetic_types : require
 // isp.display_rgba_f16 — write RGBA float16 directly into an
 // AHARDWAREBUFFER_FORMAT_R16G16B16A16_FLOAT display buffer.
 //
-// One half lane per component per pixel (RGBA float16), written straight from
-// the float ISP domain. No uint8 packing, no per-pixel *255, no byte-order
-// ambiguity: the shader output IS the AHB layout (8 bytes per pixel).
+// One packed uint32 per TWO lanes: 8 bytes (four half lanes) per pixel, written
+// straight from the float ISP domain. No uint8 packing, no per-pixel *255, no
+// byte-order ambiguity: the shader output IS the AHB layout.
+//
+// WHY uint + packHalf2x16 AND NOT float16_t: a shader declaring float16_t needs
+// the Vulkan `shaderFloat16` feature enabled. When it is not, Adreno fails
+// pipeline creation, and the subsequent vkDestroyPipeline on that half-built
+// pipeline SIGSEGVs INSIDE the driver (the crash log's fault address
+// 0x3c003c003c00 is literally half-float 1.0s sitting where a pointer belongs).
+// packHalf2x16 is a CORE GLSL 450 function that needs no float16 arithmetic
+// feature and no float16 storage type — it just rounds two floats to halves and
+// packs them into a uint. So this shader runs on any Vulkan 1.0 device.
 //
 // Uniforms (binding 0): {W, H, gamma, fullScale}
 //   fullScale = numeric full-scale of the incoming frame (1.0 if the chain
@@ -16,13 +24,12 @@
 // gamma > 0 applies an extra encode (gamma==1 skips).
 //
 // In : float[1,3,H,W] NCHW planar RGB, in fullScale units.
-// Out: [1,1,H,W] float16, one RGBA pixel per 4 half lanes,
-//      LE bytes [R16,G16,B16,A16] per pixel (8 bytes/pixel).
+// Out: [1,1,H,W] uint32 x2 per pixel = LE half lanes [R16,G16,B16,A16],
+//      8 bytes per pixel. (Declared [1,H,W,4] float16 / NHWC in ShapeIspExtra —
+//      that layout is byte-identical to this write.)
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
-// Order MUST match DisplayBlock's baked const: {W, H, gamma, fullScale}.
-// [0..1] are hot-swapped with the input dims at encode (elementwise).
 layout(set = 0, binding = 0, std430) buffer Uniforms {
     float width;
     float height;
@@ -34,13 +41,8 @@ layout(set = 0, binding = 0, std430) buffer Uniforms {
     float pad3;
 } u;
 
-layout(set = 0, binding = 1) readonly buffer InBuf {
-    float in_data[];
-};
-
-layout(set = 0, binding = 2, std430) writeonly buffer OutBuf {
-    float16_t out_data[];
-};
+layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
+layout(set = 0, binding = 2, std430) writeonly buffer OutBuf { uint out_data[]; };
 
 void main() {
     uint x = gl_GlobalInvocationID.x;
@@ -69,9 +71,10 @@ void main() {
         c2 = pow(clamp(c2, 0.0, 1.0), invg);
     }
 
-    // Write RGBA float16: one lane per pixel, A=1.0.
-    out_data[idx * 4 + 0] = float16_t(c0);
-    out_data[idx * 4 + 1] = float16_t(c1);
-    out_data[idx * 4 + 2] = float16_t(c2);
-    out_data[idx * 4 + 3] = float16_t(1.0);
+    // Two uint32s per pixel => four half lanes, LE: R,G,B,A.
+    // packHalf2x16 puts the FIRST component in the low 16 bits, so the low
+    // word is [R16, G16] and the high word is [B16, A16] on a little-endian
+    // wire — exactly AHARDWAREBUFFER_FORMAT_R16G16B16A16_FLOAT.
+    out_data[idx * 2 + 0] = packHalf2x16(vec2(c0, c1));
+    out_data[idx * 2 + 1] = packHalf2x16(vec2(c2, 1.0));
 }
