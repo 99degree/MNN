@@ -18,8 +18,8 @@ layout(set = 0, binding = 0, std430) buffer Uniforms {
     float height;  // source (full-res) H
     float pad0; float pad1;
 } u;
-layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
-layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
+layout(set = 0, binding = 3) readonly  buffer InBuf  { float in_data[]; };
+layout(set = 0, binding = 4) writeonly buffer OutBuf { float out_data[]; };
 
 void main() {
     uint x = gl_GlobalInvocationID.x;   // quad column

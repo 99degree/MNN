@@ -24,9 +24,12 @@
 // VALUE MODEL (documented so the window numbers can be checked by hand):
 //
 //   base       = clamp(exposureUnits, 0, 1)      // scene level, per frame
-//   xr         = x / W                           // 0..1
-//   yr         = y / H                           // 0..1
-//   scene(x,y) = base * (0.25 + 0.75 * (0.5*xr + 0.5*yr))
+//   MODE 0 (ramp):   scene(x,y) = base * (0.25 + 0.75*(0.5*x/W + 0.5*y/H))
+//   MODE 1 (RANDOM): scene(x,y) = base * hash01(x, y, frameId)   // [0,1), every
+//                    pixel independent of its neighbours. A chain that averages,
+//                    resamples or mis-indexes cannot hide it: a broken op yields
+//                    a FLAT field, a working one a textured one. Reproducible
+//                    for a given (x,y,frame), so a window value is checkable.
 //   siteGain   = per-site gain for the Bayer site at (x,y):
 //                  Gr/Gb  1.00    R  0.62    B  0.45
 //                (green-heavy, i.e. a sensor BEFORE white balance, so the
@@ -45,7 +48,7 @@ layout(set = 0, binding = 0, std430) buffer Params {
     float exposureUnits;
     float sensorMax;
     float bayerPattern;
-    float pad0;
+    float mode;          // 0 = smooth ramp (default), 1 = per-pixel RANDOM
     float pad1;
 };
 
@@ -72,6 +75,17 @@ const int kSiteChannel[16] = int[16](
     3, 2, 1, 0    // BGGR
 );
 
+// Per-pixel hash -> [0,1). Integer mixing (the usual multiply-xor-shift), so
+// every pixel is independent of its neighbours: no ramp, no lattice, no
+// correlation for a resampler to preserve. Reproducible for a given
+// (x, y, frame), which is what makes a window value checkable by hand.
+float hash01(uint seed) {
+    uint h = seed * 747796405u + 2891336453u;
+    h = ((h >> ((h >> 28u) + 4u)) ^ h) * 277803737u;
+    h = (h >> 22u) ^ h;
+    return float(h) / 4294967296.0;
+}
+
 void main() {
     uint x = gl_GlobalInvocationID.x;
     uint y = gl_GlobalInvocationID.y;
@@ -86,7 +100,10 @@ void main() {
     float base = clamp(exposureUnits, 0.0, 1.0);
     float xr = float(x) / float(w);
     float yr = float(y) / float(h);
-    float scene = base * (0.25 + 0.75 * (0.5 * xr + 0.5 * yr));
+    bool randomMode = (mode >= 0.5);
+    float scene = randomMode
+        ? base * hash01(x * 1973u + y * 9277u + uint(frameId) * 26699u)
+        : base * (0.25 + 0.75 * (0.5 * xr + 0.5 * yr));
 
     int pat = int(bayerPattern);
     if (pat < 0) pat = 0;

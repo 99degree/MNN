@@ -23,9 +23,9 @@ layout(set = 0, binding = 0, std430) buffer Uniforms {
     float pad1;
 } u;
 
-layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
-layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
-layout(set = 0, binding = 3) readonly  buffer ParamBuf { float params[]; };
+layout(set = 0, binding = 3) readonly  buffer InBuf  { float in_data[]; };
+layout(set = 0, binding = 4) writeonly buffer OutBuf { float out_data[]; };
+layout(set = 0, binding = 5) readonly  buffer ParamBuf { float params[]; };
 
 void main() {
     uint x = gl_GlobalInvocationID.x;

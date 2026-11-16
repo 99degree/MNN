@@ -36,11 +36,11 @@ layout(set = 0, binding = 0, std430) buffer Uniforms {
     float pad1;
 } u;
 
-layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
-layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
-layout(set = 0, binding = 3) readonly  buffer WeightsBuf { float malvar_w[]; };  // [3,4,5,5]
-layout(set = 0, binding = 4) readonly  buffer DemosaicHwBuf { float demosaicHw[]; };
-layout(set = 0, binding = 5) readonly  buffer BayerPatternBuf { float bayerPattern[]; };
+layout(set = 0, binding = 3) readonly  buffer InBuf  { float in_data[]; };
+layout(set = 0, binding = 4) writeonly buffer OutBuf { float out_data[]; };
+layout(set = 0, binding = 5) readonly  buffer WeightsBuf { float malvar_w[]; };  // [3,4,5,5]
+layout(set = 0, binding = 6) readonly  buffer DemosaicHwBuf { float demosaicHw[]; };
+layout(set = 0, binding = 7) readonly  buffer BayerPatternBuf { float bayerPattern[]; };
 
 void main() {
     uint x = gl_GlobalInvocationID.x;

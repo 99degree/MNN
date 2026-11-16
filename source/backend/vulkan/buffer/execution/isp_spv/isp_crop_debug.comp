@@ -18,7 +18,7 @@ layout(set = 0, binding = 1, std430) buffer InBuf {
     float in_data[];
 };
 
-layout(set = 0, binding = 2) writeonly buffer OutBuf {
+layout(set = 0, binding = 4) writeonly buffer OutBuf {
     float out_data[];
 };
 

@@ -31,8 +31,8 @@ layout(set = 0, binding = 0, std430) buffer Uniforms {
     float bIdx;
 } u;
 
-layout(set = 0, binding = 1) readonly  buffer MeansBuf { float means[]; };
-layout(set = 0, binding = 2) writeonly buffer GainsBuf { float gains[]; };
+layout(set = 0, binding = 3) readonly  buffer MeansBuf { float means[]; };
+layout(set = 0, binding = 4) writeonly buffer GainsBuf { float gains[]; };
 
 void main() {
     if (gl_GlobalInvocationID.x != 0u || gl_GlobalInvocationID.y != 0u) return;

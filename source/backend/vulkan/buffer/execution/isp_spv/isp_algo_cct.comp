@@ -27,8 +27,8 @@ layout(set = 0, binding = 0, std430) buffer Uniforms {
     float cctMax;
 } u;
 
-layout(set = 0, binding = 1) readonly  buffer MeansBuf { float means[]; };
-layout(set = 0, binding = 2) writeonly buffer CctBuf   { float cct[]; };
+layout(set = 0, binding = 3) readonly  buffer MeansBuf { float means[]; };
+layout(set = 0, binding = 4) writeonly buffer CctBuf   { float cct[]; };
 
 void main() {
     if (gl_GlobalInvocationID.x != 0u || gl_GlobalInvocationID.y != 0u) return;

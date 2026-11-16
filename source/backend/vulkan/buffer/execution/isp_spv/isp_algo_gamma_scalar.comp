@@ -28,14 +28,14 @@ layout(set = 0, binding = 0, std430) buffer Uniforms {
     float pad2;
 } u;
 
-layout(set = 0, binding = 1) readonly  buffer AGainBuf  { float analogGain[]; };
-layout(set = 0, binding = 2) writeonly buffer GammaBuf  { float gamma[]; };
-layout(set = 0, binding = 3) readonly  buffer SceneBuf  { float sceneChange[]; };
-layout(set = 0, binding = 4) readonly  buffer GammaBaseBuf { float gammaBase[]; };
-layout(set = 0, binding = 5) readonly  buffer K1Buf     { float k1[]; };
-layout(set = 0, binding = 6) readonly  buffer K2Buf     { float k2[]; };
-layout(set = 0, binding = 7) readonly  buffer GMinBuf   { float gMin[]; };
-layout(set = 0, binding = 8) readonly  buffer GMaxBuf   { float gMax[]; };
+layout(set = 0, binding = 3) readonly  buffer AGainBuf  { float analogGain[]; };
+layout(set = 0, binding = 4) writeonly buffer GammaBuf  { float gamma[]; };
+layout(set = 0, binding = 5) readonly  buffer SceneBuf  { float sceneChange[]; };
+layout(set = 0, binding = 6) readonly  buffer GammaBaseBuf { float gammaBase[]; };
+layout(set = 0, binding = 7) readonly  buffer K1Buf     { float k1[]; };
+layout(set = 0, binding = 8) readonly  buffer K2Buf     { float k2[]; };
+layout(set = 0, binding = 9) readonly  buffer GMinBuf   { float gMin[]; };
+layout(set = 0, binding = 10) readonly  buffer GMaxBuf   { float gMax[]; };
 
 void main() {
     if (gl_GlobalInvocationID.x != 0u || gl_GlobalInvocationID.y != 0u) return;

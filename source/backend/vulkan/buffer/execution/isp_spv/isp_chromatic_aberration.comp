@@ -11,8 +11,8 @@ layout(set = 0, binding = 0, std430) buffer Uniforms {
     float k_b;
     float strength;
 } u;
-layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
-layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
+layout(set = 0, binding = 3) readonly  buffer InBuf  { float in_data[]; };
+layout(set = 0, binding = 4) writeonly buffer OutBuf { float out_data[]; };
 
 // Bilinear sampler using the globally bound InBuf (binding 1)
 float sampleIn(float x, float y, int w, int h, int c, int channels) {

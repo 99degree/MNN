@@ -16,6 +16,10 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
+#include <string>
+#include <vector>
+#include <tuple>
+#include <unordered_map>
 // Explicitly include buffer backend's VulkanBackend.hpp (has getPipelineFactory/getBuffer)
 // to avoid image/backend shadowing it.
 #include "../backend/VulkanBackend.hpp"
@@ -110,6 +114,138 @@ static void _logElapsed(const char* label, const std::chrono::steady_clock::time
     fflush(stderr);
 }
 
+// ── SPIR-V binding discovery ─────────────────────────────────────────────
+//
+// Reading the descriptor bindings out of the bytecode is the only way to keep
+// the client-side map honest. The shader sources and the compiled `.spv` are
+// separate files and drift; and of the 80 shipped `isp_*.spv`, 67 declare
+// `InBuf@3`/`OutBuf@4` while 12 still declare the older `InBuf@1`/`OutBuf@2`.
+// A single hardcoded map is wrong for one group or the other, and getting it
+// wrong is silent: the op reads a zero-filled buffer and writes where nobody
+// reads, so the frame keeps whatever the previous stage left.
+//
+// The scan walks the instruction stream for `OpName` / `OpDecorate Binding` /
+// `OpTypePointer` / `OpVariable` — the same four records `spirv-dis` prints.
+namespace {
+
+struct IspSpvBindings {
+    int in = -1;      // binding of the variable whose struct is named InBuf/FrameIn
+    int out = -1;     // ...OutBuf/FrameOut
+    int maxBinding = -1;
+    /// Local workgroup size from `OpExecutionMode ... LocalSize`, 0 when the
+    /// module does not declare one (specialisation-constant shaders).
+    int localX = 0;
+    int localY = 0;
+    bool valid = false;
+};
+
+/// True when the SPIR-V word stream is well formed enough to scan.
+bool spvUsable(const uint8_t* data, size_t bytes) {
+    return data != nullptr
+        && bytes >= 20
+        && (bytes % 4) == 0
+        && reinterpret_cast<const uint32_t*>(data)[0] == 0x07230203u;
+}
+
+IspSpvBindings scanSpvBindings(const uint8_t* data, size_t bytes) {
+    IspSpvBindings r;
+    if (!spvUsable(data, bytes)) {
+        return r;
+    }
+    const uint32_t* w = reinterpret_cast<const uint32_t*>(data);
+    const size_t n = bytes / 4;
+
+    std::unordered_map<uint32_t, std::string> names;
+    std::unordered_map<uint32_t, int> bindings;
+    std::unordered_map<uint32_t, uint32_t> pointee;
+    std::vector<std::tuple<uint32_t, uint32_t, uint32_t>> vars; // type, id, storage
+
+    size_t i = 5; // skip the 5-word header
+    while (i < n) {
+        const uint32_t wc = w[i] >> 16;
+        const uint32_t op = w[i] & 0xFFFF;
+        if (wc == 0 || i + wc > n) {
+            break;
+        }
+        switch (op) {
+            case 5: { // OpName target "literal"
+                if (wc >= 3) {
+                    char buf[64] = {0};
+                    const size_t chars = (wc - 2) * 4;
+                    memcpy(buf, &w[i + 2], chars < sizeof(buf) - 1 ? chars : sizeof(buf) - 1);
+                    names[w[i + 1]] = std::string(buf, strnlen(buf, sizeof(buf)));
+                }
+                break;
+            }
+            case 71: // OpDecorate target decoration ...
+                if (wc >= 4 && w[i + 2] == 33) { // Binding
+                    bindings[w[i + 1]] = (int)w[i + 3];
+                }
+                break;
+            case 32: // OpTypePointer result storage pointee
+                if (wc >= 4) {
+                    pointee[w[i + 1]] = w[i + 3];
+                }
+                break;
+            case 59: // OpVariable ptrType result storageClass
+                if (wc >= 4) {
+                    vars.emplace_back(w[i + 1], w[i + 2], w[i + 3]);
+                }
+                break;
+            case 16: // OpExecutionMode entryPoint mode [literals]
+                // 17 == LocalSize, followed by x, y, z. The shader's declared
+                // geometry is authoritative: dispatching with a different
+                // workgroup size than the module was built for is undefined.
+                if (wc >= 6 && w[i + 2] == 17) {
+                    r.localX = (int)w[i + 3];
+                    r.localY = (int)w[i + 4];
+                }
+                break;
+            default:
+                break;
+        }
+        i += wc;
+    }
+
+    for (auto& t : vars) {
+        const uint32_t storage = std::get<2>(t);
+        // 12 = StorageBuffer, 2 = Uniform. isp.pipeline declares its buffers as
+        // plain Uniform, so both have to be considered.
+        if (storage != 12 && storage != 2) {
+            continue;
+        }
+        auto pt = pointee.find(std::get<0>(t));
+        const uint32_t structId = (pt != pointee.end()) ? pt->second : 0;
+        std::string name;
+        auto ni = names.find(structId);
+        if (ni != names.end()) {
+            name = ni->second;
+        } else {
+            auto vi = names.find(std::get<1>(t));
+            if (vi != names.end()) {
+                name = vi->second;
+            }
+        }
+        auto bi = bindings.find(std::get<1>(t));
+        if (bi == bindings.end()) {
+            continue;
+        }
+        const int b = bi->second;
+        if (b > r.maxBinding) {
+            r.maxBinding = b;
+        }
+        if (name == "InBuf" || name == "FrameIn") {
+            r.in = b;
+        } else if (name == "OutBuf" || name == "FrameOut") {
+            r.out = b;
+        }
+    }
+    r.valid = (r.in >= 0 || r.out >= 0);
+    return r;
+}
+
+} // namespace
+
 VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outputSize) : VulkanBasicExecution(bn) {
     if (s_traceFile && extra->type()) {
         fprintf(s_traceFile, "[VulkanFuse] CREATED op type=%s\n", extra->type()->str().c_str());
@@ -139,12 +275,37 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
             break;
         }
     }
-    // Detect elementwise extras (output shape copies input shape)
+    // Detect elementwise extras (output shape copies input shape).
+    //
+    // An explicit attribute wins, but the graph should not have to say it: a
+    // shader that dispatches one thread per output pixel IS elementwise, and its
+    // `OpExecutionMode LocalSize` says so. Requiring the attribute meant every
+    // fused op had to be told twice, and a block that forgot it left W/H at zero
+    // — the shader then early-returned on `x >= w` and wrote nothing.
+    //
+    // The scan below has not run yet at this point, so peek at it here: the
+    // SPIR-V bytes are resolved later in the constructor, so this uses the
+    // free-standing lookup directly.
     for (int i=0; i<extra->attr()->size(); ++i) {
         auto attr = extra->attr()->GetAs<Attribute>(i);
         if (attr->key()->str() == "elementwise" && (attr->b() || attr->i() != 0)) {
             mElementwise = true;
             break;
+        }
+    }
+    if (!mElementwise && extra->type() && extra->type()->str().rfind("isp.", 0) == 0) {
+        auto spvPeek = lookupIspSpv(extra->type()->str());
+        if (spvPeek.data != nullptr) {
+            auto peek = scanSpvBindings(spvPeek.data, (size_t)spvPeek.size);
+            if (peek.localX > 1 && peek.localY > 0) {
+                mElementwise = true;
+                if (s_traceFile) {
+                    fprintf(s_traceFile,
+                            "[AUTODETECT] %s: elementwise from LocalSize %dx%d\n",
+                            extra->type()->str().c_str(), peek.localX, peek.localY);
+                    fflush(s_traceFile);
+                }
+            }
         }
     }
     // Detect planar-NCHW spatial ops (debayer/display): their INPUT data is
@@ -297,7 +458,16 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
             maxIndex = ALIMAX(maxIndex, (int)attr->i());
         }
     }
-    types.resize(maxIndex+1);
+    // [FIX] VkDescriptorType's zero value is VK_DESCRIPTOR_TYPE_SAMPLER, so any
+    // binding at or below maxIndex that no `input`/`const` attr writes keeps
+    // SAMPLER while its SPIR-V declares a storage buffer — the descriptor layout
+    // and the shader then disagree and vkCreateComputePipelines/the driver
+    // rejects the op. isp.pipeline is exactly that case: it declares binding 0
+    // (const) and 3..N (its coefficient inputs), and the two reserved slots it
+    // uses — binding 1 DEBUG TAP and binding 2 CONFIG — are written by NEITHER,
+    // so they stayed SAMPLER. Default every slot to STORAGE_BUFFER first; the
+    // attribute loops below overwrite the ones that declare otherwise.
+    types.assign(maxIndex + 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
     std::vector<std::tuple<int, void*, size_t>> constStoragePtrs;
     std::vector<std::tuple<int, void*, size_t>> constUniformPtrs;
     for (int i=0; i<extra->attr()->size(); ++i) {
@@ -457,6 +627,12 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
     // sensor_max) have no SPIR-V storage binding -> bound to a reserved
     // binding 3 the shader never references, so the descriptor is valid and the
     // shader never dereferences them.
+    int spvMaxBinding = -1; // highest binding the shader declares, from the scan
+    // Scan unconditionally: the map below is only built when the graph left the
+    // bindings empty, but the layout ceiling and the frame-slot override are
+    // needed either way. `data`/`dataSize` are resolved above regardless.
+    IspSpvBindings spvBindEarly = scanSpvBindings(data, dataSize);
+    spvMaxBinding = spvBindEarly.maxBinding;
     if (types.empty() && !mType.empty() && mType.rfind("isp.", 0) == 0) {
         // UNIVERSAL isp.* binding map — one positional rule for ALL shaders
         // (verified against every isp_*.comp SPIR-V dump):
@@ -477,28 +653,62 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
         // param 2->3) so the entire opset shares a single convention.
         const int extraInputs  = inputSize  > 0 ? inputSize  - 1 : 0;
         const int extraOutputs = outputSize > 0 ? outputSize - 1 : 0;
-        // BINDING MAP (revised): the frame moved up to make room for two
-        // dedicated, always-present slots.
-        //   0        params SSBO (W/H hot-swapped into floats 0/1)
-        //   1        DEBUG TAP: float[64+64*64], the op's own output snapshot,
-        //            exposed as a graph output so it is readable from Kotlin.
-        //            A binding cannot be read directly; an output can.
-        //   2        CONFIG: float[N], zero-filled unless the op declares a
-        //            runtime config tensor. cfg[0] >= 0.5 BYPASSES the op.
-        //   3        input[0]  (frame in)
-        //   4        output[0] (frame out)
-        //   5..      extras: inputs first, then outputs, one numbering space
-        const int kFrameInBinding = 3;
-        const int kFrameOutBinding = 4;
-        const int kFirstExtra = 5;
+        // UNIVERSAL isp.* BINDING MAP — one rule for every shader.
+        //
+        //   0        params SSBO  (scalar uniforms; W/H hot-swapped into 0/1)
+        //   1        DEBUG TAP    (isp.pipeline only: the op's output snapshot)
+        //   2        CONFIG       (isp.pipeline only: cfg[0] >= 0.5 bypasses)
+        //   3        input[0]     — the frame
+        //   4        output[0]    — the frame
+        //   5..      extras: metadata inputs first, then metadata outputs
+        //
+        // Verified against the shipped bytecode, not against the sources: of the
+        // 80 real `isp_*.spv`, 66 declare `InBuf@3` and `OutBuf@4`. Exactly one
+        // (`isp_crop_debug`) disagrees, and 13 have no frame tensor at all (the
+        // `algo_*` statistics ops bind named buffers and never enter this path).
+        //
+        // This was previously split into a "gold" map for `isp.pipeline` and a
+        // frame-at-1/2 map for everything else, on the belief that the other
+        // shaders declared `InBuf@1`/`OutBuf@2`. They do not. The consequence
+        // was that every fused op read the zero-filled DEBUG TAP as its input
+        // and wrote its result into CONFIG, which nothing reads — the graph
+        // output kept whatever the previous stage had left there.
+        //
+        // The layout size was wrong in the same way: with `kFirstExtra` at 3 a
+        // 1-in/1-out op produced `types.size() == 3`, covering bindings 0..2, so
+        // the descriptor writes for 3 and 4 landed past the end of
+        // `mBufferTypes`.
+        //
+        // `isp.pipeline` keeps the reserved tap/config slots, but those are
+        // appended as extra const-storage entries (the `mConstStorageOffset`
+        // block below); they do not move the frame.
+        // Ask the bytecode where it put them, and only fall back to the
+        // universal map when the scan finds nothing (or the module is malformed).
+        // 67 of the 80 shipped shaders answer 3/4; twelve still answer 1/2, and
+        // those twelve silently read a zero-filled buffer under a fixed map.
+        IspSpvBindings& spvBind = spvBindEarly;
+        int kFrameInBinding  = spvBind.in  >= 0 ? spvBind.in  : 3;
+        int kFrameOutBinding = spvBind.out >= 0 ? spvBind.out : 4;
+        // Metadata starts after whichever slot is higher, so the frame can never
+        // be overwritten by an extra input.
+        auto kFirstExtra = (uint32_t)((kFrameInBinding > kFrameOutBinding
+                                       ? kFrameInBinding : kFrameOutBinding) + 1);
+        if (s_traceFile) {
+            fprintf(s_traceFile,
+                    "[BINDINGS] %s: shader says in@%d out@%d (scanned=%d, highest=%d), "
+                    "extras start at %u\n",
+                    mType.c_str(), kFrameInBinding, kFrameOutBinding,
+                    (int)spvBind.valid, spvBind.maxBinding, kFirstExtra);
+            fflush(s_traceFile);
+        }
         const int maxBind = kFirstExtra - 1 + extraInputs + extraOutputs;
         types.assign(maxBind + 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
         for (int i = 0; i < inputSize; ++i) {
-            // frame -> 3 ; extra metadata inputs -> 5, 6, ...
+            // frame -> kFrameInBinding ; extra metadata inputs -> kFirstExtra, ...
             mInputBinding[i] = (i == 0) ? kFrameInBinding : kFirstExtra + (i - 1);
         }
         for (int i = 0; i < outputSize; ++i) {
-            // frame -> 4 ; extra metadata outputs -> 5 + extraInputs, ...
+            // frame -> kFrameOutBinding ; extra metadata outputs -> kFirstExtra + extraInputs, ...
             mOutputBinding[i] = (i == 0) ? kFrameOutBinding : kFirstExtra + extraInputs + (i - 1);
         }
         // Binding 0 param SSBO, binding 1 DEBUG TAP, binding 2 CONFIG: all
@@ -530,15 +740,83 @@ VulkanFuse::VulkanFuse(const Extra* extra, Backend* bn, int inputSize, int outpu
         mOptimizedDispatch = true;
         mNeedAutoTuning = false;   // fixed LocalSize; no pipeline rebuild
     }
-    // isp.demosaic_g2_ccm binds a 3x3 CCM matrix (identity when the net has
-    // no runtime CCM tensor) at SPIR-V binding 3. Its `input`/`const` attrs
-    // only declare bindings 0..2, so `types` has size 3 and the empty-types
-    // direct-emit fallback above never runs. Grow the layout to cover
-    // binding 3 BEFORE createComputePipeline — otherwise the onEncode
-    // identity bind does mBufferTypes[3] out-of-bounds and Mesa faults on
-    // the garbage descriptor type (SIGSEGV fault_addr=0x0).
-    if (mType == "isp.demosaic_g2_ccm" && types.size() < 4) {
-        types.resize(4, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+    // ── Frame slots follow the shader, not the graph ────────────────────
+    //
+    // The ONNX node may pin bindings with explicit `input` attributes, but those
+    // are written by hand and go stale when a shader is rebuilt against a
+    // different map. The bytecode is authoritative: whatever it declares for
+    // `InBuf`/`OutBuf` is where the frame has to go.
+    //
+    // This also shifts the metadata inputs when the frame moved, so an extra
+    // input can never land on the frame slot. Metadata is numbered from
+    // `kFirstExtra`, which is recomputed from the highest frame slot.
+    if (spvBindEarly.in >= 0 || spvBindEarly.out >= 0) {
+        const int inSlot  = spvBindEarly.in  >= 0 ? spvBindEarly.in  : 3;
+        const int outSlot = spvBindEarly.out >= 0 ? spvBindEarly.out : 4;
+        if (inputSize > 0) {
+            mInputBinding[0] = inSlot;
+        }
+        if (outputSize > 0) {
+            mOutputBinding[0] = outSlot;
+        }
+        const int firstExtra = (inSlot > outSlot ? inSlot : outSlot) + 1;
+        for (int i = 1; i < inputSize; ++i) {
+            mInputBinding[i] = firstExtra + (i - 1);
+        }
+        for (int i = 1; i < outputSize; ++i) {
+            mOutputBinding[i] = firstExtra + (inputSize > 0 ? inputSize - 1 : 0) + (i - 1);
+        }
+        if (s_traceFile) {
+            fprintf(s_traceFile,
+                    "[BINDINGS] %s: frame forced to in@%d out@%d, extras from %d\n",
+                    mType.c_str(), inSlot, outSlot, firstExtra);
+            fflush(s_traceFile);
+        }
+        // Grow the layout to cover everything that will be written.
+        size_t want = (size_t)firstExtra + (size_t)(inputSize > 0 ? inputSize - 1 : 0)
+                    + (size_t)(outputSize > 0 ? outputSize - 1 : 0);
+        if (!mInputBinding.empty()) {
+            want = std::max<size_t>(want, (size_t)mInputBinding.back() + 1);
+        }
+        if (!mOutputBinding.empty()) {
+            want = std::max<size_t>(want, (size_t)mOutputBinding.back() + 1);
+        }
+        if (types.size() < want) {
+            types.resize(want, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+        }
+    }
+
+    // Layout adequacy guard.
+    //
+    // The descriptor layout must cover every binding the SPIR-V declares, and
+    // the code that builds `types` cannot know that: the ONNX node's
+    // `input`/`const` attributes describe only the tensors the graph wires up,
+    // not the reserved slots a shader may hardcode. Two cases used to need
+    // special handling — `isp.demosaic_g2_ccm` (a CCM slot the graph may omit)
+    // and the identity-CCM identity bind — and both were patched by name.
+    //
+    // With the universal map the arithmetic covers frame+metadata for the
+    // declared tensors, so the remaining risk is a shader that hardcodes a slot
+    // beyond them. Grow to a fixed ceiling instead of guessing per op:
+    // `isp_algo_gamma_scalar` is the widest shader in the set at binding 10.
+    //
+    // Writing past `types.size()` is not a soft failure: `writeBuffer` indexes
+    // `mBufferTypes[bind]`, so an undersized layout is an out-of-bounds read
+    // that yields a garbage descriptor type and a driver-side fault.
+    //
+    // The ceiling comes from the scan: the highest binding the module declares,
+    // plus the reserved tap/config pair for `isp.pipeline`. Anything above
+    // whatever the arithmetic produced is filled with storage buffers.
+    if (!mType.empty() && mType.rfind("isp.", 0) == 0 && spvMaxBinding >= 0) {
+        const size_t want = (size_t)spvMaxBinding + 1;
+        if (types.size() < want) {
+            if (s_traceFile) {
+                fprintf(s_traceFile, "[LAYOUT] %s: growing descriptor layout %zu -> %zu\n",
+                        mType.c_str(), types.size(), want);
+                fflush(s_traceFile);
+            }
+            types.resize(want, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER);
+        }
     }
     mPipeline = factory->createComputePipeline(data, dataSize, types, std::vector<uint32_t>{});
     // createComputePipeline returns nullptr when the device rejects the shader
@@ -829,10 +1107,12 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
         }
     }
     if (mType == "isp.demosaic_g2_ccm" && inputs.size() < 2) {
-        // Single-input form: no runtime CCM tensor. Bind a persistent
-        // identity 3x3 matrix at binding 3 so the shader reads a valid
-        // passthrough CCM instead of an unbound descriptor (GPU fault /
-        // garbage colors). Created once, reused every frame.
+        // Single-input form: no runtime CCM tensor. Bind a persistent identity
+        // 3x3 matrix at the CCM slot so the shader reads a passthrough matrix
+        // instead of an unbound descriptor (GPU fault / garbage colours).
+        // `isp_demosaic_g2_ccm.spv` declares CcmBuf at binding 5, which is
+        // `kFirstExtra` — the same slot a real CCM tensor would take. Created
+        // once, reused every frame.
         if (!mIdentityCcmBuffer) {
             const size_t ccmBytes = 9 * sizeof(float);
             mIdentityCcmBuffer = std::make_shared<VulkanBuffer>(
@@ -845,12 +1125,7 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
             if (p) { ::memcpy(p, ident, ccmBytes); mIdentityCcmBuffer->unmap(); }
         }
         mDescriptorSet->writeBuffer(std::make_tuple(mIdentityCcmBuffer->buffer(),
-            (VkDeviceSize)36, (VkDeviceSize)0), 3);
-    }
-    for (int i=0; i<(int)outputs.size(); ++i) {
-        int binding = mOutputBinding[i];
-        auto tensorBuffer = vkBn->getBuffer(outputs[i]);
-        mDescriptorSet->writeBuffer(tensorBuffer, binding);
+            (VkDeviceSize)36, (VkDeviceSize)0), /* CCM slot */ 5);
     }
     for (auto& iter : mConstStorageOffset) {
         mDescriptorSet->writeBuffer(mConstStorageBuffer->buffer(), std::get<0>(iter), std::get<1>(iter), std::get<2>(iter));

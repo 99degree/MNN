@@ -30,10 +30,10 @@ layout(set = 0, binding = 0, std430) buffer Uniforms {
     float ln2;
 } u;
 
-layout(set = 0, binding = 1) readonly  buffer StatsBuf  { float stats[]; };
-layout(set = 0, binding = 2) writeonly buffer GainBuf   { float gain[]; };
-layout(set = 0, binding = 3) writeonly buffer LumBuf    { float lum[]; };
-layout(set = 0, binding = 4) writeonly buffer TargetBuf { float tgt[]; };
+layout(set = 0, binding = 3) readonly  buffer StatsBuf  { float stats[]; };
+layout(set = 0, binding = 4) writeonly buffer GainBuf   { float gain[]; };
+layout(set = 0, binding = 5) writeonly buffer LumBuf    { float lum[]; };
+layout(set = 0, binding = 6) writeonly buffer TargetBuf { float tgt[]; };
 
 void main() {
     if (gl_GlobalInvocationID.x != 0u || gl_GlobalInvocationID.y != 0u) return;

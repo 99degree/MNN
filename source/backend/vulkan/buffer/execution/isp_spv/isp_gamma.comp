@@ -22,14 +22,14 @@ layout(set = 0, binding = 0, std430) buffer Uniforms {
     float pad1;
 } u;
 
-layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
-layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
-layout(set = 0, binding = 3) readonly  buffer ParamBuf { float params[]; };
+layout(set = 0, binding = 3) readonly  buffer InBuf  { float in_data[]; };
+layout(set = 0, binding = 4) writeonly buffer OutBuf { float out_data[]; };
+layout(set = 0, binding = 5) readonly  buffer ParamBuf { float params[]; };
 // binding 4 = TONE_SHADOW_LIFT (fed when the block enables lift). Same S-curve
 // term ToneBlock applies in ONNX: lifted = v + lift * (1 - v)^2. Declared here
 // because GammaBlock's `useLift` path binds it and the shader previously
 // ignored it.
-layout(set = 0, binding = 4) readonly  buffer LiftBuf { float liftv[]; };
+layout(set = 0, binding = 6) readonly  buffer LiftBuf { float liftv[]; };
 
 void main() {
     uint x = gl_GlobalInvocationID.x;

@@ -76,8 +76,18 @@ def shader_base(symbol):
 
 
 def resolve_comp(base):
-    """Prefer the exact <base>.comp; fall back to g_<base>.comp."""
-    for cand in (base + ".comp", "g_" + base + ".comp"):
+    """Prefer the exact <base>.comp; fall back to g_<base>.comp.
+
+    One shader predates the underscore convention: its files are named
+    `isp.display_rgba_f16.*`, with a dot, because the op type contains one. The
+    symbol is `g_isp_display_rgba_f16_spv`, so `base` comes back underscored and
+    the exact match misses. Trying the dot form as well keeps that shader on its
+    original filenames instead of needing a duplicate copy.
+    """
+    candidates = [base + ".comp", "g_" + base + ".comp"]
+    dotted = base.replace("isp_", "isp.", 1)
+    candidates += [dotted + ".comp", "g_" + dotted + ".comp"]
+    for cand in candidates:
         p = os.path.join(HERE, cand)
         if os.path.exists(p):
             return p
