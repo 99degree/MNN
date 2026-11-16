@@ -207,7 +207,8 @@ if [ "$BUILD_MULTI" = true ]; then
         -DMNN_BUILD_FOR_ANDROID=ON \
         -DMNN_USE_OPENCV=ON \
         -DOPENCV_ANDROID_SDK="$OPENCV_ANDROID_SDK" \
-        -DCMAKE_VERBOSE_MAKEFILE="$VERBOSE"
+        -DCMAKE_VERBOSE_MAKEFILE="$VERBOSE" \
+        -DANDROID_USE_LEGACY_TOOLCHAIN_FILE=ON
     
     # Build
     echo -e "${BLUE}Building MNNCLI for multiple architectures...${NC}"
@@ -242,7 +243,8 @@ else
         -DMNN_BUILD_FOR_ANDROID=ON \
         -DMNN_USE_OPENCV=ON \
         -DOPENCV_ANDROID_SDK="$OPENCV_ANDROID_SDK" \
-        -DCMAKE_VERBOSE_MAKEFILE="$VERBOSE"
+        -DCMAKE_VERBOSE_MAKEFILE="$VERBOSE" \
+        -DANDROID_USE_LEGACY_TOOLCHAIN_FILE=ON
     
     # Build
     echo -e "${BLUE}Building MNNCLI for $TARGET_ARCH...${NC}"

@@ -97,7 +97,8 @@ if [ ! -z "$MNN_TAG" ]; then
               -DMNN_DEBUG:BOOL=OFF \
               -DMNN_BUILD_BENCHMARK:BOOL=ON \
               -DMNN_BUILD_FOR_ANDROID_COMMAND=true \
-              -DNATIVE_LIBRARY_OUTPUT=.
+              -DNATIVE_LIBRARY_OUTPUT=. \
+              -DANDROID_USE_LEGACY_TOOLCHAIN_FILE=ON
             make -j benchmark.out
             popd
         fi
@@ -120,7 +121,8 @@ if [ ! -z "$MNN_TAG" ]; then
                   -DMNN_DEBUG:BOOL=OFF \
                   -DMNN_BUILD_BENCHMARK:BOOL=ON \
                   -DMNN_BUILD_FOR_ANDROID_COMMAND=true \
-                  -DNATIVE_LIBRARY_OUTPUT=.
+                  -DNATIVE_LIBRARY_OUTPUT=. \
+                  -DANDROID_USE_LEGACY_TOOLCHAIN_FILE=ON
             make -j benchmark.out
             popd
         fi

@@ -116,7 +116,8 @@ cmake -DCMAKE_TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake" 
     -DSHERPA_MNN_ENABLE_C_API=$SHERPA_MNN_ENABLE_C_API \
     -DCMAKE_INSTALL_PREFIX=./install \
     -DANDROID_ABI="arm64-v8a" \
-    -DANDROID_PLATFORM=android-21 ..
+    -DANDROID_PLATFORM=android-21 \
+    -DANDROID_USE_LEGACY_TOOLCHAIN_FILE=ON ..
 
     # By default, it links to libc++_static.a
     # -DANDROID_STL=c++_shared \

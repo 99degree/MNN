@@ -5,7 +5,7 @@ set -e
 # 1. Build native test
 cd "$(dirname "$0")"
 mkdir -p build_test && cd build_test
-cmake ../.. -DBUILD_TESTING=ON -DBUILD_ANDROID=ON -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-21
+cmake ../.. -DBUILD_TESTING=ON -DBUILD_ANDROID=ON -DCMAKE_TOOLCHAIN_FILE=$ANDROID_NDK_HOME/build/cmake/android.toolchain.cmake -DANDROID_ABI=arm64-v8a -DANDROID_PLATFORM=android-21 -DANDROID_USE_LEGACY_TOOLCHAIN_FILE=ON
 make mnn_tts_test
 
 # 2. Find generated so and test executable

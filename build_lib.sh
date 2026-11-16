@@ -346,6 +346,7 @@ if [ "$BUILD_ANDROID" = true ]; then
         -DMNN_BUILD_FOR_ANDROID_COMMAND=true \
         -DNATIVE_LIBRARY_OUTPUT=. \
         -DNATIVE_INCLUDE_OUTPUT=. \
+        -DANDROID_USE_LEGACY_TOOLCHAIN_FILE=ON \
         > /dev/null
 
     make -j4 MNN > /dev/null
@@ -381,6 +382,7 @@ if [ "$BUILD_ANDROID" = true ]; then
         -DMNN_BUILD_FOR_ANDROID_COMMAND=true \
         -DNATIVE_LIBRARY_OUTPUT=. \
         -DNATIVE_INCLUDE_OUTPUT=. \
+        -DANDROID_USE_LEGACY_TOOLCHAIN_FILE=ON \
         > /dev/null
 
     make -j4 MNN > /dev/null

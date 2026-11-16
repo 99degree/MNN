@@ -93,7 +93,8 @@ if [ ! -f "$EXEC" ] || [ "$FORCE_BUILD" = true ]; then
         -DMNN_IMGCODECS=ON \
         -DMNN_BUILD_OPENCV=ON \
         -DMNN_OPENCL=ON \
-        -DMNN_SEP_BUILD=OFF > build.log 2>&1
+        -DMNN_SEP_BUILD=OFF \
+        -DANDROID_USE_LEGACY_TOOLCHAIN_FILE=ON > build.log 2>&1
     
     make -j8 >> build.log 2>&1
     cd "$SCRIPT_DIR"

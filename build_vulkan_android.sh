@@ -1,62 +1,72 @@
 #!/data/data/com.termux/files/usr/bin/bash
 set -e
 
-# Android Vulkan build script for MNN (using Android NDK)
-# Usage: ./build_vulkan_android.sh [BUILD_DIR] [ANDROID_ABI] [ANDROID_API_LEVEL] [BUILD_CONVERTER] [ANDROID_NDK]
+# Android Vulkan build script for MNN (using Termux native clang)
+# Usage: ./build_vulkan_android.sh [BUILD_DIR] [ANDROID_ABI] [ANDROID_API_LEVEL] [BUILD_CONVERTER]
 
 BUILD_DIR="${1:-build_isp}"
 ANDROID_ABI="${2:-arm64-v8a}"
 ANDROID_API_LEVEL="${3:-android-21}"
 BUILD_CONVERTER="${4:-ON}"
-ANDROID_NDK="${5:-$ANDROID_NDK}"
 
-if [ -z "$ANDROID_NDK" ]; then
-    echo "Error: ANDROID_NDK environment variable not set and not provided as argument"
-    echo "Usage: $0 [BUILD_DIR] [ANDROID_ABI] [ANDROID_API_LEVEL] [BUILD_CONVERTER] [ANDROID_NDK]"
-    echo "Example: $0 build_isp arm64-v8a android-21 ON ~/android-sdk/ndk/29.0.14206865"
-    exit 1
-fi
+# Termux native clang targets aarch64-unknown-linux-android24 by default
+# Extract API level from ANDROID_API_LEVEL (e.g., android-21 -> 21)
+API_LEVEL="${ANDROID_API_LEVEL#android-}"
 
-# Expand tilde in NDK path
-ANDROID_NDK="${ANDROID_NDK/#\~/$HOME}"
-
-if [ ! -d "$ANDROID_NDK" ]; then
-    echo "Error: NDK path does not exist: $ANDROID_NDK"
-    exit 1
-fi
-
-TOOLCHAIN_FILE="$ANDROID_NDK/build/cmake/android.toolchain.cmake"
-if [ ! -f "$TOOLCHAIN_FILE" ]; then
-    echo "Error: Android toolchain file not found: $TOOLCHAIN_FILE"
+# Map ABI to target triple
+if [ "$ANDROID_ABI" = "armeabi-v7a" ]; then
+    TARGET_TRIPLE="armv7a-linux-androideabi${API_LEVEL}"
+    ANDROID_STL="c++_static"
+    ARM82="OFF"
+elif [ "$ANDROID_ABI" = "arm64-v8a" ]; then
+    TARGET_TRIPLE="aarch64-linux-android${API_LEVEL}"
+    ANDROID_STL="c++_static"
+    ARM82="ON"
+elif [ "$ANDROID_ABI" = "x86" ]; then
+    TARGET_TRIPLE="i686-linux-android${API_LEVEL}"
+    ANDROID_STL="c++_static"
+    ARM82="OFF"
+elif [ "$ANDROID_ABI" = "x86_64" ]; then
+    TARGET_TRIPLE="x86_64-linux-android${API_LEVEL}"
+    ANDROID_STL="c++_static"
+    ARM82="OFF"
+else
+    echo "Unsupported ABI: $ANDROID_ABI"
     exit 1
 fi
 
 cd "$(dirname "$0")"
 
-echo "Building MNN with Vulkan for Android"
+echo "Building MNN with Vulkan for Android (Termux native clang)"
 echo "  Build Dir: $BUILD_DIR"
 echo "  ABI: $ANDROID_ABI"
-echo "  API Level: $ANDROID_API_LEVEL"
-echo "  NDK: $ANDROID_NDK"
-
-# Set STL based on ABI
-if [ "$ANDROID_ABI" = "armeabi-v7a" ]; then
-    ANDROID_STL="c++_static"
-    ARM82="OFF"
-else
-    ANDROID_STL="c++_static"
-    ARM82="ON"
-fi
+echo "  Target: $TARGET_TRIPLE"
 
 mkdir -p "$BUILD_DIR"
 cd "$BUILD_DIR"
 
-# Use Android NDK toolchain with legacy toolchain file (newer toolchain requires newer CMake)
-export ANDROID_USE_LEGACY_TOOLCHAIN_FILE=ON
+# Use Termux native clang with explicit target
+export CC="/data/data/com.termux/files/usr/bin/clang"
+export CXX="/data/data/com.termux/files/usr/bin/clang++"
+export AS="/data/data/com.termux/files/usr/bin/clang"
+export AR="/data/data/com.termux/files/usr/bin/llvm-ar"
+export RANLIB="/data/data/com.termux/files/usr/bin/llvm-ranlib"
+export STRIP="/data/data/com.termux/files/usr/bin/llvm-strip"
+
+# Set target flags via CFLAGS/CXXFLAGS - Termux clang needs -target
+export CFLAGS="--target=$TARGET_TRIPLE -fPIC"
+export CXXFLAGS="--target=$TARGET_TRIPLE -fPIC"
 
 cmake .. \
-    -DCMAKE_TOOLCHAIN_FILE="$TOOLCHAIN_FILE" \
-    -DCMAKE_BUILD_TYPE=Release \
+    -DCMAKE_C_COMPILER="$CC" \
+    -DCMAKE_CXX_COMPILER="$CXX" \
+    -DCMAKE_ASM_COMPILER="$AS" \
+    -DCMAKE_AR="$AR" \
+    -DCMAKE_RANLIB="$RANLIB" \
+    -DCMAKE_STRIP="$STRIP" \
+    -DCMAKE_SYSTEM_NAME=Android \
+    -DCMAKE_SYSTEM_VERSION=21 \
+    -DCMAKE_ANDROID_ARCH_ABI="$ANDROID_ABI" \
     -DANDROID_ABI="$ANDROID_ABI" \
     -DANDROID_STL="$ANDROID_STL" \
     -DANDROID_NATIVE_API_LEVEL="$ANDROID_API_LEVEL" \
