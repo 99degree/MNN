@@ -49,6 +49,12 @@ extern const int g_isp_raw_blc_spv_len;
 extern const int g_isp_crop_blc_spv_len;
 extern const unsigned char g_isp_cfa_spv[];
 extern const int g_isp_cfa_spv_len;
+// isp.unpack_blc — normalize + BLC + quad unpack in one dispatch.
+extern const unsigned char g_isp_unpack_blc_spv[];
+extern const int g_isp_unpack_blc_spv_len;
+// isp.unpack_blc_normal_cfa — normalize + BLC + quad unpack, CFA-aware.
+extern const unsigned char g_isp_unpack_blc_normal_cfa_spv[];
+extern const int g_isp_unpack_blc_normal_cfa_spv_len;
 extern const unsigned char g_isp_bad_pixel_lsc_bayer_wb_spv[];
 extern const int g_isp_bad_pixel_lsc_bayer_wb_spv_len;
 extern const unsigned char g_isp_crop_blc_norm_cfa_spv[];
@@ -164,6 +170,8 @@ extern const unsigned char g_isp_zone_stats_spv[];
 extern const int g_isp_zone_stats_spv_len;
 
 // MINIMAL opset shaders (procedural, no large tensor inputs)
+extern const unsigned char g_isp_cfa_downscale_spv[];
+extern const int g_isp_cfa_downscale_spv_len;
 extern const unsigned char g_isp_lsc_min_spv[];
 extern const int g_isp_lsc_min_spv_len;
 extern const unsigned char g_isp_vignetting_min_spv[];
@@ -209,6 +217,8 @@ static const std::unordered_map<std::string, SpvData> g_ispSpvMap = {
     {"isp.pattern",      {g_isp_pattern_spv,      g_isp_pattern_spv_len}},
     {"isp.raw_blc",      {g_isp_raw_blc_spv,       g_isp_raw_blc_spv_len}},
     {"isp.cfa",         {g_isp_cfa_spv,          g_isp_cfa_spv_len}},
+    {"isp.unpack_blc",  {g_isp_unpack_blc_spv,   g_isp_unpack_blc_spv_len}},
+    {"isp.unpack_blc_normal_cfa", {g_isp_unpack_blc_normal_cfa_spv, g_isp_unpack_blc_normal_cfa_spv_len}},
     {"isp.bad_pixel_lsc_bayer_wb", {g_isp_bad_pixel_lsc_bayer_wb_spv, g_isp_bad_pixel_lsc_bayer_wb_spv_len}},
     {"isp.demosaic_g2",  {g_isp_demosaic_g2_spv,   g_isp_demosaic_g2_spv_len}},
     {"isp.demosaic_rgbg", {g_isp_demosaic_rgbg_spv, g_isp_demosaic_rgbg_spv_len}},
@@ -255,6 +265,7 @@ static const std::unordered_map<std::string, SpvData> g_ispSpvMap = {
     {"isp.hdr_merge",   {g_isp_hdr_merge_spv,    g_isp_hdr_merge_spv_len}},
     {"isp.ldci",        {g_isp_ldci_spv,         g_isp_ldci_spv_len}},
     {"isp.lsc",         {g_isp_lsc_spv,          g_isp_lsc_spv_len}},
+    {"isp.cfa_downscale",   {g_isp_cfa_downscale_spv,     g_isp_cfa_downscale_spv_len}},
     {"isp.lsc_min",         {g_isp_lsc_min_spv,           g_isp_lsc_min_spv_len}},
     {"isp.vignetting_min",    {g_isp_vignetting_min_spv,    g_isp_vignetting_min_spv_len}},
     {"isp.chromatic_aberration_min", {g_isp_chromatic_aberration_min_spv, g_isp_chromatic_aberration_min_spv_len}},

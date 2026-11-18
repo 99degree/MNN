@@ -522,6 +522,35 @@ public:
             TensorUtils::setLinearLayout(output);
             return true;
         }
+        if (type == "isp.unpack_blc" || type == "isp.unpack_blc_normal_cfa") {
+            // Fused Normalize + BLC + CFA unpack: packed [1,1,H,W/2] INT32 ->
+            // Bayer quad [1,4,H/2,W/2] float.
+            //
+            // Without this rule the generic fallback keeps the *input* shape, so
+            // downstream ops infer from a 1-channel full-height tensor instead of
+            // a 4-channel half-height one. That mismatch is what makes session
+            // creation fail — and it fails by faulting inside MNN rather than by
+            // returning an error.
+            auto input  = inputs[0];
+            auto output = outputs[0];
+            int dims = input->buffer().dimensions;
+            if (dims < 4) return false;
+            int H  = input->buffer().dim[dims - 2].extent;
+            int W2 = input->buffer().dim[dims - 1].extent; // packed words per row
+            // Dims can still be dynamic ([1,1,-1,-1]) this early; keep the tensor
+            // 4-channel either way rather than copying the input shape.
+            const int outH = (H > 0) ? (H / 2) : H;
+            const int outW = (W2 > 0) ? W2 : W2;
+            output->buffer().dimensions     = 4;
+            output->buffer().dim[0].extent  = 1;
+            output->buffer().dim[1].extent  = 4;
+            output->buffer().dim[2].extent  = outH;
+            output->buffer().dim[3].extent  = outW;
+            TensorUtils::getDescribe(output)->dimensionFormat = MNN_DATA_FORMAT_NCHW;
+            output->buffer().type = halide_type_of<float>();
+            TensorUtils::setLinearLayout(output);
+            return true;
+        }
         if (type == "isp.lsc") {
             // isp.lsc: lens shading correction, same spatial dims, same channels
             // as input (multiplies per-pixel gain)
@@ -593,6 +622,51 @@ public:
                 output->buffer().type = dt;
                 TensorUtils::setLinearLayout(output);
             }
+            return true;
+        }
+        if (type == "isp.cfa_downscale") {
+            // Statistics downscale: the four CFA planes reduced to a smaller grid,
+            // plane count unchanged.
+            //
+            // Reads its target from an int32[2] `downscale_out` attribute, the same
+            // contract isp.downscale uses, so the emitter states the geometry once
+            // and the graph boundary is fixed at build time.
+            auto input  = inputs[0];
+            auto output = outputs[0];
+            int dims = input->buffer().dimensions;
+            if (dims < 4) return false;
+            int C = input->buffer().dim[dims - 3].extent;
+            int inW = input->buffer().dim[dims - 1].extent;
+            int inH = input->buffer().dim[dims - 2].extent;
+            int outW = 0, outH = 0;
+            if (extra != nullptr && extra->attr() != nullptr) {
+                for (int i = 0; i < extra->attr()->size(); ++i) {
+                    auto* a = extra->attr()->GetAs<Attribute>(i);
+                    if (a == nullptr || a->key() == nullptr) continue;
+                    if (a->key()->str() == "downscale_out") {
+                        if (a->list() && a->list()->i() && a->list()->i()->size() >= 2) {
+                            auto d = a->list()->i();
+                            outW = d->data()[0]; outH = d->data()[1];
+                        }
+                    }
+                }
+            }
+            if (outW <= 0 || outH <= 0) {
+                outW = inW > 0 ? inW / 4 : 0;
+                outH = inH > 0 ? inH / 4 : 0;
+            }
+            if (C <= 0 || outW <= 0 || outH <= 0) {
+                TensorUtils::copyShape(input, output, true);
+                return true;
+            }
+            output->buffer().dimensions = 4;
+            output->buffer().dim[0].extent = 1;
+            output->buffer().dim[1].extent = C;
+            output->buffer().dim[2].extent = outH;
+            output->buffer().dim[3].extent = outW;
+            TensorUtils::getDescribe(output)->dimensionFormat = MNN_DATA_FORMAT_NCHW;
+            output->buffer().type = halide_type_of<float>();
+            TensorUtils::setLinearLayout(output);
             return true;
         }
         if (type == "isp.lsc_min" || type == "isp.vignetting_min" ||

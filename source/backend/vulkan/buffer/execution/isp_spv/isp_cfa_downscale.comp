@@ -1,0 +1,79 @@
+#version 450
+// isp.cfa_downscale — area-average a CFA quad down to a statistics size.
+//
+// The 3A statistics do not need the sensor's resolution: a mean, a histogram and a
+// focus metric are the same numbers at 1/4 or 1/8 the pixels to within noise, and
+// the controller smooths every one of them anyway. Reading them at full resolution
+// is the single largest remaining cost in the fused chain.
+//
+// This is the stage that makes them cheap. It sits immediately after the CFA quads
+// are formed — `aux_hook_src` — and reduces them before any statistics block sees
+// them, so all four consumers read a small tensor instead of a large one.
+//
+// PLANE-PRESERVING, unlike isp.downscale: each of the four CFA planes is reduced
+// on its own, because averaging across planes would mix R into G and destroy the
+// colour balance the AWB loop is trying to measure.
+//
+// Input  (binding 3): float[1,4,H,W]  planar CFA quad, same layout isp.cfa writes
+// Output (binding 4): float[1,4,oH,oW] planar, one plane per quad site
+//
+// Bindings (universal isp.* map):
+//   0 = uniforms {W, H, pad, pad}   W/H hot-swapped from the input dims
+//   5 = ParamsBuf float[4]          {srcW, srcH, outW, outH}
+//
+// A box average is exact for a statistics tap and needs no coordinate-mapping
+// convention, which is the other reason to keep it separate from isp.downscale:
+// that op does bilinear + aspect fit + letterbox because it produces a *picture*.
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer Uniforms {
+    float width;
+    float height;
+    float pad0;
+    float pad1;
+} u;
+
+layout(set = 0, binding = 3) readonly  buffer InBuf   { float in_data[]; };
+layout(set = 0, binding = 4) writeonly buffer OutBuf  { float out_data[]; };
+layout(set = 0, binding = 5) readonly  buffer ParamBuf { float params[]; };
+
+void main() {
+    uint xo = gl_GlobalInvocationID.x;
+    uint yo = gl_GlobalInvocationID.y;
+
+    int w  = int(params[0]);
+    int h  = int(params[1]);
+    int ow = int(params[2]);
+    int oh = int(params[3]);
+    if (w < 1 || h < 1 || ow < 1 || oh < 1) return;
+    if (int(xo) >= ow || int(yo) >= oh) return;
+
+    // The source rectangle this output pixel covers. Integer bounds so the whole
+    // footprint is included rather than sampled: every source site contributes to
+    // exactly one output pixel, which is what keeps the mean unchanged.
+    int x0 = (int(xo)     * w) / ow;
+    int x1 = (int(xo) + 1) * w / ow;
+    int y0 = (int(yo)     * h) / oh;
+    int y1 = (int(yo) + 1) * h / oh;
+    if (x1 <= x0) x1 = x0 + 1;
+    if (y1 <= y0) y1 = y0 + 1;
+    x1 = min(x1, w);
+    y1 = min(y1, h);
+
+    int iplane = w * h;
+    int oplane = ow * oh;
+    int oidx   = int(yo) * ow + int(xo);
+
+    for (int c = 0; c < 4; ++c) {
+        int base = c * iplane;
+        float acc = 0.0;
+        int n = 0;
+        for (int sy = y0; sy < y1; ++sy) {
+            for (int sx = x0; sx < x1; ++sx) {
+                acc += in_data[base + sy * w + sx];
+                ++n;
+            }
+        }
+        out_data[c * oplane + oidx] = (n > 0) ? (acc / float(n)) : 0.0;
+    }
+}
