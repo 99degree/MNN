@@ -151,10 +151,16 @@ layout(set = 0, binding = 16) readonly buffer LscBuf    { float lscGrid[]; };   
 #define ST_SATURATION 512     ///< luma-preserving chroma scale (isp.saturation)
 #define ST_DPC        1024    ///< bad-pixel correction, before the footprint sum
 #define ST_LSC        2048    ///< lens shading gain, on the raw site
+// Bit 12 changes the OUTPUT SCALE rather than adding work: with it set the
+// output is 0..1 (divide by the white level), without it 0..255. softisp's
+// planar-RGB consumers — probe means, the AHB preview's ×255 — all assume 0..1,
+// while the original 0-255 contract assumed a display buffer. It has to be a
+// bit for the same reason the others are: the same op serves both.
+#define ST_LEVELS     4096    ///< emit 0..1 (else 0..255)
 
 // Default when the tensor is unfed (all-zero would silently drop everything):
 // the FULL chain, so an un-updated caller behaves exactly as before.
-#define ST_ALL       (ST_DEMOSAIC|ST_NORMALIZE|ST_BLC|ST_WB|ST_CCM|ST_LIFT|ST_GAMMA|ST_LETTERBOX|ST_SATURATION|ST_DPC|ST_LSC)
+#define ST_ALL       (ST_DEMOSAIC|ST_NORMALIZE|ST_BLC|ST_WB|ST_CCM|ST_LIFT|ST_GAMMA|ST_LETTERBOX|ST_SATURATION|ST_DPC|ST_LSC|ST_LEVELS)
 
 // ── DOWNSCALE_BLOCK/HW index layout: {W, H, outW, outH} ──
 #define H_SRC_W 0
@@ -408,7 +414,15 @@ void main() {    // ── CONFIG: BYPASS (binding 2) ────────�
         // commensurate. 1.0 fallback keeps a legacy caller working.
         float invSensorMax = 1.0 / max(sensorMax[0], 1e-6);
 
-        float accR = 0.0, accG = 0.0, accB = 0.0, wsum = 0.0;
+        float accR = 0.0, accG = 0.0, accB = 0.0;
+        // One weight sum per CHANNEL, not one for the footprint.
+        //
+        // A 2x2 RGGB footprint holds one red site, two green and one blue. Dividing
+        // every channel by the total weight (4) gives R/4, 2G/4 and B/4 — so red
+        // and blue come out four times too dark and green twice, which is both a
+        // uniform darkening and a green cast. Each channel has to be normalised by
+        // the weight it actually collected.
+        float wsumR = 0.0, wsumG = 0.0, wsumB = 0.0;
 
         for (int iy = iy0; iy < iy1; iy++) {
             // Overlap of this source row with the footprint on the y axis.
@@ -441,22 +455,23 @@ void main() {    // ── CONFIG: BYPASS (binding 2) ────────�
                 if ((stages & ST_LSC) != 0)       v *= lscOf(plane, rx, ry, sw, sh);
                 if ((stages & ST_WB) != 0)        v *= wbOf(plane);
 
-                if (chn == 0)      accR += v * w;
-                else if (chn == 1) accG += v * w;
-                else               accB += v * w;
-                wsum += w;
+                if (chn == 0)      { accR += v * w; wsumR += w; }
+                else if (chn == 1) { accG += v * w; wsumG += w; }
+                else               { accB += v * w; wsumB += w; }
             }
         }
 
-        if (wsum <= 0.0) {
+        if (wsumR + wsumG + wsumB <= 0.0) {
             out_data[oidx] = 0.0;
             out_data[oplane + oidx] = 0.0;
             out_data[2 * oplane + oidx] = 0.0;
             return;
         }
-        float r = accR / wsum;
-        float g = accG / wsum;
-        float b = accB / wsum;
+        // Normalise each channel by its own coverage. A footprint that caught no
+        // site of one colour leaves that channel at 0 rather than dividing by zero.
+        float r = (wsumR > 0.0) ? accR / wsumR : 0.0;
+        float g = (wsumG > 0.0) ? accG / wsumG : 0.0;
+        float b = (wsumB > 0.0) ? accB / wsumB : 0.0;
 
         // ── CCM (row-major 3x3, the SAME CCMBLOCK/CCM_MATRIX CcmBlock reads) ──
         float cr = r, cg = g, cb = b;
@@ -501,11 +516,15 @@ void main() {    // ── CONFIG: BYPASS (binding 2) ────────�
             cb = l + (cb - l) * sat;
         }
 
-        // The display tensor is the 0-255 float domain (DisplayBlock's contract;
-        // the JNI float path packs it into the RGBA_8888 AHB).
-        out_data[oidx]              = cr * 255.0;
-        out_data[oplane + oidx]     = cg * 255.0;
-        out_data[2 * oplane + oidx] = cb * 255.0;
+        // Output scale. By here the value is already in [0,1] — normalize divided
+        // by the white level and gamma mapped the rest — so ST_LEVELS is just a
+        // choice between emitting that and the original 0-255 display domain
+        // softisp's planar consumers (probe means, the AHB preview's own x255)
+        // assume.
+        float outScale = ((stages & ST_LEVELS) != 0) ? 1.0 : 255.0;
+        out_data[oidx]              = cr * outScale;
+        out_data[oplane + oidx]     = cg * outScale;
+        out_data[2 * oplane + oidx] = cb * outScale;
 
     debug_publish();
 }
