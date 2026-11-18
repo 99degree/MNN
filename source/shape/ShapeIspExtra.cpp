@@ -549,6 +549,44 @@ public:
             TensorUtils::getDescribe(output)->dimensionFormat = MNN_DATA_FORMAT_NCHW;
             output->buffer().type = halide_type_of<float>();
             TensorUtils::setLinearLayout(output);
+
+            // ── optional second output: the reduced statistics quad ──
+            //
+            // An `OpType_Extra`'s shape computer only sizes `outputs[0]`; the
+            // generic fallback leaves any further output copying the INPUT shape,
+            // so without this the second tensor would be declared [1,1,H,W] and the
+            // statistics reading it would get the wrong grid.
+            //
+            // The extent rides in an int32[2] `stats_out` attribute: the shader
+            // takes its stride from a runtime tensor, but the *shape* has to be
+            // known while propagating, before any tensor can be fed.
+            if (outputs.size() >= 2) {
+                int sW = 0, sH = 0;
+                if (extra != nullptr && extra->attr() != nullptr) {
+                    for (int i = 0; i < extra->attr()->size(); ++i) {
+                        auto* a = extra->attr()->GetAs<Attribute>(i);
+                        if (a == nullptr || a->key() == nullptr) continue;
+                        if (a->key()->str() == "stats_out") {
+                            if (a->list() && a->list()->i() && a->list()->i()->size() >= 2) {
+                                auto d = a->list()->i();
+                                sW = d->data()[0];
+                                sH = d->data()[1];
+                            }
+                        }
+                    }
+                }
+                if (sW > 0 && sH > 0) {
+                    auto st = outputs[1];
+                    st->buffer().dimensions    = 4;
+                    st->buffer().dim[0].extent = 1;
+                    st->buffer().dim[1].extent = 4;
+                    st->buffer().dim[2].extent = sH;
+                    st->buffer().dim[3].extent = sW;
+                    TensorUtils::getDescribe(st)->dimensionFormat = MNN_DATA_FORMAT_NCHW;
+                    st->buffer().type = halide_type_of<float>();
+                    TensorUtils::setLinearLayout(st);
+                }
+            }
             return true;
         }
         if (type == "isp.lsc") {
