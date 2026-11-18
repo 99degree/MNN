@@ -127,6 +127,15 @@ layout(set = 0, binding = 10) readonly  buffer LiftBuf { float shadowLift[]; };/
 layout(set = 0, binding = 11) readonly  buffer BayerBuf { float bayerPattern[]; };// float[1]
 layout(set = 0, binding = 12) readonly buffer SensorMaxBuf { float sensorMax[]; };// float[1]
 layout(set = 0, binding = 13) readonly buffer StageBuf { float stages[]; };   // float[1] bitfield
+// ── tail-stage coefficients ─────────────────────────────────────────────
+// Same rule as every other coefficient here: one named tensor per value, at a
+// binding of its own, fed per frame by the engine. Nothing is packed into a blob,
+// so a stage can be switched on and fed without disturbing the others.
+layout(set = 0, binding = 14) readonly buffer SatBuf    { float saturation[]; };   // float[1] chroma scale
+layout(set = 0, binding = 15) readonly buffer DpcThrBuf { float dpcThreshold[]; }; // float[1] normalized distance
+layout(set = 0, binding = 16) readonly buffer LscBuf    { float lscGrid[]; };      // float[17*13*4]
+#define LSC_NX 17
+#define LSC_NY 13
 
 #define ST_DEMOSAIC  1
 #define ST_NORMALIZE 2
@@ -138,10 +147,14 @@ layout(set = 0, binding = 13) readonly buffer StageBuf { float stages[]; };   //
 #define ST_LETTERBOX 128
 // NOTE: bit 8 is INVERTED relative to the others — see ST_NOSCALE.
 #define ST_NOSCALE   256
+// ── stages the RGB/head chain needs, added one bit each ─────────────────
+#define ST_SATURATION 512     ///< luma-preserving chroma scale (isp.saturation)
+#define ST_DPC        1024    ///< bad-pixel correction, before the footprint sum
+#define ST_LSC        2048    ///< lens shading gain, on the raw site
 
 // Default when the tensor is unfed (all-zero would silently drop everything):
 // the FULL chain, so an un-updated caller behaves exactly as before.
-#define ST_ALL       (ST_DEMOSAIC|ST_NORMALIZE|ST_BLC|ST_WB|ST_CCM|ST_LIFT|ST_GAMMA|ST_LETTERBOX)
+#define ST_ALL       (ST_DEMOSAIC|ST_NORMALIZE|ST_BLC|ST_WB|ST_CCM|ST_LIFT|ST_GAMMA|ST_LETTERBOX|ST_SATURATION|ST_DPC|ST_LSC)
 
 // ── DOWNSCALE_BLOCK/HW index layout: {W, H, outW, outH} ──
 #define H_SRC_W 0
@@ -189,6 +202,53 @@ float wbOf(int plane) {
          : (plane == 1) ? wbGains[1]
          : (plane == 2) ? wbGains[2]
          : wbGains[3];
+}
+
+// Lens shading: bilinear sample of the 17x13x4 grid, indexed by the CFA plane so
+// one grid serves all four Bayer sites.
+float lscOf(int plane, int rx, int ry, int sw, int sh) {
+    float fx = clamp(float(rx) * float(LSC_NX - 1) / max(float(sw - 1), 1.0), 0.0, float(LSC_NX - 1));
+    float fy = clamp(float(ry) * float(LSC_NY - 1) / max(float(sh - 1), 1.0), 0.0, float(LSC_NY - 1));
+    int x0 = int(fx), y0 = int(fy);
+    int x1 = min(x0 + 1, LSC_NX - 1), y1 = min(y0 + 1, LSC_NY - 1);
+    float wx = fx - float(x0), wy = fy - float(y0);
+    int p4 = min(max(plane, 0), 3);
+    float g00 = lscGrid[(y0 * LSC_NX + x0) * 4 + p4];
+    float g10 = lscGrid[(y0 * LSC_NX + x1) * 4 + p4];
+    float g01 = lscGrid[(y1 * LSC_NX + x0) * 4 + p4];
+    float g11 = lscGrid[(y1 * LSC_NX + x1) * 4 + p4];
+    return clamp(mix(mix(g00, g10, wx), mix(g01, g11, wx), wy), 0.5, 4.0);
+}
+
+// Bad pixel: a site further than `dpcThreshold` from the median of its 3x3
+// neighbourhood is replaced by that median. Reads the raw plane, so it runs
+// BEFORE the footprint sum — the only place a hot pixel can be removed without
+// having already smeared it into the average.
+float dpcRaw(int rx, int ry, int sw, int sh) {
+    float c = in_data[ry * sw + rx];
+    // `stages` is the buffer; `main()` shadows it with the mask it read.
+    if ((int(stages[0]) & ST_DPC) == 0) return c;
+    float n[8];
+    int k = 0;
+    for (int dy = -1; dy <= 1; ++dy) {
+        for (int dx = -1; dx <= 1; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+            int sx = clamp(rx + dx, 0, sw - 1);
+            int sy = clamp(ry + dy, 0, sh - 1);
+            n[k++] = in_data[sy * sw + sx];
+        }
+    }
+    // median of 8 = average of the two middle order statistics
+    for (int i = 0; i < 8; ++i)
+        for (int j = i + 1; j < 8; ++j)
+            if (n[j] < n[i]) { float t = n[i]; n[i] = n[j]; n[j] = t; }
+    float med = 0.5 * (n[3] + n[4]);
+    return (abs(c - med) > dpcThreshold[0]) ? med : c;
+}
+
+// Luma-preserving saturation — the same form isp.saturation applies to planar RGB.
+float satLuma(float r, float g, float b) {
+    return 0.299 * r + 0.587 * g + 0.114 * b;
 }
 
 // Publishes the 64x64 output snapshot. Called on EVERY exit path, so an op that
@@ -375,9 +435,10 @@ void main() {    // ── CONFIG: BYPASS (binding 2) ────────�
                 // DEMOSAIC bit then only decides whether the area weight is used.
                 if ((stages & ST_DEMOSAIC) == 0 && !(ix == ix0 && iy == iy0)) continue;
 
-                float v = in_data[ry * sw + rx];
+                float v = dpcRaw(rx, ry, sw, sh);
                 if ((stages & ST_NORMALIZE) != 0) v *= invSensorMax;
                 if ((stages & ST_BLC) != 0)       v -= blcOf(plane);
+                if ((stages & ST_LSC) != 0)       v *= lscOf(plane, rx, ry, sw, sh);
                 if ((stages & ST_WB) != 0)        v *= wbOf(plane);
 
                 if (chn == 0)      accR += v * w;
@@ -427,6 +488,17 @@ void main() {    // ── CONFIG: BYPASS (binding 2) ────────�
             cr = clamp(cr, 0.0, 1.0);
             cg = clamp(cg, 0.0, 1.0);
             cb = clamp(cb, 0.0, 1.0);
+        }
+
+        // ── Saturation (luma-preserving) ──
+        // isp.saturation's contract is a scale about luma, applied after the
+        // colour matrix and before the display encode — exactly here.
+        if ((stages & ST_SATURATION) != 0) {
+            float sat = saturation[0];
+            float l = satLuma(cr, cg, cb);
+            cr = l + (cr - l) * sat;
+            cg = l + (cg - l) * sat;
+            cb = l + (cb - l) * sat;
         }
 
         // The display tensor is the 0-255 float domain (DisplayBlock's contract;
