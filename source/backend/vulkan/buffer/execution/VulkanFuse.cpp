@@ -1188,9 +1188,15 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
     auto t_disp1 = std::chrono::high_resolution_clock::now();
     auto disp_us = std::chrono::duration_cast<std::chrono::microseconds>(t_disp1 - t_disp0).count();
     _logStage("onEncode: DISPATCH", t_stage);
-    // Per-op GPU workload reporting (writes to stderr → logcat)
+    // Per-op GPU workload reporting (writes to stderr → logcat).
+    //
+    // Gated with everything else behind `MNN_ISP_TRACE`: a timing run wants the
+    // frame loop silent, and 40 `fprintf(stderr)` calls during warmup are exactly
+    // the kind of host work that shows up as a slow first frames.
     static thread_local int _log_counter = 0;
-    if (::getenv("ISP_DEBUG_VLOG") || (_log_counter < 40)) {
+    const char* ispTrace = ::getenv("MNN_ISP_TRACE");
+    const bool traceOn = ispTrace != nullptr && ispTrace[0] != '0';
+    if (::getenv("ISP_DEBUG_VLOG") || (traceOn && _log_counter < 40)) {
         fprintf(stderr, "[VulkanFuse-PERF] type=%s W=%d H=%d groups=[%dx%dx%d] wg=%dx%dx%d submit_us=%lld pixels=%d\n",
             mType.c_str(), mGlobalSize[0], mGlobalSize[1],
             mGroupSize[0], mGroupSize[1], mGroupSize[2],

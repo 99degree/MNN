@@ -5,6 +5,7 @@
 #include "component/VulkanBuffer.hpp"
 #ifdef MNN_BUILD_FOR_ANDROID
 #include <android/log.h>
+#include <cstdlib>
 #endif
 #include <MNN/MNNDefine.h>
 
@@ -73,6 +74,25 @@ private:
     std::shared_ptr<VulkanBuffer> mIdentityCcmBuffer;
 };
 
+// Trace sink for this header's three log sites, gated the same way as the ones
+// in `Pipeline.cpp`: opened once, and only when `MNN_ISP_TRACE` is set. These run
+// at session build rather than per frame, but a camera rebuilds the session on
+// every geometry change and the file on this device has no rotation.
+namespace {
+inline FILE* ispFuseCreatorTraceSink() {
+    static FILE* sink = nullptr;
+    static bool initialised = false;
+    if (!initialised) {
+        initialised = true;
+        const char* env = getenv("MNN_ISP_TRACE");
+        if (env != nullptr && env[0] != '0') {
+            sink = fopen("/sdcard/Download/isp_vlog_trace", "a");
+        }
+    }
+    return sink;
+}
+} // namespace
+
 class VulkanFuseCreator : public VulkanBackend::Creator {
 public:
     virtual VulkanBasicExecution* onCreate(const std::vector<Tensor*>& inputs, const std::vector<Tensor*>& outputs, const MNN::Op* op,
@@ -81,8 +101,8 @@ public:
         if (extra && extra->type()) {
             // [TRACE] Every Extra op reaching the Vulkan creator — logged to
             // the trace file if armed. Shows WHICH ops reach VulkanFuse.
-            FILE* tf = fopen("/sdcard/Download/isp_vlog_trace", "a");
-            if (tf) { fprintf(tf, "[VulkanFuseCreator] onCreate type=%s\n", extra->type()->str().c_str()); fflush(tf); fclose(tf); }
+            FILE* tf = ispFuseCreatorTraceSink();
+            if (tf) { fprintf(tf, "[VulkanFuseCreator] onCreate type=%s\n", extra->type()->str().c_str()); fflush(tf); }
         }
         if (nullptr == extra) return nullptr;
         if (nullptr == extra->attr()) return nullptr;
@@ -106,16 +126,16 @@ public:
             if (extra->type() && extra->type()->str().rfind("isp.", 0) == 0) {
                 auto spvData = lookupIspSpv(extra->type()->str());
                 if (spvData.data != nullptr && spvData.size > 0) {
-                    { FILE* tf = fopen("/sdcard/Download/isp_vlog_trace", "a");
-                      if (tf) { fprintf(tf, "[VulkanFuseCreator] ACCEPT '%s' (embedded SPIR-V, %d bytes)\n", extra->type()->str().c_str(), spvData.size); fflush(tf); fclose(tf); } }
+                    { FILE* tf = ispFuseCreatorTraceSink();
+                      if (tf) { fprintf(tf, "[VulkanFuseCreator] ACCEPT '%s' (embedded SPIR-V, %d bytes)\n", extra->type()->str().c_str(), spvData.size); fflush(tf); } }
                     fprintf(stderr, "[VulkanFuse] ACCEPT '%s' (embedded SPIR-V, %d bytes) — %d inputs, %d outputs\n",
                               extra->type()->str().c_str(), spvData.size, (int)inputs.size(), (int)outputs.size());
                     fflush(stderr);
                     return new VulkanFuse(extra, backend, (int)inputs.size(), (int)outputs.size()); // embedded SPIR-V lookup happens in constructor
                 }
             }
-            { FILE* tf = fopen("/sdcard/Download/isp_vlog_trace", "a");
-              if (tf) { fprintf(tf, "[VulkanFuseCreator] REJECT '%s' (no SPIR-V)\n", extra->type() ? extra->type()->str().c_str() : "?"); fflush(tf); fclose(tf); } }
+            { FILE* tf = ispFuseCreatorTraceSink();
+              if (tf) { fprintf(tf, "[VulkanFuseCreator] REJECT '%s' (no SPIR-V)\n", extra->type() ? extra->type()->str().c_str() : "?"); fflush(tf); } }
             fprintf(stderr, "[VulkanFuse] REJECT '%s' (no SPIR-V) — %d inputs, %d outputs\n",
                       extra->type()->str().c_str(), (int)inputs.size(), (int)outputs.size());
             fflush(stderr);
