@@ -7,6 +7,7 @@
 //
 
 #include "VulkanBackend.hpp"
+#include <cstdlib>
 #include "component/MNNIspTrace.hpp"
 #include <algorithm>
 #include "core/Execution.hpp"
@@ -459,8 +460,22 @@ Execution* VulkanBackend::onCreate(const std::vector<Tensor*>& inputs, const std
 #endif
 
     // [ISP TRACE] Log which wrapper is created for Extra (isp.*) ops.
+    //
+    // Gated behind `MNN_ISP_TRACE` like the rest: this runs once per isp.* op at
+    // session build, so it is not per-frame — but on a camera that rebuilds the
+    // session on every geometry change it adds up, and the trace file on this
+    // device has no rotation.
     if (op->type() == MNN::OpType_Extra) {
-        FILE* tf = fopen("/sdcard/Download/isp_vlog_trace", "a");
+        static FILE* ispWrapperSink = nullptr;
+        static bool ispWrapperInit = false;
+        if (!ispWrapperInit) {
+            ispWrapperInit = true;
+            const char* env = getenv("MNN_ISP_TRACE");
+            if (env != nullptr && env[0] != '0') {
+                ispWrapperSink = fopen("/sdcard/Download/isp_vlog_trace", "a");
+            }
+        }
+        FILE* tf = ispWrapperSink;
         if (tf) {
             const char* tname = (op->name() != nullptr) ? op->name()->c_str() : "?";
             if (mDirect) {

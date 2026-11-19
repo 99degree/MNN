@@ -11,23 +11,36 @@
 #include <string.h>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 
 // [ZERO-COPY] Trace helper. Self-contained so this translation unit never
 // imports `ispTraceSink` (internal to libMNN_Vulkan); an undefined reference
 // there made the whole .so fail to dlopen:
 //   "cannot locate symbol ispTraceSink referenced by libmnnhelper.so"
+//
+// Gated behind `MNN_ISP_TRACE`, like the per-command trace in `Pipeline.cpp`.
+// This is called on the AHB import path, i.e. once per zero-copy frame, and an
+// unconditional fopen/append/close there is host latency in the frame loop with
+// a file that grows without bound on a device with no log rotation.
 extern "C" __attribute__((visibility("default")))
 void mnnIspZeroCopyLog(const char* fmt, ...) {
-    FILE* tf = fopen("/sdcard/Download/isp_vlog_trace", "a");
-    if (tf == nullptr) {
+    static FILE* sink = nullptr;
+    static bool initialised = false;
+    if (!initialised) {
+        initialised = true;
+        const char* env = getenv("MNN_ISP_TRACE");
+        if (env != nullptr && env[0] != '0') {
+            sink = fopen("/sdcard/Download/isp_vlog_trace", "a");
+        }
+    }
+    if (sink == nullptr) {
         return;
     }
     va_list ap;
     va_start(ap, fmt);
-    vfprintf(tf, fmt, ap);
+    vfprintf(sink, fmt, ap);
     va_end(ap);
-    fflush(tf);
-    fclose(tf);
+    fflush(sink);
 }
 
 namespace MNN {

@@ -7,6 +7,7 @@
 //
 
 #include <string.h>
+#include <stdlib.h>
 #include "core/Pipeline.hpp"
 #include "core/Backend.hpp"
 #include "core/Macro.h"
@@ -16,6 +17,37 @@
 #include "shape/SizeComputer.hpp"
 #include "core/OpCommonUtils.hpp"
 #include "MNN_generated.h"
+
+// ── ISP trace, gated ────────────────────────────────────────────────────
+//
+// `execute()` used to open `/sdcard/Download/isp_vlog_trace` once per *command*
+// and once per *frame*, unconditionally. At ~14 stages that is ~30
+// open/append/close sequences per frame through f2fs on a phone, all of it
+// host latency in front of a GPU that is already being waited on
+// synchronously — and it had grown the file to 119 MB with no way to turn it
+// off in a release build.
+//
+// Two things change here:
+//   * the sink is opened once and kept open, instead of per call;
+//   * it is opened at all only when `MNN_ISP_TRACE` is set.
+//
+// The counter it printed (`total/vk/cpu` commands) is genuinely useful — it is
+// how you learn that an op fell back to the CPU backend — so it is kept and
+// reported through `MNN_PRINT` when tracing is on, rather than dropped.
+namespace {
+static FILE* ispPipelineTraceSink() {
+    static FILE* sink = nullptr;
+    static bool initialised = false;
+    if (!initialised) {
+        initialised = true;
+        const char* env = getenv("MNN_ISP_TRACE");
+        if (env != nullptr && env[0] != '0') {
+            sink = fopen("/sdcard/Download/isp_vlog_trace", "a");
+        }
+    }
+    return sink;
+}
+} // namespace
 
 // TODO: Find better way for debug
 //#define MNN_OP_SEPERATE
@@ -1186,10 +1218,18 @@ ErrorCode Pipeline::execute() {
                 else cpuCmds++;
             }
         }
-        FILE* tf = fopen("/sdcard/Download/isp_vlog_trace", "a");
-        if (tf) {
+        // Reported at debug level only, and always cheap: the counts come from
+        // the schedule MNN already built, so an `cpu > 0` here is the cheap way
+        // to notice an op that fell back off the GPU and is costing two
+        // full-frame copies around a host round trip.
+        if (cpuCmds > 0) {
+            MNN_PRINT("[MNN] execute: total=%d vk=%d cpu=%d -- %d op(s) are NOT on the GPU\n",
+                      total, vkCmds, cpuCmds, cpuCmds);
+        }
+        FILE* tf = ispPipelineTraceSink();
+        if (tf != nullptr) {
             fprintf(tf, "[PIPELINE] execute: total=%d vk=%d cpu=%d\n", total, vkCmds, cpuCmds);
-            fclose(tf);
+            fflush(tf);
         }
     }
     for (auto& info : mInfo.second) {
@@ -1224,15 +1264,16 @@ ErrorCode Pipeline::execute() {
                 _exitExecute();
                 return code;
             }
-            // [ISP TRACE] per-command marker: op type + backend type
+            // [ISP TRACE] per-command marker: op type + backend type.
+            // One gated write to an already-open sink, not an fopen/fclose pair.
             {
-                FILE* tf = fopen("/sdcard/Download/isp_vlog_trace", "a");
-                if (tf) {
+                FILE* tf = ispPipelineTraceSink();
+                if (tf != nullptr) {
                     fprintf(tf, "[CMD] %s backend=%d exec=%p\n",
                             EnumNameOpType(cmd.op->type()),
                             (int)cmd.execution->backend()->type(),
                             (void*)cmd.execution.get());
-                    fclose(tf);
+                    fflush(tf);
                 }
             }
         }
