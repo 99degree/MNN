@@ -1,13 +1,19 @@
 #version 450
 // isp.ccm — Color Correction Matrix: out = CCM * in + offset, 3-channel.
-// Uniforms (binding 0): {W, H, pad0, pad1} — W/H are HOT-SWAPPED from the input
-//   tensor dims at first encode (elementwise attr). The CCM coefficients are
-//   NOT baked here — they ride in on binding 3 as a runtime float[9] tensor.
-// Params (binding 3): ccm[9] row-major CCM matrix (same slot as every other
-//   metadata input under the universal isp.* binding map: input[1] -> binding 3).
-// In:  float[1,3,H,W] NCHW PLANAR image (R plane, G plane, B plane) — matches
-//      isp.demosaic_g2's output layout.
-// Out: float[1,3,H,W], same planar layout.
+//
+// Uniforms (binding 0): {W, H, pad0, pad1} — W/H are hot-swapped from the input
+//   tensor dims at first encode when the op is marked `elementwise`.
+// Params (binding 5): ccm[9] row-major CCM matrix. The coefficients ride in as a
+//   runtime float[9] tensor — under the universal isp.* binding map a metadata
+//   input takes `kFirstExtra`, which is 5, not 3.
+// In:  float[1,3,H,W] NCHW PLANAR image (R plane, G plane, B plane).
+// Out: float[1,3,H,W], same planar layout, clipped to [0,1].
+//
+// The clip matters. The primitive form is `Conv(1x1) + Clip(0,1)`, and a CCM
+// row with negative off-diagonals produces values below zero on any colour that
+// is not near-neutral. Without the clip the fused form hands -0.3 to the next
+// stage while the primitive form hands 0, which is exactly the "fused output is
+// darker and the values are out of range" symptom.
 //
 // LAYOUT CONTRACT (2026-10-16): every isp.* stage in the RGB chain uses PLANAR
 // NCHW. The previous interleaved indexing ((y*w+x)*3) on planar data scrambled
@@ -23,8 +29,8 @@ layout(set = 0, binding = 0, std430) buffer Uniforms {
     float pad1;
 } u;
 
-layout(set = 0, binding = 3) readonly  buffer InBuf  { float in_data[]; };
-layout(set = 0, binding = 4) writeonly buffer OutBuf { float out_data[]; };
+layout(set = 0, binding = 3) readonly  buffer InBuf    { float in_data[]; };
+layout(set = 0, binding = 4) writeonly buffer OutBuf   { float out_data[]; };
 layout(set = 0, binding = 5) readonly  buffer ParamBuf { float params[]; };
 
 void main() {
@@ -44,7 +50,7 @@ void main() {
     float c10 = params[3]; float c11 = params[4]; float c12 = params[5];
     float c20 = params[6]; float c21 = params[7]; float c22 = params[8];
 
-    out_data[idx]            = c00 * r + c01 * g + c02 * b;
-    out_data[plane + idx]    = c10 * r + c11 * g + c12 * b;
-    out_data[2 * plane + idx] = c20 * r + c21 * g + c22 * b;
+    out_data[idx]             = clamp(c00 * r + c01 * g + c02 * b, 0.0, 1.0);
+    out_data[plane + idx]     = clamp(c10 * r + c11 * g + c12 * b, 0.0, 1.0);
+    out_data[2 * plane + idx] = clamp(c20 * r + c21 * g + c22 * b, 0.0, 1.0);
 }

@@ -1,7 +1,7 @@
 #version 450
 // isp.ee — edge enhancement: depthwise 3x3 unsharp conv, per RGB channel.
 //
-// Replaces a placeholder that copied its input. The block's primitive form is
+// This replaced an earlier stub that copied its input. The block's primitive form is
 // `Conv(kernel=3x3, group=3)` with `pads=1`; this shader does the same maths
 // directly, which removes a whole ONNX Conv from the fused path.
 //

@@ -2,7 +2,7 @@
 // isp.demosaic_ccm — 1x1 conv from the 4-plane CFA quad to planar RGB, plus the
 // clip the primitive form expresses as a separate Clip node.
 //
-// Replaces a placeholder that copied its input, which is why enabling it
+// This replaced an earlier stub that copied its input, which is why enabling it
 // deleted both demosaic and CCM at once.
 //
 // Inputs (universal isp.* map):

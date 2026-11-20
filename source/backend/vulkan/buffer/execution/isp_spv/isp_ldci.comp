@@ -1,7 +1,7 @@
 #version 450
 // isp.ldci — local dynamic contrast improvement.
 //
-// Replaces a placeholder that copied its input, which silently deleted the
+// This replaced an earlier stub that copied its input, which silently deleted the
 // stage. The block's primitive form is AveragePool(3x3, pad 1) -> Sub -> Mul ->
 // Add, i.e. `out = in + strength * (in - local_mean)`; this shader does the
 // same maths in one dispatch.
