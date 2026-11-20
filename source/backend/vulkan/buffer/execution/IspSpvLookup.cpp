@@ -22,6 +22,7 @@
 #include "isp_spv/isp_unpack_blc_spv.h"
 #include "isp_spv/isp_unpack_blc_normal_cfa_spv.h"
 #include "isp_spv/isp_unpack16_blc_normal_cfa_spv.h"
+#include "isp_spv/isp_unpack32_blc_normal_cfa_spv.h"
 #include "isp_spv/isp_demosaic_g2_spv.h"
 #include "isp_spv/isp_bayer_wb_spv.h"
 #include "isp_spv/g_isp_bad_pixel_lsc_bayer_wb_spv.h"

@@ -1,20 +1,19 @@
 #version 450
-// isp.unpack16_blc_normal_cfa — normalize + BLC + quad unpack from INT16 RAW in one dispatch.
-// Input:  [1,1,H,W] INT16 raw Bayer plane (full-res, one sample per pixel, sensor counts).
+// isp.unpack16_blc_normal_cfa — normalize + BLC + quad unpack from FLOAT32 RAW in one dispatch.
+// Input:  [1,1,H,W] FLOAT32 raw Bayer plane (host converted u16->f32 by engine RawFloat path).
 // Output: [1,4,H/2,W/2] NCHW float PLANAR quad: plane p holds channel p of
 //         every quad — [TL, TR, BL, BR] = [R, G1, G2, B] for RGGB.
-// 
+//
 // Replaces the host-side INT16→FLOAT32 conversion + unpack split + normalize + BLC + CFA
-// by doing it all on GPU. The host sends the raw INT16 buffer directly; the shader
-// converts to float, divides by sensor_max, subtracts BLC, and unpacks the 2x2 Bayer sites.
-// 
+// by doing it all on GPU. The engine converts u16→f32 on CPU (RawFloat mode) and the shader
+// divides by sensor_max, subtracts BLC, and unpacks the 2x2 Bayer sites.
+//
 // Bindings:
 //   binding 0 = Uniforms {width, height, sensor_max, gain, blc_offsets[4], bayer_pattern}
-//   binding 1 = input INT16 plane (readonly)
+//   binding 1 = input FLOAT32 plane (readonly)
 //   binding 2 = output float quad planes (writeonly)
 
 #extension GL_EXT_scalar_block_layout : require
-#extension GL_EXT_shader_explicit_arithmetic_types_int16 : require
 
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
@@ -30,7 +29,7 @@ layout(set = 0, binding = 0, std430) buffer Uniforms {
     int   bayer_pattern; // 0=RGGB, 1=GRBG, 2=GBRG, 3=BGGR
 } u;
 
-layout(set = 0, binding = 1) readonly  buffer InBuf  { int16_t in_data[]; };
+layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
 layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
 
 void main() {
@@ -48,18 +47,15 @@ void main() {
     int idx  = int(y) * qw + int(x);       // quad index
     uint plane = uint(qw) * uint(qh);      // plane stride
 
-    // Read 2x2 Bayer sites from INT16 raw plane
-    int16_t tl_i16 = in_data[base];              // TL
-    int16_t tr_i16 = in_data[base + 1];          // TR
-    int16_t bl_i16 = in_data[base + srcW];       // BL
-    int16_t br_i16 = in_data[base + srcW + 1];   // BR
+    // Read 2x2 Bayer sites from FLOAT32 raw plane
+    float tl = in_data[base];              // TL
+    float tr = in_data[base + 1];          // TR
+    float bl = in_data[base + srcW];       // BL
+    float br = in_data[base + srcW + 1];   // BR
 
-    // Convert to float and normalize
+    // Normalize by sensor_max
     float smax = max(u.sensor_max, 1.0);
-    float tl = float(tl_i16) / smax;
-    float tr = float(tr_i16) / smax;
-    float bl = float(bl_i16) / smax;
-    float br = float(br_i16) / smax;
+    tl /= smax; tr /= smax; bl /= smax; br /= smax;
 
     // BLC offsets in [0, 1] (normalized by sensor_max)
     float blc0 = u.blc_r  / smax;
@@ -72,10 +68,10 @@ void main() {
     // GRBG (1): plane0=G1(TL), plane1=R(TR), plane2=B(BL), plane3=G2(BR)
     // GBRG (2): plane0=G2(TL), plane1=B(TR), plane2=R(BL), plane3=G1(BR)
     // BGGR (3): plane0=B(TL), plane1=G2(TR), plane2=G1(BL), plane3=R(BR)
-    
+
     int p = u.bayer_pattern;
     float r, g1, g2, b;
-    
+
     if (p == 0) { // RGGB
         r = tl; g1 = tr; g2 = bl; b = br;
     } else if (p == 1) { // GRBG
@@ -85,7 +81,7 @@ void main() {
     } else { // BGGR (3)
         b = tl; g2 = tr; g1 = bl; r = br;
     }
-    
+
     // Apply BLC and gain, clamp to >= 0
     float gain = u.gain;
     r  = max(r  - blc0, 0.0) * gain;

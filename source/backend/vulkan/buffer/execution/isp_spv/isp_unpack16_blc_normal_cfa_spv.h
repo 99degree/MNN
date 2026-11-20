@@ -1,4 +1,4 @@
-const unsigned char g_isp_unpack16_blc_normal_cfa_spv[] = {
+const unsigned char g_isp_unpack16_blc_normal_cfa[] = {
 
 0x03,
 0x02,
@@ -4599,4 +4599,4 @@ const unsigned char g_isp_unpack16_blc_normal_cfa_spv[] = {
 0x00,
 
 };
-const int g_isp_unpack16_blc_normal_cfa_spv_len = 4244;
+const int g_isp_unpack16_blc_normal_cfa_len = 4244;
