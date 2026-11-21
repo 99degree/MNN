@@ -8,10 +8,13 @@
 // by doing it all on GPU. The engine converts u16→f32 on CPU (RawFloat mode) and the shader
 // divides by sensor_max, subtracts BLC, and unpacks the 2x2 Bayer sites.
 //
-// Bindings:
+// Bindings follow the universal isp.* convention (VulkanFuse.cpp):
 //   binding 0 = Uniforms {width, height, sensor_max, gain, blc_offsets[4], bayer_pattern}
-//   binding 1 = input FLOAT32 plane (readonly)
-//   binding 2 = output float quad planes (writeonly)
+//   binding 3 = input FLOAT32 plane (readonly)    <- input[0], the frame
+//   binding 4 = output float quad planes          <- output[0]
+//   binding 5 = black level per colour (R, Gr, Gb, B)
+//   binding 6 = sensor white level
+//   binding 7 = CFA phase
 
 #extension GL_EXT_scalar_block_layout : require
 
@@ -29,8 +32,11 @@ layout(set = 0, binding = 0, std430) buffer Uniforms {
     int   bayer_pattern; // 0=RGGB, 1=GRBG, 2=GBRG, 3=BGGR
 } u;
 
-layout(set = 0, binding = 1) readonly  buffer InBuf  { float in_data[]; };
-layout(set = 0, binding = 2) writeonly buffer OutBuf { float out_data[]; };
+layout(set = 0, binding = 3) readonly  buffer InBuf  { float in_data[]; };
+layout(set = 0, binding = 4) writeonly buffer OutBuf { float out_data[]; };
+layout(set = 0, binding = 5) readonly  buffer BlcBuf { float blc_vals[]; };
+layout(set = 0, binding = 6) readonly  buffer MaxBuf { float max_val[]; };
+layout(set = 0, binding = 7) readonly  buffer BayerBuf { int bayer_pattern[]; };
 
 void main() {
     uint x = gl_GlobalInvocationID.x;   // quad column
@@ -47,6 +53,17 @@ void main() {
     int idx  = int(y) * qw + int(x);       // quad index
     uint plane = uint(qw) * uint(qh);      // plane stride
 
+    // The coefficient tensors, not the params block, are authoritative: the
+    // engine writes them as graph inputs each frame (BLC/WB/AE may change).
+    float smax = max(max_val[0], 1.0);
+    int   p    = bayer_pattern[0];
+
+    // BLC offsets in [0, 1] (normalized by sensor_max)
+    float blc0 = blc_vals[0] / smax;
+    float blc1 = blc_vals[1] / smax;
+    float blc2 = blc_vals[2] / smax;
+    float blc3 = blc_vals[3] / smax;
+
     // Read 2x2 Bayer sites from FLOAT32 raw plane
     float tl = in_data[base];              // TL
     float tr = in_data[base + 1];          // TR
@@ -54,14 +71,7 @@ void main() {
     float br = in_data[base + srcW + 1];   // BR
 
     // Normalize by sensor_max
-    float smax = max(u.sensor_max, 1.0);
     tl /= smax; tr /= smax; bl /= smax; br /= smax;
-
-    // BLC offsets in [0, 1] (normalized by sensor_max)
-    float blc0 = u.blc_r  / smax;
-    float blc1 = u.blc_gr / smax;
-    float blc2 = u.blc_gb / smax;
-    float blc3 = u.blc_b  / smax;
 
     // Bayer phase determines colour -> plane mapping
     // RGGB (0): plane0=R(TL), plane1=G1(TR), plane2=G2(BL), plane3=B(BR)
@@ -69,7 +79,6 @@ void main() {
     // GBRG (2): plane0=G2(TL), plane1=B(TR), plane2=R(BL), plane3=G1(BR)
     // BGGR (3): plane0=B(TL), plane1=G2(TR), plane2=G1(BL), plane3=R(BR)
 
-    int p = u.bayer_pattern;
     float r, g1, g2, b;
 
     if (p == 0) { // RGGB

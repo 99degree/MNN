@@ -522,25 +522,36 @@ public:
             TensorUtils::setLinearLayout(output);
             return true;
         }
-        if (type == "isp.unpack_blc" || type == "isp.unpack_blc_normal_cfa") {
-            // Fused Normalize + BLC + CFA unpack: packed [1,1,H,W/2] INT32 ->
-            // Bayer quad [1,4,H/2,W/2] float.
+        if (type == "isp.unpack_blc" || type == "isp.unpack_blc_normal_cfa" ||
+            type == "isp.unpack16_blc_normal_cfa" || type == "isp.unpack32_blc_normal_cfa") {
+            // Fused Normalize + BLC + CFA unpack -> Bayer quad [1,4,H/2,W/2] float.
             //
             // Without this rule the generic fallback keeps the *input* shape, so
             // downstream ops infer from a 1-channel full-height tensor instead of
             // a 4-channel half-height one. That mismatch is what makes session
             // creation fail — and it fails by faulting inside MNN rather than by
             // returning an error.
+            //
+            // The two families read the sensor plane differently, so the OUTPUT
+            // width is not derived the same way:
+            //   isp.unpack_blc(_normal_cfa)  input [1,2,H,W/2]  packed words/row
+            //                                  -> dim[3] IS W/2 already
+            //   isp.unpack16/32_blc_normal_cfa input [1,1,H,W]   one sample per pixel
+            //                                  -> dim[3] IS W, must be halved
+            // Declaring W (not W/2) for the 16/32 forms states a tensor twice as
+            // wide as the quad the shader writes; every later op then propagates
+            // the wrong extents and session creation faults inside MNN.
             auto input  = inputs[0];
             auto output = outputs[0];
             int dims = input->buffer().dimensions;
             if (dims < 4) return false;
             int H  = input->buffer().dim[dims - 2].extent;
-            int W2 = input->buffer().dim[dims - 1].extent; // packed words per row
-            // Dims can still be dynamic ([1,1,-1,-1]) this early; keep the tensor
-            // 4-channel either way rather than copying the input shape.
+            int W  = input->buffer().dim[dims - 1].extent;
+            const bool full_row_input =
+                type == "isp.unpack16_blc_normal_cfa" ||
+                type == "isp.unpack32_blc_normal_cfa";
             const int outH = (H > 0) ? (H / 2) : H;
-            const int outW = (W2 > 0) ? W2 : W2;
+            const int outW = (W > 0) ? (full_row_input ? W / 2 : W) : W;
             output->buffer().dimensions     = 4;
             output->buffer().dim[0].extent  = 1;
             output->buffer().dim[1].extent  = 4;

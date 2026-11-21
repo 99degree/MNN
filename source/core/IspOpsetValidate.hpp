@@ -57,6 +57,8 @@ inline const char* const kIspOpsetNames[] = {
     "isp.cfa",
     "isp.unpack_blc",
     "isp.unpack_blc_normal_cfa",
+    "isp.unpack16_blc_normal_cfa",
+    "isp.unpack32_blc_normal_cfa",
     "isp.cfa_downscale",
     "isp.chromatic_aberration",
     "isp.chromatic_aberration_min",

@@ -1,0 +1,111 @@
+#version 450
+// isp.unpack_blc_normal_cfa — normalize + BLC + quad unpack from packed INT32 RAW.
+// Input:  [1,1,H,W/2] INT32 raw Bayer plane, TWO int16 samples packed per int32 word
+//         (low 16 bits = even lane / sample at 2x, high 16 bits = odd lane / sample at 2x+1).
+// Output: [1,4,H/2,W/2] NCHW float PLANAR quad: plane p holds channel p of
+//         every quad — [TL, TR, BL, BR] = [R, G1, G2, B] for RGGB.
+//
+// Replaces the host-side INT16→FLOAT32 conversion + unpack split + normalize + BLC + CFA
+// by doing it all on GPU. The host packs pairs of int16 samples into int32 words and the
+// shader unpacks each word into two int32 values, casts to fp32, divides by sensor_max,
+// subtracts BLC, and unpacks the 2x2 Bayer sites.
+//
+// Bindings follow the isp.* convention:
+//   binding 0 = Uniforms {width, height, pad0, pad1}
+//   binding 3 = input INT32 packed plane (readonly)     <- input[0], the frame
+//   binding 4 = output float quad planes                <- output[0]
+//   binding 5 = black level per colour (R, Gr, Gb, B)
+//   binding 6 = sensor white level
+//   binding 7 = CFA phase
+
+#extension GL_EXT_scalar_block_layout : require
+
+layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, std430) buffer Uniforms {
+    float width;        // source (full-res) W
+    float height;       // source (full-res) H
+    float pad0; float pad1;
+} u;
+
+layout(set = 0, binding = 3) readonly  buffer InBuf  { int in_data[]; };
+layout(set = 0, binding = 4) writeonly buffer OutBuf { float out_data[]; };
+layout(set = 0, binding = 5) readonly  buffer BlcBuf { float blc_vals[]; };
+layout(set = 0, binding = 6) readonly  buffer MaxBuf { float sensor_max[]; };
+layout(set = 0, binding = 7) readonly  buffer BayerBuf { int bayer_pattern[]; };
+
+void main() {
+    uint x = gl_GlobalInvocationID.x;   // quad column
+    uint y = gl_GlobalInvocationID.y;   // quad row
+    int srcW = int(u.width);            // source (full-res) W, one sample per pixel
+    int srcH = int(u.height);
+    int qw = srcW / 2;
+    int qh = srcH / 2;
+    if (int(x) >= qw || int(y) >= qh) return;
+
+    // Packed INT32 layout: each word holds 2 int16 samples.
+    // Word stride per row = srcW / 2 (two samples per word).
+    int wordStride = srcW / 2;
+    int wordY0 = int(y) * 2 * wordStride;   // row y*2
+    int wordY1 = (int(y) * 2 + 1) * wordStride; // row y*2+1
+    int wordX = int(x);                     // word x holds samples 2x and 2x+1
+
+    // Read packed words: word0 = row y*2 (TL even, TR odd), word1 = row y*2+1 (BL even, BR odd)
+    int wordTL_TR = in_data[wordY0 + wordX];
+    int wordBL_BR = in_data[wordY1 + wordX];
+
+    // Unpack int16 pairs from each int32 word: low 16 bits = even lane,
+    // high 16 bits = odd lane. Sign-extend manually.
+    int tl_i16 = (wordTL_TR & 0xFFFF) | ((wordTL_TR & 0x8000) != 0 ? 0xFFFF0000 : 0);
+    int tr_i16 = ((wordTL_TR >> 16) & 0xFFFF) | (((wordTL_TR >> 16) & 0x8000) != 0 ? 0xFFFF0000 : 0);
+    int bl_i16 = (wordBL_BR & 0xFFFF) | ((wordBL_BR & 0x8000) != 0 ? 0xFFFF0000 : 0);
+    int br_i16 = ((wordBL_BR >> 16) & 0xFFFF) | (((wordBL_BR >> 16) & 0x8000) != 0 ? 0xFFFF0000 : 0);
+
+    // Read coefficients from tensor inputs.
+    float smax = max(sensor_max[0], 1.0);
+    int   p    = bayer_pattern[0];
+
+    // BLC offsets in [0, 1] (normalized by sensor_max).
+    float blc0 = blc_vals[0] / smax;
+    float blc1 = blc_vals[1] / smax;
+    float blc2 = blc_vals[2] / smax;
+    float blc3 = blc_vals[3] / smax;
+
+    // Convert INT16→FLOAT32 and normalize.
+    float tl = float(tl_i16) / smax;
+    float tr = float(tr_i16) / smax;
+    float bl = float(bl_i16) / smax;
+    float br = float(br_i16) / smax;
+
+    // Bayer phase determines colour -> plane mapping.
+    // RGGB (0): plane0=R(TL), plane1=G1(TR), plane2=G2(BL), plane3=B(BR)
+    // GRBG (1): plane0=G1(TL), plane1=R(TR), plane2=B(BL), plane3=G2(BR)
+    // GBRG (2): plane0=G2(TL), plane1=B(TR), plane2=R(BL), plane3=G1(BR)
+    // BGGR (3): plane0=B(TL), plane1=G2(TR), plane2=G1(BL), plane3=R(BR)
+
+    float r, g1, g2, b;
+
+    if (p == 0) { // RGGB
+        r = tl; g1 = tr; g2 = bl; b = br;
+    } else if (p == 1) { // GRBG
+        g1 = tl; r = tr; b = bl; g2 = br;
+    } else if (p == 2) { // GBRG
+        g2 = tl; b = tr; r = bl; g1 = br;
+    } else { // BGGR (3)
+        b = tl; g2 = tr; g1 = bl; r = br;
+    }
+
+    // Apply BLC and clamp to >= 0.
+    r  = max(r  - blc0, 0.0);
+    g1 = max(g1 - blc1, 0.0);
+    g2 = max(g2 - blc2, 0.0);
+    b  = max(b  - blc3, 0.0);
+
+    // Write to planar quad output.
+    int idx = int(y) * qw + int(x);       // quad index
+    uint plane = uint(qw) * uint(qh);      // plane stride
+    out_data[idx]               = r;
+    out_data[plane + idx]       = g1;
+    out_data[plane * 2u + idx]  = g2;
+    out_data[plane * 3u + idx]  = b;
+}
