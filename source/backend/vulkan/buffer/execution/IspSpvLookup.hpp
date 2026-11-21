@@ -54,6 +54,7 @@ extern const unsigned char g_isp_unpack_blc_spv[];
 extern const int g_isp_unpack_blc_spv_len;
 // isp.unpack_blc_normal_cfa — normalize + BLC + quad unpack, CFA-aware.
 extern const unsigned char g_isp_unpack_blc_normal_cfa_spv[];
+extern const int g_isp_unpack_blc_normal_cfa_spv_len;
 // isp.unpack16_blc_normal_cfa — normalize + BLC + quad unpack from INT16 RAW in one dispatch.
 extern const unsigned char g_isp_unpack16_blc_normal_cfa_spv[];
 extern const int g_isp_unpack16_blc_normal_cfa_spv_len;
