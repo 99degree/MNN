@@ -35,6 +35,47 @@ ENDIF()
 include_directories("./")
 if(MNN_USE_SYSTEM_LIB)
     find_package(Vulkan REQUIRED)
+    # On Android the ONLY libvulkan that exists on a device is the system ICD
+    # loader, whose SONAME is `libvulkan.so`. The host we build on can disagree:
+    # Termux ships `libvulkan.so -> libvulkan.so.1`, so find_package() resolves
+    # that and every artifact gets `NEEDED libvulkan.so.1` — which no Android
+    # linker can satisfy (`dlopen failed: library "libvulkan.so.1" not found`).
+    #
+    # Prefer the NDK's sysroot stub: it is an aarch64 Android ELF with SONAME
+    # `libvulkan.so`, so the NEEDED entry it produces is correct by
+    # construction. Fall back to the discovered library only when no sysroot
+    # stub exists (non-Android hosts).
+    if (CMAKE_SYSTEM_NAME MATCHES "^Android" AND DEFINED ENV{ANDROID_NDK_ROOT})
+        # Map the target ABI to the NDK sysroot's per-ABI library directory.
+        # Getting this wrong is not a soft failure: linking an arm stub into an
+        # aarch64 build is `ld.lld: error: ... is incompatible with
+        # aarch64linux`.
+        if (ANDROID_ABI STREQUAL "arm64-v8a")
+            set(_mnn_ndk_triple "aarch64-linux-android")
+        elseif (ANDROID_ABI STREQUAL "armeabi-v7a")
+            set(_mnn_ndk_triple "arm-linux-androideabi")
+        elseif (ANDROID_ABI STREQUAL "x86_64")
+            set(_mnn_ndk_triple "x86_64-linux-android")
+        elseif (ANDROID_ABI STREQUAL "x86")
+            set(_mnn_ndk_triple "i686-linux-android")
+        else()
+            set(_mnn_ndk_triple "aarch64-linux-android")
+        endif()
+        file(GLOB _mnn_ndk_vulkan_stubs
+            "$ENV{ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/*/sysroot/usr/lib/${_mnn_ndk_triple}/*/libvulkan.so"
+            )
+        if (_mnn_ndk_vulkan_stubs)
+            list(SORT _mnn_ndk_vulkan_stubs)
+            list(GET _mnn_ndk_vulkan_stubs -1 MNN_VULKAN_ANDROID_STUB)
+            set(Vulkan_LIBRARY "${MNN_VULKAN_ANDROID_STUB}")
+            message(STATUS "Vulkan link target (Android stub): ${Vulkan_LIBRARY}")
+        else()
+            message(WARNING
+                "No NDK libvulkan.so stub found for ${ANDROID_ABI}; linking "
+                "${Vulkan_LIBRARY}, whose SONAME may not be libvulkan.so. "
+                "Verify the NEEDED entry of the produced .so before packaging.")
+        endif()
+    endif()
     set(MNN_VULKAN_LIBS ${Vulkan_LIBRARIES} PARENT_SCOPE)
 else()
     add_definitions(-DMNN_USE_LIB_WRAPPER)

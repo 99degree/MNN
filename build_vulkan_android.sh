@@ -57,6 +57,17 @@ export STRIP="/data/data/com.termux/files/usr/bin/llvm-strip"
 export CFLAGS="--target=$TARGET_TRIPLE -fPIC"
 export CXXFLAGS="--target=$TARGET_TRIPLE -fPIC"
 
+# Vulkan: source/backend/vulkan/CMakeLists.txt prefers the NDK's sysroot stub
+# over whatever find_package(Vulkan) resolves on the host, because Termux ships
+# libvulkan.so -> libvulkan.so.1 (SONAME libvulkan.so.1) and an Android device
+# only has SONAME libvulkan.so. Without this every MNN_Vulkan/libMNNConvertDeps
+# build gets `NEEDED libvulkan.so.1` and crashes at dlopen on device.
+if [ -z "${ANDROID_NDK_ROOT:-}" ] && [ -d "$HOME/android-sdk/ndk" ]; then
+    # Pick the newest installed NDK.
+    export ANDROID_NDK_ROOT="$(ls -d "$HOME"/android-sdk/ndk/*/ 2>/dev/null | sort -V | tail -1)"
+    export ANDROID_NDK_ROOT="${ANDROID_NDK_ROOT%/}"
+fi
+
 cmake .. \
     -DCMAKE_C_COMPILER="$CC" \
     -DCMAKE_CXX_COMPILER="$CXX" \
