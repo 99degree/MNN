@@ -893,6 +893,16 @@ DataType OpCommonUtils::convertDataType(halide_type_t type) {
     if (type.code == halide_type_int && type.bits == 32) {
         return DataType_DT_INT32;
     }
+    // 16-bit integers round-trip through the converter (onnxOpConverter maps
+    // INT16/UINT16 to DT_INT16/DT_UINT16 and Tensor::setType maps them back), so
+    // reporting DT_INVALID here dropped the width on the way out and a declared
+    // 16-bit graph input came back as float.
+    if (type.code == halide_type_int && type.bits == 16) {
+        return DataType_DT_INT16;
+    }
+    if (type.code == halide_type_uint && type.bits == 16) {
+        return DataType_DT_UINT16;
+    }
     return DataType_DT_INVALID;
 }
 } // namespace MNN

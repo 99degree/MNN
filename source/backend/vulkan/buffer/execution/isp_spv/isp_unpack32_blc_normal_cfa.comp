@@ -1,17 +1,21 @@
 #version 450
-// isp.unpack32_blc_normal_cfa — normalize + BLC + quad unpack from FLOAT32 RAW in one dispatch.
-// Input:  [1,1,H,W] FLOAT32 raw Bayer plane (host converted u16->f32 by engine RawFloat path).
+// isp.unpack32_blc_normal_cfa — normalize + BLC + quad unpack from packed INT32 RAW in one dispatch.
+// Input:  [1,1,H,W/2] INT32 raw Bayer plane, TWO int16 samples packed per int32 word
+//         (low 16 bits = even lane / sample at 2x, high 16 bits = odd lane / sample at 2x+1).
 // Output: [1,4,H/2,W/2] NCHW float PLANAR quad: plane p holds channel p of
 //         every quad — [TL, TR, BL, BR] = [R, G1, G2, B] for RGGB.
 //
-// Replaces the host-side INT16→FLOAT32 conversion + unpack split + normalize + BLC + CFA
-// by doing it all on GPU. The engine converts u16→f32 on CPU (RawFloat mode) and the shader
-// divides by sensor_max, subtracts BLC, and unpacks the 2x2 Bayer sites.
+// This is the zero-copy sibling of isp.unpack16_blc_normal_cfa. A 10/12/16-bit
+// sensor buffer is already W*H contiguous u16 samples, which on a little-endian
+// host *is* W/2 int32 words per row — so the host hands the sensor buffer over
+// verbatim and the shader does the whole head on the GPU: split each word into
+// its two int16 samples, convert to float, divide by the white level, subtract
+// the per-colour black level, and scatter the 2x2 sites into planar quad planes.
 //
 // Bindings follow the universal isp.* convention (VulkanFuse.cpp):
-//   binding 0 = Uniforms {width, height, sensor_max, gain, blc_offsets[4], bayer_pattern}
-//   binding 3 = input FLOAT32 plane (readonly)    <- input[0], the frame
-//   binding 4 = output float quad planes          <- output[0]
+//   binding 0 = Uniforms {width, height, pad0, pad1}
+//   binding 3 = input INT32 packed plane (readonly)   <- input[0], the frame
+//   binding 4 = output float quad planes              <- output[0]
 //   binding 5 = black level per colour (R, Gr, Gb, B)
 //   binding 6 = sensor white level
 //   binding 7 = CFA phase
@@ -21,59 +25,64 @@
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) buffer Uniforms {
-    float width;        // source (full-res) W
+    float width;        // source (full-res) W, one sample per pixel
     float height;       // source (full-res) H
-    float sensor_max;   // sensor white level (e.g., 1023.0 or 65535.0)
-    float gain;         // post-BLC gain (typically 1.0)
-    float blc_r;        // BLC offsets in sensor counts (0..sensor_max)
-    float blc_gr;
-    float blc_gb;
-    float blc_b;
-    int   bayer_pattern; // 0=RGGB, 1=GRBG, 2=GBRG, 3=BGGR
+    float pad0; float pad1;
 } u;
 
-layout(set = 0, binding = 3) readonly  buffer InBuf  { float in_data[]; };
+layout(set = 0, binding = 3) readonly  buffer InBuf  { int in_data[]; };
 layout(set = 0, binding = 4) writeonly buffer OutBuf { float out_data[]; };
 layout(set = 0, binding = 5) readonly  buffer BlcBuf { float blc_vals[]; };
-layout(set = 0, binding = 6) readonly  buffer MaxBuf { float max_val[]; };
+layout(set = 0, binding = 6) readonly  buffer MaxBuf { float sensor_max[]; };
 layout(set = 0, binding = 7) readonly  buffer BayerBuf { int bayer_pattern[]; };
 
 void main() {
     uint x = gl_GlobalInvocationID.x;   // quad column
     uint y = gl_GlobalInvocationID.y;   // quad row
-    int srcW = int(u.width);
-    int srcH = int(u.height);
-    int qw = srcW / 2;
+    // The graph input is [1,1,H,W/2] INT32 — the sensor's W*H u16 samples seen
+    // as int32 words, so ONE word per quad column. VulkanFuse patches u.width /
+    // u.height from the input tensor's own extents, so u.width is already the
+    // word count per row (= full-res W/2); halving it again here would declare
+    // half the quads and leave the last two output planes untouched.
+    int wordStride = int(u.width);      // words per row = full-res W/2
+    int srcH = int(u.height);           // full-res H, one sample per row line
+    int qw = wordStride;                // one quad per packed word
     int qh = srcH / 2;
     if (int(x) >= qw || int(y) >= qh) return;
 
-    int inX = int(x) * 2;
-    int inY = int(y) * 2;
-    int base = inY * srcW + inX;
-    int idx  = int(y) * qw + int(x);       // quad index
-    uint plane = uint(qw) * uint(qh);      // plane stride
+    // Row addressing: quad row y covers sensor rows 2y and 2y+1, and word
+    // column x covers sensor columns 2x and 2x+1.
+    int wordTLTR = int(y) * 2 * wordStride + int(x);          // row 2y   -> TL, TR
+    int wordBLBR = (int(y) * 2 + 1) * wordStride + int(x);    // row 2y+1 -> BL, BR
+
+    int w0 = in_data[wordTLTR];
+    int w1 = in_data[wordBLBR];
+
+    // Split each word into its two int16 samples, sign-extending by hand
+    // (shader int16 arithmetic is not guaranteed available on every driver).
+    int tl_i = (w0 & 0xFFFF) | ((w0 & 0x8000) != 0 ? 0xFFFF0000 : 0);
+    int tr_i = ((w0 >> 16) & 0xFFFF) | (((w0 >> 16) & 0x8000) != 0 ? 0xFFFF0000 : 0);
+    int bl_i = (w1 & 0xFFFF) | ((w1 & 0x8000) != 0 ? 0xFFFF0000 : 0);
+    int br_i = ((w1 >> 16) & 0xFFFF) | (((w1 >> 16) & 0x8000) != 0 ? 0xFFFF0000 : 0);
 
     // The coefficient tensors, not the params block, are authoritative: the
     // engine writes them as graph inputs each frame (BLC/WB/AE may change).
-    float smax = max(max_val[0], 1.0);
+    float smax = max(sensor_max[0], 1.0);
     int   p    = bayer_pattern[0];
 
-    // BLC offsets in [0, 1] (normalized by sensor_max)
+    // BLC offsets arrive in sensor counts; normalize them like the samples.
     float blc0 = blc_vals[0] / smax;
     float blc1 = blc_vals[1] / smax;
     float blc2 = blc_vals[2] / smax;
     float blc3 = blc_vals[3] / smax;
 
-    // Read 2x2 Bayer sites from FLOAT32 raw plane
-    float tl = in_data[base];              // TL
-    float tr = in_data[base + 1];          // TR
-    float bl = in_data[base + srcW];       // BL
-    float br = in_data[base + srcW + 1];   // BR
+    // int32 -> float32 and normalize by the sensor white level.
+    float tl = float(tl_i) / smax;
+    float tr = float(tr_i) / smax;
+    float bl = float(bl_i) / smax;
+    float br = float(br_i) / smax;
 
-    // Normalize by sensor_max
-    tl /= smax; tr /= smax; bl /= smax; br /= smax;
-
-    // Bayer phase determines colour -> plane mapping
+    // Bayer phase determines colour -> plane mapping.
     // RGGB (0): plane0=R(TL), plane1=G1(TR), plane2=G2(BL), plane3=B(BR)
     // GRBG (1): plane0=G1(TL), plane1=R(TR), plane2=B(BL), plane3=G2(BR)
     // GBRG (2): plane0=G2(TL), plane1=B(TR), plane2=R(BL), plane3=G1(BR)
@@ -91,14 +100,15 @@ void main() {
         b = tl; g2 = tr; g1 = bl; r = br;
     }
 
-    // Apply BLC and gain, clamp to >= 0
-    float gain = u.gain;
-    r  = max(r  - blc0, 0.0) * gain;
-    g1 = max(g1 - blc1, 0.0) * gain;
-    g2 = max(g2 - blc2, 0.0) * gain;
-    b  = max(b  - blc3, 0.0) * gain;
+    // Apply BLC and clamp to >= 0 (matches isp.unpack16_blc_normal_cfa).
+    r  = max(r  - blc0, 0.0);
+    g1 = max(g1 - blc1, 0.0);
+    g2 = max(g2 - blc2, 0.0);
+    b  = max(b  - blc3, 0.0);
 
-    // Write to planar quad output
+    // Write to planar quad output.
+    int idx = int(y) * qw + int(x);
+    uint plane = uint(qw) * uint(qh);
     out_data[idx]               = r;
     out_data[plane + idx]       = g1;
     out_data[plane * 2u + idx]  = g2;

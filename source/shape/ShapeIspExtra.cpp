@@ -532,24 +532,27 @@ public:
             // creation fail — and it fails by faulting inside MNN rather than by
             // returning an error.
             //
-            // The two families read the sensor plane differently, so the OUTPUT
+            // The families read the sensor plane differently, so the OUTPUT
             // width is not derived the same way:
-            //   isp.unpack_blc(_normal_cfa)  input [1,2,H,W/2]  packed words/row
+            //   isp.unpack_blc(_normal_cfa)  input [1,2,H,W/2] split lanes
             //                                  -> dim[3] IS W/2 already
-            //   isp.unpack16/32_blc_normal_cfa input [1,1,H,W]   one sample per pixel
-            //                                  -> dim[3] IS W, must be halved
-            // Declaring W (not W/2) for the 16/32 forms states a tensor twice as
-            // wide as the quad the shader writes; every later op then propagates
-            // the wrong extents and session creation faults inside MNN.
+            //   isp.unpack32_blc_normal_cfa  input [1,1,H,W/2] packed int32
+            //                                  words (two int16 samples each)
+            //                                  -> dim[3] IS W/2 already
+            //   isp.unpack16_blc_normal_cfa  input [1,1,H,W]   one int16
+            //                                  sample per pixel -> dim[3] IS W,
+            //                                  must be halved
+            // Declaring W/2-as-full-W for the 16-bit form states a tensor twice
+            // as wide as the quad the shader writes; every later op then
+            // propagates the wrong extents and session creation faults inside
+            // MNN.
             auto input  = inputs[0];
             auto output = outputs[0];
             int dims = input->buffer().dimensions;
             if (dims < 4) return false;
             int H  = input->buffer().dim[dims - 2].extent;
             int W  = input->buffer().dim[dims - 1].extent;
-            const bool full_row_input =
-                type == "isp.unpack16_blc_normal_cfa" ||
-                type == "isp.unpack32_blc_normal_cfa";
+            const bool full_row_input = type == "isp.unpack16_blc_normal_cfa";
             const int outH = (H > 0) ? (H / 2) : H;
             const int outW = (W > 0) ? (full_row_input ? W / 2 : W) : W;
             output->buffer().dimensions     = 4;

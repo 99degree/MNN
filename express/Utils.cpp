@@ -72,6 +72,13 @@ halide_type_t Utils::revertDataType(DataType dataType) {
     CONVERT(DataType_DT_INT8, halide_type_of<int8_t>(), dataType);
     CONVERT(DataType_DT_HALF, halide_type_of<float>(), dataType);
     CONVERT(DataType_DT_BFLOAT16, halide_type_t(halide_type_bfloat, 16), dataType);
+    // INT16/UINT16 are real tensor types (Tensor::setType maps them to
+    // halide_type_of<int16_t>/<uint16_t>), so converting them to float here
+    // silently widened a declared 16-bit graph input to a 32-bit tensor: the
+    // shader then read float bytes where it declared int16_t, and a 0.52 sample
+    // came back as 2.10 (its float mantissa read as an integer).
+    CONVERT(DataType_DT_INT16, halide_type_of<int16_t>(), dataType);
+    CONVERT(DataType_DT_UINT16, halide_type_of<uint16_t>(), dataType);
     return halide_type_of<float>();
 }
 Express::Dimensionformat Utils::revertFormat(int format) {
