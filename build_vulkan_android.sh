@@ -16,18 +16,22 @@ API_LEVEL="${ANDROID_API_LEVEL#android-}"
 # Map ABI to target triple
 if [ "$ANDROID_ABI" = "armeabi-v7a" ]; then
     TARGET_TRIPLE="armv7a-linux-androideabi${API_LEVEL}"
+    TARGET_PROCESSOR="armv7-a"
     ANDROID_STL="c++_static"
     ARM82="OFF"
 elif [ "$ANDROID_ABI" = "arm64-v8a" ]; then
     TARGET_TRIPLE="aarch64-linux-android${API_LEVEL}"
+    TARGET_PROCESSOR="aarch64"
     ANDROID_STL="c++_static"
     ARM82="ON"
 elif [ "$ANDROID_ABI" = "x86" ]; then
     TARGET_TRIPLE="i686-linux-android${API_LEVEL}"
+    TARGET_PROCESSOR="i686"
     ANDROID_STL="c++_static"
     ARM82="OFF"
 elif [ "$ANDROID_ABI" = "x86_64" ]; then
     TARGET_TRIPLE="x86_64-linux-android${API_LEVEL}"
+    TARGET_PROCESSOR="x86_64"
     ANDROID_STL="c++_static"
     ARM82="OFF"
 else
@@ -68,6 +72,11 @@ if [ -z "${ANDROID_NDK_ROOT:-}" ] && [ -d "$HOME/android-sdk/ndk" ]; then
     export ANDROID_NDK_ROOT="${ANDROID_NDK_ROOT%/}"
 fi
 
+# CMAKE_SYSTEM_PROCESSOR must be passed explicitly: on a Termux (Android)
+# host CMake's Platform/Android-Determine early-returns, so nothing else sets
+# it, and an empty value silently drops MNN's arm64 asm sources
+# (source/backend/cpu/arm/CMakeLists.txt gates on it) — libMNN.so then links
+# with 100+ undefined kernel symbols.
 cmake .. \
     -DCMAKE_C_COMPILER="$CC" \
     -DCMAKE_CXX_COMPILER="$CXX" \
@@ -77,6 +86,7 @@ cmake .. \
     -DCMAKE_STRIP="$STRIP" \
     -DCMAKE_SYSTEM_NAME=Android \
     -DCMAKE_SYSTEM_VERSION=21 \
+    -DCMAKE_SYSTEM_PROCESSOR="$TARGET_PROCESSOR" \
     -DCMAKE_ANDROID_ARCH_ABI="$ANDROID_ABI" \
     -DANDROID_ABI="$ANDROID_ABI" \
     -DANDROID_STL="$ANDROID_STL" \

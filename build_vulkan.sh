@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/data/data/com.termux/files/usr/bin/bash
 set -e
 
 BUILD_DIR="${1:-build_isp}"

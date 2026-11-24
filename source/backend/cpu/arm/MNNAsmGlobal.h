@@ -15,7 +15,6 @@ _\fname:
 #else
 .global \fname
 #ifdef __ELF__
-.hidden \fname
 .type \fname, %function
 #endif
 \fname:

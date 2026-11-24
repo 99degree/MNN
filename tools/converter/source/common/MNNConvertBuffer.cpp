@@ -177,7 +177,7 @@ MNN_PUBLIC int mnn_convert_onnx_to_mnn_buffer(const void* onnx_data, size_t onnx
     modelConfig config;
     config.model = modelConfig::ONNX;
     config.bizCode = "MNN";
-    config.optimizeLevel = 2;
+    config.optimizeLevel = 0;
     config.weightQuantBits = 0;
     config.saveHalfFloat = false;
     config.preserveInputType = true;
