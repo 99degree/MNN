@@ -1049,6 +1049,24 @@ ErrorCode VulkanFuse::onEncode(const std::vector<Tensor*>& inputs, const std::ve
         fflush(stderr);
         mElementwisePatched = true;
     }
+    // Packed `isp.display_*` shaders read gamma from Uniforms[2] in the
+    // binding-0 storage buffer, but the graph passes gamma as extra input[1]
+    // (bound at binding 5 — the slot `isp.display` itself reads). Those packed
+    // shaders never read binding 5, so without this copy u.gamma == 0 and
+    // pow(x, 1e6) collapses every pixel to opaque black.
+    if (mType.rfind("isp.display_", 0) == 0 && mConstStorageBuffer
+        && inputs.size() > 1 && inputs[1]) {
+        float gamma = 2.4f;
+        auto* gp = inputs[1]->host<float>();
+        if (gp && gp[0] > 0.01f) {
+            gamma = gp[0];
+        }
+        auto* cb = reinterpret_cast<float*>(mConstStorageBuffer->map());
+        if (cb) {
+            cb[2] = gamma;
+            mConstStorageBuffer->unmap();
+        }
+    }
     // Reduction extras: baked const {W,H(,C)} is 0 from dynamic input. Patch
     // ONCE (first encode) from the actual input tensor so the stride/reduce
     // loops run over the real image. ispc_stats const = {W,H,C};
