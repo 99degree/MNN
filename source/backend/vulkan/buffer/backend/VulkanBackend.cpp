@@ -287,61 +287,38 @@ private:
     MemChunk mPoint;
     int mSize;
 };
-// ── [ZERO-COPY DISPLAY] process-wide published display AHardwareBuffer ──────
-// nativeBindDisplayAHB (JNI) publishes the gralloc buffer here; the Vulkan
-// backend imports it lazily the first time getBuffer() is asked for a
-// deviceId()==0 display-sized tensor, then every isp.display_* dispatch writes
-// the UI's buffer directly (no GPU->CPU readback, no CPU pixel pass).
-static void* g_publishedDisplayAhb = nullptr;
-static size_t g_publishedDisplayAhbBytes = 0;
+// ── [ZERO-COPY DISPLAY] per-tensor AHardwareBuffer import ────────────────────
+// The AHardwareBuffer is bound to a tensor with Tensor::setDevicePtr(ahb,
+// MNN_MEMORY_AHARDWAREBUFFER) — never to a process-wide global. Each tensor
+// therefore owns its own imported VkBuffer, so two ISP workers can bind two
+// different display buffers concurrently without serialization.
+class VulkanAhbMemObj : public Backend::MemObj {
+public:
+    VulkanAhbMemObj(uint64_t ahbId, std::shared_ptr<VulkanBufferFromAHB> buffer)
+        : mAhbId(ahbId), mBuffer(std::move(buffer)) {}
+    uint64_t ahbId() const { return mAhbId; }
+    VkBuffer buffer() const { return mBuffer ? mBuffer->buffer() : VK_NULL_HANDLE; }
+    size_t size() const { return mBuffer ? mBuffer->size() : 0; }
+    std::shared_ptr<VulkanBufferFromAHB> sharedBuffer() const { return mBuffer; }
+private:
+    uint64_t mAhbId;
+    std::shared_ptr<VulkanBufferFromAHB> mBuffer;
+};
 
-extern "C" __attribute__((visibility("default")))
-void mnnSetDisplayAhb(void* hardwareBuffer, size_t bytes) {
-    g_publishedDisplayAhb = hardwareBuffer;
-    g_publishedDisplayAhbBytes = (hardwareBuffer != nullptr) ? bytes : 0;
-    if (FILE* tf = mnnIspTraceSink()) {
-        fprintf(tf, "[ZERO-COPY] mnnSetDisplayAhb ahb=%p bytes=%zu\n",
-            hardwareBuffer, g_publishedDisplayAhbBytes);
-        fflush(tf);
+static VulkanAhbMemObj* getAhbMem(const Tensor* tensor) {
+    if (tensor == nullptr || tensor->buffer().flags != MNN_MEMORY_AHARDWAREBUFFER) {
+        return nullptr;
     }
-}
-
-bool VulkanBackend::setSharedAhb(void* hardwareBuffer, size_t bytes) {
-    if (hardwareBuffer == nullptr || bytes == 0) {
-        mSharedAhb = nullptr;
-        return false;
-    }
-    if (mSharedAhb == nullptr) {
-        mSharedAhb.reset(VulkanBufferFromAHB::create(device(), hardwareBuffer, bytes,
-            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-            VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
-    }
-    if (FILE* tf = mnnIspTraceSink()) {
-        fprintf(tf, "[ZERO-COPY] setSharedAhb ahb=%p bytes=%zu imported=%p\n",
-            hardwareBuffer, bytes, mSharedAhb ? (void*)mSharedAhb->buffer() : nullptr);
-        fflush(tf);
-    }
-    return mSharedAhb != nullptr;
+    return static_cast<VulkanAhbMemObj*>(TensorUtils::getSharedMem(tensor));
 }
 
 VULKAN_TENSOR VulkanBackend::getBuffer(const Tensor* tensor) const {
-    // [ZERO-COPY DISPLAY] Serve the display output tensor from the imported
-    // AHardwareBuffer while one is published, so the shader writes the UI's
-    // gralloc buffer in place. Tensors with a real deviceId() are unaffected.
-    if (mSharedAhb == nullptr && g_publishedDisplayAhb != nullptr && tensor != nullptr &&
-        tensor->deviceId() == 0) {
-        size_t want = getTensorSize(tensor);
-        // Only the frame-sized display output is imported; small scalar
-        // parameter tensors keep the dummy-buffer path.
-        if (want > 0 && want <= g_publishedDisplayAhbBytes) {
-            const_cast<VulkanBackend*>(this)->setSharedAhb(
-                g_publishedDisplayAhb, g_publishedDisplayAhbBytes);
-        }
-    }
-    if (mSharedAhb != nullptr && tensor != nullptr && tensor->deviceId() == 0) {
-        size_t sz = getTensorSize(tensor);
-        if (sz > 0 && sz <= mSharedAhb->size()) {
-            return std::make_tuple(mSharedAhb->buffer(), sz, 0);
+    // Only tensors explicitly marked MNN_MEMORY_AHARDWAREBUFFER (the large
+    // frame-sized display output) use the imported gralloc buffer. Small
+    // parameter tensors keep the normal Vulkan allocation path.
+    if (auto* ahbMem = getAhbMem(tensor)) {
+        if (ahbMem->buffer() != VK_NULL_HANDLE) {
+            return std::make_tuple(ahbMem->buffer(), getTensorSize(tensor), 0);
         }
     }
     // A tensor that is not resident on this Vulkan device (e.g. a Host/const
@@ -377,6 +354,33 @@ Backend::MemObj* VulkanBackend::onAcquire(const Tensor* tensor, StorageType stor
     auto alignSize = getTensorSize(tensor);
     auto MTensor     = const_cast<Tensor*>(tensor);
     auto des = TensorUtils::getDescribeOrigin(tensor);
+    if (tensor->buffer().flags == MNN_MEMORY_AHARDWAREBUFFER) {
+        // Per-tensor AHB import. Only tensors the caller explicitly marked
+        // (typically the large display output) take this path; every other
+        // tensor — including small parameter tensors — uses the normal pool.
+        if (tensor->buffer().device == 0) {
+            MNN_ERROR("Vulkan AHB tensor has no device pointer\n");
+            return nullptr;
+        }
+        auto* existing = getAhbMem(tensor);
+        if (existing == nullptr || existing->ahbId() != tensor->buffer().device ||
+            existing->size() < alignSize) {
+            auto owned = std::shared_ptr<VulkanBufferFromAHB>(VulkanBufferFromAHB::create(
+                device(), reinterpret_cast<void*>(tensor->buffer().device), alignSize,
+                VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+            if (!owned) {
+                MNN_ERROR("Vulkan AHB import failed for tensor device=%p size=%zu\n",
+                          (void*)tensor->buffer().device, alignSize);
+                return nullptr;
+            }
+            auto* mem = new VulkanAhbMemObj(tensor->buffer().device, std::move(owned));
+            TensorUtils::setSharedMem(tensor, mem);
+            existing = mem;
+        }
+        des->offset = 0;
+        return new VulkanAhbMemObj(existing->ahbId(), existing->sharedBuffer());
+    }
     if (Backend::STATIC == storageType) {
         auto newBuffer = mRuntime->mBufferPool->alloc(alignSize);
         if (nullptr == newBuffer.first) {
@@ -680,8 +684,9 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
     if (srcTensor->host<float>() != nullptr) {
         _finish();
         auto format = TensorUtils::getDescribe(dstTensor)->dimensionFormat;
-        auto buffer = reinterpret_cast<VulkanBuffer*>(dstTensor->deviceId());
-        auto offset = TensorUtils::getDescribeOrigin(dstTensor)->offset;
+        auto dstInfo = getBuffer(dstTensor);
+        VkBuffer dstVkBuffer = std::get<0>(dstInfo);
+        auto offset = std::get<2>(dstInfo);
         // host->gpu
         if(format != TensorUtils::getDescribe(srcTensor)->dimensionFormat) {
             tempTensor.reset(Tensor::create(dstTensor->shape(), dstTensor->getType(), nullptr, _convert(format)));
@@ -706,7 +711,7 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
         if (vfp) {
             const float* sv = srcTensor->host<float>();
             fprintf(vfp, "[HOST2GPU] cpSize=%zu devOff=%zu devBuf=%p vkBuf=%p backend=%p host[0..7]=%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f,%.1f\n",
-                cpSize, (size_t)offset, (void*)(dstTensor->deviceId()), (void*)buffer->buffer(), (const void*)this,
+                cpSize, (size_t)offset, (void*)(dstTensor->deviceId()), (void*)dstVkBuffer, (const void*)this,
                 sv[0],sv[1],sv[2],sv[3],sv[4],sv[5],sv[6],sv[7]);
             fflush(vfp);
         } }
@@ -726,7 +731,7 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
         bufferCopy.size = cpSize;
         bufferCopy.dstOffset = offset;
         bufferCopy.srcOffset = 0;
-        vkCmdCopyBuffer(cmdbuffer->get(), mHostBuffer->buffer(), buffer->buffer(),
+        vkCmdCopyBuffer(cmdbuffer->get(), mHostBuffer->buffer(), dstVkBuffer,
                         1, &bufferCopy);
         cmdbuffer->end();
         pushCommand(cmdbuffer->get());
@@ -738,7 +743,7 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
             VkBufferCopy back{};
             back.size = 64; back.srcOffset = offset; back.dstOffset = 0;
             cmdb2->begin(0);
-            vkCmdCopyBuffer(cmdb2->get(), buffer->buffer(), mHostBuffer->buffer(), 1, &back);
+            vkCmdCopyBuffer(cmdb2->get(), dstVkBuffer, mHostBuffer->buffer(), 1, &back);
             cmdb2->end();
             pushCommand(cmdb2->get());
             _finish();
@@ -772,15 +777,16 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
         }
         size_t cpSize = calculateCpSize(dstTensor);
         _requireHostBuffer(cpSize);
-        auto buffer = reinterpret_cast<VulkanBuffer*>(srcTensor->deviceId());
-        auto offset = TensorUtils::getDescribeOrigin(srcTensor)->offset;
+        auto srcInfo = getBuffer(srcTensor);
+        VkBuffer srcVkBuffer = std::get<0>(srcInfo);
+        auto offset = std::get<2>(srcInfo);
         auto cmdbuffer = mCmdBufferForCopy;
         cmdbuffer->begin(0);
         VkBufferCopy bufferCopy;
         bufferCopy.size = cpSize;
         bufferCopy.dstOffset = 0;
         bufferCopy.srcOffset = offset;
-        vkCmdCopyBuffer(cmdbuffer->get(), buffer->buffer(), mHostBuffer->buffer(),
+        vkCmdCopyBuffer(cmdbuffer->get(), srcVkBuffer, mHostBuffer->buffer(),
                         1, &bufferCopy);
         cmdbuffer->end();
         pushCommand(cmdbuffer->get());
@@ -804,14 +810,16 @@ void VulkanBackend::onCopyBuffer(const Tensor* srcTensor, const Tensor* dstTenso
         // gpu->gpu
         auto format = TensorUtils::getDescribe(dstTensor)->dimensionFormat;
         MNN_ASSERT(format == TensorUtils::getDescribe(srcTensor)->dimensionFormat);
+        auto srcInfo = getBuffer(srcTensor);
+        auto dstInfo = getBuffer(dstTensor);
         std::shared_ptr<VulkanCommandPool::Buffer> buffer( mRuntime->mCmdPool->allocBuffer());
         buffer->begin(0);
         VkBufferCopy bufferCopy;
         size_t cpSize = calculateCpSize(srcTensor);
         bufferCopy.size = cpSize;
-        bufferCopy.dstOffset = TensorUtils::getDescribeOrigin(dstTensor)->offset;
-        bufferCopy.srcOffset = TensorUtils::getDescribeOrigin(srcTensor)->offset;
-        vkCmdCopyBuffer(buffer->get(), reinterpret_cast<VulkanBuffer*>(srcTensor->deviceId())->buffer(), reinterpret_cast<VulkanBuffer*>(dstTensor->deviceId())->buffer(),
+        bufferCopy.dstOffset = std::get<2>(dstInfo);
+        bufferCopy.srcOffset = std::get<2>(srcInfo);
+        vkCmdCopyBuffer(buffer->get(), std::get<0>(srcInfo), std::get<0>(dstInfo),
                         1, &bufferCopy);
         buffer->end();
         pushCommand(buffer->get());
