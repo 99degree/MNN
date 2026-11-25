@@ -13,6 +13,7 @@
 #include "isp_spv/isp_eis_gyro_spv.h"
 #include "isp_spv/isp_ispc_stats_spv.h"
 #include "isp_spv/isp_tone_spv.h"
+#include "isp_spv/isp_tonelut_spv.h"
 #include "isp_spv/isp_normalize_spv.h"
 #include "isp_spv/isp_blc_spv.h"
 #include "isp_spv/isp_blc_min_spv.h"

@@ -111,6 +111,7 @@ inline const char* const kIspOpsetNames[] = {
     "isp.stats",
     "isp.temporal_denoise",
     "isp.tone",
+    "isp.tonelut",
     "isp.tone_stats",
     "isp.unsharp",
     "isp.vignetting",

@@ -1,37 +1,39 @@
 #version 450
-// isp.tone — Tone Mapping: out = pow(in, gamma) * contrast
-// Uniforms: {W, H, gamma, contrast, pad0, pad1, pad2, pad3}
-// Based on Android ToneBlock: gamma=2.2, contrast=1.0
-
+// isp.tone — fused ToneBlock: pow(clip(v * exposure * contrast + brightness), 1/gamma).
+// Uniforms: {W, H, pad0, pad1} — W/H hot-swapped by `elementwise=1`.
+// Bindings: 3 InBuf, 4 OutBuf, 5 exposure, 6 contrast, 7 brightness, 8 inv_gamma.
 layout(local_size_x = 16, local_size_y = 16, local_size_z = 1) in;
 
 layout(set = 0, binding = 0, std430) buffer Uniforms {
     float width;
     float height;
-    float gamma;
-    float contrast;
-    float pad[4];  // 4 padding floats for alignment
+    float pad0;
+    float pad1;
 } u;
 
-layout(set = 0, binding = 3) readonly  buffer InBuf  { float in_data[]; };
-layout(set = 0, binding = 4) writeonly buffer OutBuf { float out_data[]; };
+layout(set = 0, binding = 3) readonly  buffer InBuf          { float in_data[]; };
+layout(set = 0, binding = 4) writeonly buffer OutBuf         { float out_data[]; };
+layout(set = 0, binding = 5) readonly  buffer ExposureBuf    { float exposure[]; };
+layout(set = 0, binding = 6) readonly  buffer ContrastBuf    { float contrast[]; };
+layout(set = 0, binding = 7) readonly  buffer BrightnessBuf  { float brightness[]; };
+layout(set = 0, binding = 8) readonly  buffer InvGammaBuf    { float inv_gamma[]; };
 
 void main() {
     uint x = gl_GlobalInvocationID.x;
     uint y = gl_GlobalInvocationID.y;
-    uint w = uint(u.width);
-    uint h = uint(u.height);
-    if (x >= w || y >= h) return;
+    int w = int(u.width);
+    int h = int(u.height);
+    if (int(x) >= w || int(y) >= h) return;
 
-    uint plane = w * h;
-    uint idx = y * w + x;
-    float v = in_data[idx];
+    int plane = w * h;
+    int p = int(y) * w + int(x);
+    float e = max(exposure[0], 0.05);
+    float c = contrast[0];
+    float b = brightness[0];
+    float ig = max(inv_gamma[0], 1e-6);
 
-    // pow(in, gamma) * contrast
-    v = clamp(v, 0.0, 1e10);
-    v = v + 1e-9;
-    v = exp(log(v) * u.gamma);
-    v = v * u.contrast;
-
-    out_data[idx] = v;
+    for (int ch = 0; ch < 3; ++ch) {
+        float v = clamp(in_data[ch * plane + p] * e * c + b, 0.0, 1.0);
+        out_data[ch * plane + p] = pow(v, ig);
+    }
 }
