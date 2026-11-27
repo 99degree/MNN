@@ -173,24 +173,15 @@ int onnx2MNNNet(onnx::ModelProto& onnxModel, const std::string& modelDir, const 
         }
         // build op
         opConverter->run(MNNOp, &onnxNode, scope.get());
-        // [MNN-ISP-CONVERT] Trace isp.* domain ops as they are lowered from ONNX
-        // to MNN Extra, and validate the emitted MNN isp.* name against the
-        // canonical IspSpvLookup table. Catches name drift (e.g. "isp.algogamma"
-        // vs "isp.algo_gamma") at conversion time, before VulkanFuse ever sees it.
+        // Validate the emitted MNN isp.* name against the canonical IspSpvLookup
+        // table so name drift is caught before VulkanFuse sees the model.
         if (opType.rfind("isp.", 0) == 0) {
             MNN::ispModelFlag() = true;
-            const char* _mnnEngine = "<n/a>";
             std::string _mnnTypeStr = "<n/a>";
             if (MNNOp->main.type == MNN::OpParameter_Extra && MNNOp->main.value != nullptr) {
                 auto* _ex = reinterpret_cast<MNN::ExtraT*>(MNNOp->main.value);
-                _mnnEngine  = _ex->engine.c_str();
                 _mnnTypeStr = _ex->type;
             }
-            fprintf(stderr,
-                    "[MNN-ISP-CONVERT] onnx domain=%s op_type=%s -> mnn OpType=%d OpParam=%d engine=%s type=%s name=%s\n",
-                    onnxNode.domain().c_str(), opType.c_str(), (int)MNNOp->type,
-                    (int)MNNOp->main.type, _mnnEngine, _mnnTypeStr.c_str(), MNNOp->name.c_str());
-            fflush(stderr);
             if (!MNN::isKnownIspOp(_mnnTypeStr)) {
                 fprintf(stderr,
                         "[MNN-ISP-TRAP] INVALID isp.* opset at convert: onnx op_type=%s -> mnn type=%s "
@@ -243,10 +234,6 @@ int onnx2MNNNet(onnx::ModelProto& onnxModel, const std::string& modelDir, const 
                 fflush(stderr);
                 abort();
             }
-        } else {
-            fprintf(stderr, "[MNN-ISP-CONVERT] isp-domain model=%d isp Extra ops emitted=%d\n",
-                    MNN::ispModelFlag() ? 1 : 0, ispOpEmitted);
-            fflush(stderr);
         }
     }
     auto metaSize = onnxModel.metadata_props_size();

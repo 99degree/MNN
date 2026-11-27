@@ -281,19 +281,13 @@ Session* Interpreter::createMultiPathSession(const std::vector<ScheduleConfig>& 
     if (!success) {
         return nullptr;
     }
-    // [MNN-ISP-SESSION] Dump every isp.* Extra op present in the loaded model at
-    // session-creation time. This makes it immediately visible which op names the
-    // VulkanFuse backend will receive (OpType_Extra + type starting with "isp."),
-    // and which expected ops are absent (-> CPU fallback / fusion mismatch).
+    // Validate isp.* Extra op names at session creation so a stale literal
+    // cannot silently degrade a Vulkan ISP chain to CPU fallback.
     if (mNet->net != nullptr && mNet->net->oplists() != nullptr) {
         const auto* _ispNet = mNet->net;
         int _ispExtraCount = 0;
         int _ispUnknownCount = 0;
         char _ispbuf[512];
-        snprintf(_ispbuf, sizeof(_ispbuf), "[MNN-ISP-SESSION] model tensorNumber=%d oplists=%u\n",
-                 _ispNet->tensorNumber(), (unsigned)_ispNet->oplists()->size());
-        MNN_PRINT("%s", _ispbuf);
-        fprintf(stderr, "%s", _ispbuf);
         for (uint32_t _oi = 0; _oi < _ispNet->oplists()->size(); ++_oi) {
             const auto* _op = _ispNet->oplists()->Get(_oi);
             if (_op == nullptr || _op->type() != OpType_Extra) {
@@ -301,21 +295,12 @@ Session* Interpreter::createMultiPathSession(const std::vector<ScheduleConfig>& 
             }
             const auto* _ex = _op->main_as_Extra();
             if (_ex == nullptr || _ex->type() == nullptr) {
-                snprintf(_ispbuf, sizeof(_ispbuf), "[MNN-ISP-SESSION] op[%u] Extra type=<null>\n", _oi);
-                MNN_PRINT("%s", _ispbuf);
-                fprintf(stderr, "%s", _ispbuf);
                 continue;
             }
             const std::string _etype = _ex->type()->str();
-            const std::string _eeng = _ex->engine() ? _ex->engine()->str() : std::string("<null>");
             const std::string _ename = _op->name() ? _op->name()->str() : std::string("<null>");
             const bool _isIsp = (_etype.rfind("isp.", 0) == 0);
-            // [ISP OPSET TRAP] An isp.* name with no matching SPIR-V shader key
-            // cannot be executed by VulkanFuse (it returns nullptr and the op
-            // silently falls back / fails). Surface it loudly, and optionally
-            // hard-fail session creation when MNN_ISP_TRAP=1.
-            const bool _known = _isIsp ? isKnownIspOp(_etype) : true;
-            if (_isIsp && !_known) {
+            if (_isIsp && !isKnownIspOp(_etype)) {
                 ++_ispUnknownCount;
                 snprintf(_ispbuf, sizeof(_ispbuf),
                          "[MNN-ISP-TRAP] INVALID isp.* opset at session create: type=%s name=%s "
@@ -324,17 +309,8 @@ Session* Interpreter::createMultiPathSession(const std::vector<ScheduleConfig>& 
                 MNN_ERROR("%s", _ispbuf);
                 fprintf(stderr, "%s", _ispbuf);
             }
-            snprintf(_ispbuf, sizeof(_ispbuf),
-                     "[MNN-ISP-SESSION] op[%u] Extra engine=%s type=%s name=%s isp=%d known=%d\n", _oi,
-                     _eeng.c_str(), _etype.c_str(), _ename.c_str(), _isIsp ? 1 : 0, _known ? 1 : 0);
-            MNN_PRINT("%s", _ispbuf);
-            fprintf(stderr, "%s", _ispbuf);
             ++_ispExtraCount;
         }
-        snprintf(_ispbuf, sizeof(_ispbuf), "[MNN-ISP-SESSION] Extra op count=%d\n", _ispExtraCount);
-        MNN_PRINT("%s", _ispbuf);
-        fprintf(stderr, "%s", _ispbuf);
-        fflush(stderr);
         if (_ispUnknownCount > 0) {
             snprintf(_ispbuf, sizeof(_ispbuf),
                      "[MNN-ISP-TRAP] %d invalid isp.* opset name(s) in model\n", _ispUnknownCount);
