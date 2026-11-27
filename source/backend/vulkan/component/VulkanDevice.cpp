@@ -7,6 +7,7 @@
 //
 
 #include "backend/vulkan/component/VulkanDevice.hpp"
+#include "backend/vulkan/vulkan/vulkan_android.h"
 #include "component/MNNIspTrace.hpp"
 #include <string.h>
 #include <algorithm>
@@ -145,6 +146,23 @@ VulkanDevice::VulkanDevice(std::shared_ptr<VulkanInstance> instance)
                 fprintf(tf, "[AHB-PROBE] %s available=%d\n", w, has ? 1 : 0);
             }
             fflush(tf);
+        }
+    }
+
+    // Enable the AHardwareBuffer import chain. VulkanBufferFromAHB resolves
+    // vkGetAndroidHardwareBufferPropertiesANDROID from the device, so without
+    // these device extensions the loader returns nullptr and every import
+    // fails before VkBuffer creation.
+    const char* ahbDeviceExtensions[] = {
+        VK_KHR_EXTERNAL_MEMORY_EXTENSION_NAME,
+        VK_ANDROID_EXTERNAL_MEMORY_ANDROID_HARDWARE_BUFFER_EXTENSION_NAME,
+        VK_KHR_DEDICATED_ALLOCATION_EXTENSION_NAME,
+        VK_KHR_GET_MEMORY_REQUIREMENTS_2_EXTENSION_NAME,
+        VK_KHR_BIND_MEMORY_2_EXTENSION_NAME,
+    };
+    for (const char* ext : ahbDeviceExtensions) {
+        if (_hasExtension(availableDeviceExtensions, ext)) {
+            deviceExtensions.push_back(ext);
         }
     }
 
